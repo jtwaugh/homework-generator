@@ -54,7 +54,11 @@ function userLabel(m) {
 
 function threadHtml() {
   const week = app.week;
-  if (!week) return `<div class="chat-empty"><div class="big">💬</div><p>Set up the week on the right, then <b>Generate outline</b>.</p><p class="muted">Claude's replies, its web searches and corpus lookups, CAS checks and the cost of each turn appear here.</p></div>`;
+  if (!week) return `<div class="chat-empty"><h3>How a week goes</h3><ol class="steps">
+    <li><b>Set up</b><span>Pick topics on the right. The rest has defaults.</span></li>
+    <li><b>Outline</b><span>Claude researches, may ask a question or two, then proposes sections for you to approve.</span></li>
+    <li><b>Final</b><span>Claude writes the set. You check the PDF and save it.</span></li></ol>
+    <p class="muted small">This pane is the conversation: Claude's replies, its searches and corpus lookups, CAS checks and the cost of each turn. <b>Quick set</b> skips step 2.</p></div>`;
   const out = [];
   const { outline } = splitMessages();
   // The latest outline reply is shown in full in the work pane, so the chat keeps only its opening line.

@@ -41,17 +41,18 @@
         <h2 class="v-title">Set up the week</h2>
         <div id="units" class="widget"></div>
         <div class="field big">
-          <label for="f-date">Date</label>
-          <input id="f-date" placeholder="11/28/2026" />
-        </div>
-        <div class="field big">
-          <label>Topics</label>
+          <label>Topics <span class="lbl-note">what this week's set is about</span></label>
           <div id="f-topics"></div>
+          <div id="topic-suggest" class="topic-suggest"></div>
         </div>
-        <div class="inline-fields">
-          <div class="field"><label>Disclaimer</label><div class="seg" data-key="Disclaimer"><button data-v="yes">Yes</button><button data-v="no">No</button></div></div>
-          <div class="field"><label>Graph paper</label><div class="seg" data-key="Graph paper"><button data-v="auto">Auto</button><button data-v="yes">Yes</button><button data-v="no">No</button></div></div>
-          <div class="field"><label for="f-sections">Sections</label><input id="f-sections" placeholder="3–4" size="6" /></div>
+        <div class="opt-grid">
+          <div class="field"><label for="f-date">Date</label><input id="f-date" placeholder="11/28/2026" /><span id="date-note" class="field-note"></span></div>
+          <div class="field"><label>Sections</label>
+            <div class="seg" data-key="Number of sections (default 3-4)" data-default="" data-other="1"><button data-v="">3–4<small>default</small></button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button><button data-v="other">Other…</button></div>
+            <input id="f-sections" placeholder="e.g. 4: routine, ideas, review, challenge" hidden />
+          </div>
+          <div class="field"><label>Graph paper</label><div class="seg" data-key="Graph paper" data-default="auto"><button data-v="auto">Auto<small>default</small></button><button data-v="yes">Yes</button><button data-v="no">No</button></div></div>
+          <div class="field"><label>Disclaimer</label><div class="seg" data-key="Disclaimer" data-default="no"><button data-v="no">No<small>default</small></button><button data-v="yes">Yes</button></div></div>
         </div>
         <details id="more-opts">
           <summary>More options <span class="muted">(problem ideas, emphasize/avoid, fact sheet)</span></summary>
@@ -60,17 +61,23 @@
           <div class="field"><label for="f-fact">Fact sheet or other file</label><textarea id="f-fact" rows="2" placeholder='paste it, or "none"'></textarea></div>
         </details>
         <div class="context">
+          <div class="ctx-head">
+            <div><div class="ctx-title">Carried over from last week</div>
+              <div class="muted small">Claude reads these from weekly_status.md. Nothing to do here unless something is wrong.</div></div>
+            <span class="spacer"></span>
+            <button id="view-md" class="secondary small-btn">Edit weekly_status.md</button>
+          </div>
           <div id="ctx"></div>
-          <div class="row"><span class="spacer"></span><button id="view-md" class="link">view MD</button></div>
           <div id="raw-wrap" hidden>
             <p class="hint">The full weekly_status.md. Edits save automatically.</p>
             <textarea id="status-raw" spellcheck="false"></textarea>
           </div>
         </div>
         <div class="actions bar">
+          <span id="setup-check" class="setup-check"></span>
           <span id="save-state" class="muted small"></span>
           <span class="spacer"></span>
-          <span id="gen-hint" class="muted small"></span>
+          <button id="quick-set" class="secondary" title="Skip the outline: Claude writes the finished set in one pass and lists the judgment calls it made">Quick set<small>no outline</small></button>
           <button id="generate" class="primary">Generate outline →</button>
         </div>
       </div>

@@ -79,7 +79,7 @@ try {
   await step("start it", "ui_click", sel("#units [data-act=start]"), /data-act=start/, /units.current: /);
   await step("autosaves weekly_status.md", "ui_wait", { until: "!__hw.summary().statusDirty", timeoutMs: 10000 }, /PUT \/api\/status status=200/);
   await step("Generate is offered", "ui_eval", { js: "document.querySelector('#generate').disabled ? 'disabled' : 'enabled'" }, /enabled/);
-  await step("Make a set is offered for the current unit", "ui_eval", { js: "document.querySelector('#units [data-act=quick]')?.textContent" }, /Make a set on [A-Z]+\d+/);
+  await step("Quick set is offered", "ui_eval", { js: "document.querySelector('#quick-set')?.textContent" }, /Quick set/);
 
   console.log("Header dialogs");
   await step("Progress map opens", "ui_click", sel("[data-open=dag]"), /dialog-open id=dag-dlg/, /GET \/api\/dag status=200/);

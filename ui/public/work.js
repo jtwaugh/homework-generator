@@ -2,7 +2,7 @@
 // plus the header (progress strip, Next pill) that summarises where the week is.
 import { $, $$, esc, api, md, S, log, nextSetDate, STATUSES, parseUnitStatuses, writeUnitStatuses, sectionBounds, parseWeekInput, writeWeekInput, diffHtml } from "./lib.js";
 import { app, onRender, render, refresh, send, phaseOf, splitMessages, isCheckpoint, hasTex, currentFinal, compile, compiled, problemsOf, fnameFromDate, updateStatus, flushStatus, casCalls, openWeek } from "./state.js";
-import { mountTopics, buildSources, historyTopics, serializeTopics } from "./topics.js";
+import { mountTopics, buildSources, historyTopics, serializeTopics, parseTopics } from "./topics.js";
 import { composerText, clearComposer } from "./chat.js";
 
 // ======================= status-file helpers =======================
@@ -42,7 +42,8 @@ function unitsWidgetHtml(mdText) {
         <div class="u-title">${cur.length ? cur.map((u) => `<b>${u.id}</b> ${esc(u.name)}`).join(" · ") : '<span class="bad-text">No unit marked current</span>'}</div></div>
       <span class="spacer"></span>
       <div class="u-progress" title="${m.taught} of ${S.units.length} units taught"><div style="width:${pct}%"></div></div>
-      <span class="muted small">${m.taught}/${S.units.length}</span>
+      <span class="muted small">${m.taught}/${S.units.length} taught</span>
+      <button class="link" data-act="expand">${unitsUI.expanded ? "hide units" : "all units"}</button>
     </div>`;
   let decision;
   if (unitsUI.choosing) {
@@ -52,13 +53,13 @@ function unitsWidgetHtml(mdText) {
     ];
     decision = `<div class="u-choose">
       <div class="k">${cur.length ? `${cur.map((u) => u.id).join(", ")} will be marked taught. Now teaching:` : "Now teaching:"}</div>
-      <div class="opts">${opts.join("") || '<span class="muted">Nothing is unlocked yet. Use show all units.</span>'}</div>
+      <div class="opts">${opts.join("") || '<span class="muted">Nothing is unlocked yet. Use all units.</span>'}</div>
       <button class="link" data-act="cancel">cancel</button></div>`;
   } else if (unitsUI.undo) {
-    decision = `<div class="u-decide"><span class="ok-text">✓ ${esc(unitsUI.undo.label)}</span><button class="link" data-act="undo">undo</button>${quickMain(cur)}</div>`;
+    decision = `<div class="u-decide"><span class="ok-text">✓ ${esc(unitsUI.undo.label)}</span><span class="spacer"></span><button class="link" data-act="undo">undo</button></div>`;
   } else {
-    decision = `<div class="u-decide"><span class="muted">${cur.length ? `Still on ${cur.map((u) => u.id).join(", ")}? Then there's nothing to change.` : `Pick the unit ${S.student || "the student"} is on.`}</span>
-      <button class="secondary" data-act="choose">${cur.length ? "We moved on →" : "Choose unit →"}</button>${quickMain(cur)}</div>`;
+    decision = `<div class="u-decide"><span class="muted">${cur.length ? `Still teaching ${cur.length > 1 ? "these" : "this"}? Nothing to change. Finished one?` : `Pick the unit ${S.student || "the student"} is on.`}</span>
+      <button class="secondary" data-act="choose">${cur.length ? "We moved on →" : "Choose unit →"}</button></div>`;
   }
   const all = unitsUI.expanded ? `
     <div class="chips">${S.units.map((u) => {
@@ -68,10 +69,9 @@ function unitsWidgetHtml(mdText) {
       return `<span class="chip s-${s}${note ? " partial" : ""}${missing.length ? " warn" : ""}" title="${esc(tip)}">${u.id}<select data-unit="${u.id}" aria-label="${esc(u.id + " " + u.name)}">${STATUSES.map((x) => `<option value="${x}" ${x === s ? "selected" : ""}>${LABEL[x]}</option>`).join("")}</select></span>`;
     }).join("")}</div>
     <div class="legend"><span class="chip s-TAUGHT mini"></span>Taught <span class="chip s-TAUGHT partial mini"></span>Partly <span class="chip s-CURRENT mini"></span>Current <span class="chip s-NEXT mini"></span>Next <span class="chip s-FUTURE mini"></span>Future <span class="muted">· click a unit to change it, hover for details</span></div>` : "";
-  return head + decision + all + `<div class="row"><span class="spacer"></span><button class="link" data-act="expand">${unitsUI.expanded ? "hide units" : "show all units"}</button></div>`;
+  return head + decision + all;
 }
 
-const quickMain = (cur) => cur.map((u) => `<button class="primary" data-act="quick" data-id="${u.id}" title="Claude writes the whole set for ${u.id} in one pass, no questions or outline">Make a set on ${u.id} →</button>`).join("");
 const quickBtn = (id) => `<button class="link quick" data-act="quick" data-id="${id}" title="Start ${id} and have Claude write the whole set in one pass">Make a set →</button>`;
 
 // Mark a unit current; whatever was current becomes taught (the "we moved on" decision).
@@ -97,7 +97,7 @@ export async function quickSet(id) {
   await startWeek(QUICK_PROMPT);
 }
 const QUICK_PROMPT = "This is a quick set: the teacher picked the unit and wants the finished set in one pass. " +
-  "Don't ask questions and don't send a checkpoint. The unit in Topics is CURRENT as of this week. Wherever you would ask, use your default and say so. " +
+  "Don't ask questions and don't send a checkpoint. Treat the unit statuses in weekly_status.md as correct for this week. Wherever you would ask, use your default and say so. " +
   "Do the research, then reply directly with the final: the complete .tex, the complete updated weekly_status.md and the problem manifest. " +
   "Start the reply with a short **Judgment calls** list of every default or assumption you made, so the teacher can correct any of them in one message.";
 
@@ -118,14 +118,16 @@ function applyUnitAction(act, id) {
   render();
 }
 
+const ctxUI = { more: false };
 function contextHtml(mdText) {
   const review = sectionItems(mdText, "## Review priority");
   const history = sectionItems(mdText, "## Recent history");
   const bans = sectionItems(mdText, "## Extra bans this week").filter((b) => !/^\(?none\)?$/i.test(b));
+  if (!review.length && !bans.length && !history.length) return `<p class="muted small">Nothing carried over yet.</p>`;
   return `
-    ${review.length ? `<div class="cur-line"><span class="k">Review first</span><span class="pills">${review.map((r, i) => `<span class="pill" title="${esc(r)}"><b>${i + 1}</b>${esc(r.replace(/\s*\(.*$/, ""))}</span>`).join("")}</span></div>` : ""}
-    ${bans.length ? `<div class="cur-line"><span class="k">Extra bans</span>${bans.map(esc).join("; ")}</div>` : ""}
-    ${history.length ? `<div class="cur-line"><span class="k">Last set</span><span class="muted">${esc(history[history.length - 1])}</span></div>` : ""}`;
+    ${review.length ? `<div class="cur-line"><span class="k">Review</span><div><div class="cap">The mixed-review section draws from these, in order.</div><ol class="review-list">${review.map((r) => `<li title="${esc(r)}">${esc(r.replace(/\s*\(.*$/, ""))}</li>`).join("")}</ol></div></div>` : ""}
+    ${bans.length ? `<div class="cur-line"><span class="k">Avoid</span><div><div class="cap">Extra bans for this week.</div>${bans.map(esc).join("; ")}</div></div>` : ""}
+    ${history.length ? `<div class="cur-line"><span class="k">Last set</span><div><div class="clamp${ctxUI.more ? " open" : ""}">${esc(history[history.length - 1])}</div><button class="link" data-act="more">${ctxUI.more ? "less" : "more"}</button></div></div>` : ""}`;
 }
 
 export function statusChanges(oldMd, newMd) {
@@ -156,7 +158,22 @@ const FIELD_IDS = { "f-date": "Date (for title)", "f-sections": "Number of secti
 const setField = (key, v) => { const vals = parseWeekInput(S.status); vals[key] = v; updateStatus(writeWeekInput(S.status, vals)); };
 
 for (const [id, key] of Object.entries(FIELD_IDS)) $("#" + id).addEventListener("input", (e) => setField(key, e.target.value));
-$$(".seg").forEach((seg) => seg.addEventListener("click", (e) => { const v = e.target.dataset.v; if (v) setField(seg.dataset.key, v); }));
+const setupUI = { sectionsOther: false };
+$$(".seg").forEach((seg) => seg.addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  const v = b.dataset.v;
+  if (seg.dataset.other) {
+    setupUI.sectionsOther = v === "other";
+    if (v === "other") { render(); return $("#f-sections").focus(); }
+  }
+  setField(seg.dataset.key, v === seg.dataset.default ? "" : v); // the default is stored as blank
+}));
+$("#ctx").addEventListener("click", (e) => { if (e.target.closest("[data-act=more]")) { ctxUI.more = !ctxUI.more; render(); } });
+$("#topic-suggest").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-unit]"); if (!b) return;
+  const u = S.units.find((x) => x.id === b.dataset.unit); if (!u) return;
+  setField("Topics", serializeTopics([...parseTopics(parseWeekInput(S.status)["Topics"] || ""), { text: u.name, id: u.id }]));
+});
 $("#units").addEventListener("click", (e) => { const b = e.target.closest("[data-act]"); if (b) applyUnitAction(b.dataset.act, b.dataset.id); });
 $("#units").addEventListener("change", (e) => {
   const id = e.target.dataset.unit; if (!id) return;
@@ -165,7 +182,7 @@ $("#units").addEventListener("change", (e) => {
   updateStatus(writeUnitStatuses(S.status, map, free));
 });
 $("#status-raw").addEventListener("input", (e) => updateStatus(e.target.value));
-$("#view-md").onclick = () => { const r = $("#raw-wrap"); r.hidden = !r.hidden; $("#view-md").textContent = r.hidden ? "view MD" : "hide MD"; };
+$("#view-md").onclick = () => { const r = $("#raw-wrap"); r.hidden = !r.hidden; $("#view-md").textContent = r.hidden ? "Edit weekly_status.md" : "Close editor"; };
 $("#more-opts").addEventListener("toggle", (e) => (e.target.dataset.touched = "1"));
 
 // Extra suggestion sources for topic chips, loaded once in the background.
@@ -187,27 +204,56 @@ export const topics = mountTopics($("#f-topics"), {
   },
 });
 
-function setupMissing() {
+const DATE_RE = /^\d{1,2}\/\d{1,2}\/\d{4}$/;
+function setupChecks() {
   const vals = parseWeekInput(S.status || "");
-  return [!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(vals["Date (for title)"] || "") && "a date like 11/28/2026", !vals["Topics"] && "topics"].filter(Boolean);
+  return [
+    { label: "Date", msg: "a date like 11/28/2026", ok: DATE_RE.test(vals["Date (for title)"] || ""), field: "#f-date" },
+    { label: "Topics", msg: "topics", ok: !!vals["Topics"], field: "#f-topics .tinput" },
+  ];
 }
+function setupMissing() { return setupChecks().filter((c) => !c.ok).map((c) => c.msg); }
 
 function renderSetup() {
   const vals = parseWeekInput(S.status);
+  // Default the date to the week after the last saved set, so it is a real value rather than a placeholder.
+  if (!vals["Date (for title)"] && S.texFiles && document.activeElement !== $("#f-date")) return setField("Date (for title)", nextSetDate(S.texFiles, ""));
   for (const [id, key] of Object.entries(FIELD_IDS)) { const f = $("#" + id); if (document.activeElement !== f) f.value = vals[key] || ""; }
   topics.sync();
-  $$(".seg").forEach((seg) => $$("button", seg).forEach((b) => b.classList.toggle("on", (vals[seg.dataset.key] || "").toLowerCase() === b.dataset.v)));
+  $$(".seg").forEach((seg) => {
+    const btns = $$("button", seg);
+    let v = (vals[seg.dataset.key] || seg.dataset.default).toLowerCase().trim();
+    if (seg.dataset.other && (setupUI.sectionsOther || !btns.some((b) => b.dataset.v === v))) { v = "other"; setupUI.sectionsOther = true; }
+    btns.forEach((b) => b.classList.toggle("on", v === b.dataset.v));
+  });
+  $("#f-sections").hidden = !setupUI.sectionsOther;
+  $("#date-note").textContent = vals["Date (for title)"] && vals["Date (for title)"] === nextSetDate(S.texFiles || [], "") ? "a week after your last set" : "";
+  const chosen = new Set(parseTopics(vals["Topics"] || "").map((c) => c.id).filter(Boolean));
+  const sugg = (S.units?.length ? unitsModel(S.status).current : []).filter((u) => !chosen.has(u.id));
+  $("#topic-suggest").innerHTML = sugg.length ? `<span class="muted small">Teaching now:</span>${sugg.map((u) => `<button class="sugg" data-unit="${u.id}">+ <b>${u.id}</b> ${esc(u.name)}</button>`).join("")}` : "";
   if (["f-ideas", "f-emph", "f-fact"].some((id) => vals[FIELD_IDS[id]]) && !$("#more-opts").dataset.touched) $("#more-opts").open = true;
   if (!($("#units").contains(document.activeElement) && document.activeElement.tagName === "SELECT")) $("#units").innerHTML = unitsWidgetHtml(S.status);
   $("#ctx").innerHTML = contextHtml(S.status);
   if (document.activeElement !== $("#status-raw")) $("#status-raw").value = S.status;
-  const missing = setupMissing();
-  $("#generate").disabled = missing.length > 0;
-  $("#gen-hint").textContent = missing.length ? `Add ${missing.join(" and ")}` : S.corpusSize ? `Claude starts from the ${S.corpusSize}-problem corpus` : "";
+  const checks = setupChecks();
+  $("#setup-check").innerHTML = checks.map((c) => `<span class="${c.ok ? "ok" : "todo"}">${c.ok ? "✓" : "○"} ${c.label}</span>`).join("");
+  const ready = checks.every((c) => c.ok);
+  for (const b of [$("#generate"), $("#quick-set")]) { b.disabled = false; b.classList.toggle("not-ready", !ready); }
+  $("#generate").title = ready ? `Claude researches${S.corpusSize ? ` (starting from the ${S.corpusSize}-problem corpus)` : ""}, then shows you an outline to approve` : `Add ${setupMissing().join(" and ")} first`;
+}
+
+// With something missing, the start buttons point at the missing field instead of doing nothing.
+function guardSetup() {
+  const miss = setupChecks().find((c) => !c.ok);
+  if (!miss) return true;
+  const f = $(miss.field), box = f.closest(".field") || f;
+  f.focus(); box.classList.remove("flash"); void box.offsetWidth; box.classList.add("flash");
+  clearTimeout(guardSetup.t); guardSetup.t = setTimeout(() => box.classList.remove("flash"), 1500);
+  return false;
 }
 
 async function startWeek(instructions) {
-  $("#generate").disabled = true;
+  $("#generate").disabled = $("#quick-set").disabled = true;
   await flushStatus(true);
   const date = parseWeekInput(S.savedStatus)["Date (for title)"];
   app.week = await api("/api/weeks", { method: "POST", body: { title: `HW ${date}` } });
@@ -215,7 +261,9 @@ async function startWeek(instructions) {
   send("start", "Here is this week's weekly_status.md:\n\n```markdown\n" + S.savedStatus.trim() + "\n```\n\n" +
     "Everything for this week is in its \"This week's input\" section. " + instructions);
 }
-$("#generate").onclick = () => startWeek("Follow the weekly workflow: if something required is missing or needs my confirmation, ask me now. Otherwise do the research and reply with the checkpoint.");
+
+$("#quick-set").onclick = () => { if (guardSetup()) { log("quick-set", { from: "setup" }); startWeek(QUICK_PROMPT); } };
+$("#generate").onclick = () => guardSetup() && startWeek("Follow the weekly workflow: if something required is missing or needs my confirmation, ask me now. Otherwise do the research and reply with the checkpoint.");
 
 // ======================= outline =======================
 
