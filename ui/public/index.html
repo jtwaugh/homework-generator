@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Homework</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Homework</h1>
+    <span id="week-name" class="muted"></span>
+    <ol id="strip" class="strip"></ol>
+    <div id="next" class="next"></div>
+    <span class="spacer"></span>
+    <button id="cost-badge" class="badge-btn" data-open="cost" hidden></button>
+    <button class="ghost" data-open="dag">Progress map</button>
+    <button class="ghost" data-open="corpus">Corpus</button>
+    <button class="ghost" data-open="history">History</button>
+  </header>
+
+  <div class="split">
+    <!-- LEFT: conversation -->
+    <section class="chat">
+      <div id="thread" class="thread"></div>
+      <div id="composer-wrap" class="composer" hidden>
+        <textarea id="composer" rows="3"></textarea>
+        <div class="row">
+          <span class="spacer"></span>
+          <button id="composer-stop" class="secondary" hidden>Stop</button>
+          <button id="composer-send" class="primary">Send</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT: the current deliverable -->
+    <section class="work">
+      <!-- SETUP -->
+      <div id="v-setup" class="view" hidden>
+        <h2 class="v-title">Set up the week</h2>
+        <div id="units" class="widget"></div>
+        <div class="field big">
+          <label for="f-date">Date</label>
+          <input id="f-date" placeholder="11/28/2026" />
+        </div>
+        <div class="field big">
+          <label>Topics</label>
+          <div id="f-topics"></div>
+        </div>
+        <div class="inline-fields">
+          <div class="field"><label>Disclaimer</label><div class="seg" data-key="Disclaimer"><button data-v="yes">Yes</button><button data-v="no">No</button></div></div>
+          <div class="field"><label>Graph paper</label><div class="seg" data-key="Graph paper"><button data-v="auto">Auto</button><button data-v="yes">Yes</button><button data-v="no">No</button></div></div>
+          <div class="field"><label for="f-sections">Sections</label><input id="f-sections" placeholder="3–4" size="6" /></div>
+        </div>
+        <details id="more-opts">
+          <summary>More options <span class="muted">(problem ideas, emphasize/avoid, fact sheet)</span></summary>
+          <div class="field"><label for="f-ideas">Example problem ideas</label><textarea id="f-ideas" rows="2"></textarea></div>
+          <div class="field"><label for="f-emph">Emphasize or avoid</label><textarea id="f-emph" rows="2"></textarea></div>
+          <div class="field"><label for="f-fact">Fact sheet or other file</label><textarea id="f-fact" rows="2" placeholder='paste it, or "none"'></textarea></div>
+        </details>
+        <div class="context">
+          <div id="ctx"></div>
+          <div class="row"><span class="spacer"></span><button id="view-md" class="link">view MD</button></div>
+          <div id="raw-wrap" hidden>
+            <p class="hint">The full weekly_status.md. Edits save automatically.</p>
+            <textarea id="status-raw" spellcheck="false"></textarea>
+          </div>
+        </div>
+        <div class="actions bar">
+          <span id="save-state" class="muted small"></span>
+          <span class="spacer"></span>
+          <span id="gen-hint" class="muted small"></span>
+          <button id="generate" class="primary">Generate outline →</button>
+        </div>
+      </div>
+
+      <!-- OUTLINE -->
+      <div id="v-outline" class="view" hidden>
+        <h2 class="v-title">Outline</h2>
+        <p class="v-note muted"></p>
+        <div class="latest md"></div>
+        <div class="actions bar">
+          <button id="start-over" class="ghost danger">Start over</button>
+          <span class="spacer"></span>
+          <button class="secondary alt" hidden></button>
+          <button class="primary main"></button>
+        </div>
+      </div>
+
+      <!-- FINAL -->
+      <div id="v-final" class="view" hidden>
+        <h2 class="v-title">Check and save the final</h2>
+        <p class="v-note muted"></p>
+        <div class="final-msg md" hidden></div>
+        <div class="final" hidden>
+          <ul class="checks"></ul>
+          <div class="pdf"></div>
+          <div class="status-view widget" hidden>
+            <div class="row"><h3>Changes to next week's status</h3><span class="spacer"></span><button class="link view-status-md">view MD</button></div>
+            <ul class="status-summary"></ul>
+            <pre class="diff" hidden></pre>
+          </div>
+          <details class="src"><summary>Edit LaTeX source</summary>
+            <textarea class="tex" spellcheck="false"></textarea>
+            <div class="row"><span class="spacer"></span><button class="recompile secondary">Recompile</button></div>
+          </details>
+          <div class="actions savebar bar">
+            <label class="fname-wrap">Save as <input class="fname" /></label>
+            <label class="status-opt"><input type="checkbox" class="update-status" checked /> Update next week's status</label>
+            <span class="spacer"></span>
+            <button class="secondary alt"></button>
+            <button class="primary main"></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- DONE -->
+      <div id="v-done" class="view done-card" hidden>
+        <h2 class="v-title">✓ Done for this week</h2>
+        <p class="done-text"></p>
+        <div class="actions"><span class="spacer"></span><button class="primary next-week">Start next week →</button></div>
+      </div>
+    </section>
+  </div>
+
+  <dialog id="cost-dlg" class="dlg"></dialog>
+  <dialog id="cas-dlg" class="dlg wide"></dialog>
+  <dialog id="corpus-dlg" class="dlg wide"></dialog>
+  <dialog id="dag-dlg" class="dlg full"></dialog>
+  <dialog id="history-dlg" class="dlg full">
+    <div class="h-wrap">
+      <aside class="h-list"></aside>
+      <div class="h-main">
+        <div class="row"><h2>History</h2><span class="muted small">← → between files · Esc closes</span><span class="spacer"></span><form method="dialog"><button class="ghost">✕</button></form></div>
+        <div class="h-view"></div>
+      </div>
+    </div>
+  </dialog>
+
+  <script type="module" src="/main.js"></script>
+</body>
+</html>

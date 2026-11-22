@@ -1,0 +1,14 @@
+# Allowlist: only the code, the examples and the two DAGs are tracked. Your homework (.tex), weekly_status.md,
+# project_instructions.md, curriculum_ladder.md and everything the app writes under ui/data stay local.
+/*
+!/.gitignore
+!/.mcp.json
+!/LICENSE
+!/README.md
+!/examples/
+!/ui/
+/ui/data/*
+!/ui/data/wu_dag.json
+!/ui/data/wu_methods_dag.json
+.DS_Store
+node_modules/

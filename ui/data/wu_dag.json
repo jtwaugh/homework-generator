@@ -1,0 +1,1069 @@
+{
+ "source": "https://claude.ai/artifact/Wc277jvQy91AJxjW5mKriz",
+ "importedAt": "2026-11-22",
+ "nodes": [
+  {
+   "id": "e28",
+   "title": "Pre-Algebra: parallel lines",
+   "detail": "Parallel Postulate; angles at a transversal",
+   "kind": "assumed",
+   "x": 302,
+   "y": 260,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e31",
+   "title": "§1 Basic Protocol",
+   "detail": "say what each symbol stands for; variable, constant",
+   "kind": "definition",
+   "x": 1619,
+   "y": 260,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e26",
+   "title": "Pre-Algebra: number laws",
+   "detail": "commutative, associative, distributive; fractions",
+   "kind": "assumed",
+   "x": 2092,
+   "y": 260,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e38",
+   "title": "§4 Coordinate plane",
+   "detail": "coordinates, ordered pair",
+   "kind": "definition",
+   "x": 594,
+   "y": 498,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e30",
+   "title": "Pre-Algebra: similarity",
+   "detail": "dilation; AA criterion",
+   "kind": "assumed",
+   "x": 1024,
+   "y": 498,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e35",
+   "title": "§2 Equation and solution",
+   "detail": "equation in x; solution; to solve",
+   "kind": "definition",
+   "x": 1412,
+   "y": 498,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e27",
+   "title": "Pre-Algebra: order",
+   "detail": "less than, on the number line",
+   "kind": "assumed",
+   "x": 1752,
+   "y": 498,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e32",
+   "title": "§1 Identities",
+   "detail": "(a+b)², a²−b², finite geometric series",
+   "kind": "theorem",
+   "x": 2092,
+   "y": 498,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e40",
+   "title": "§4 Slope",
+   "detail": "same for any two points on the line",
+   "kind": "definition",
+   "x": 594,
+   "y": 736,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e37",
+   "title": "§3 Linear equations, one variable",
+   "detail": "one solution, none, or every number",
+   "kind": "theorem",
+   "x": 1316,
+   "y": 736,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e36",
+   "title": "§2 Inequality in x",
+   "detail": "",
+   "kind": "definition",
+   "x": 1582,
+   "y": 736,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e51",
+   "title": "§7 Function",
+   "detail": "domain; value f(a)",
+   "kind": "definition",
+   "x": 1922,
+   "y": 736,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e33",
+   "title": "§1 Polynomials",
+   "detail": "coefficient, degree, monomial, factorization",
+   "kind": "definition",
+   "x": 2262,
+   "y": 736,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e59",
+   "title": "§10 Whole-number exponents",
+   "detail": "αⁿ and its three laws",
+   "kind": "definition",
+   "x": 2528,
+   "y": 736,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e41",
+   "title": "§4 Key Lemma",
+   "detail": "same slope through one point: same line",
+   "kind": "theorem",
+   "x": 594,
+   "y": 974,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e39",
+   "title": "§4 Graph of an equation",
+   "detail": "linear equation in two variables; solution",
+   "kind": "definition",
+   "x": 860,
+   "y": 974,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e55",
+   "title": "§9 Inequality facts (A) to (F)",
+   "detail": "adding, multiplying; absolute value",
+   "kind": "theorem",
+   "x": 1747,
+   "y": 974,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e63",
+   "title": "§11 Quadratic function",
+   "detail": "zero, minimum, maximum",
+   "kind": "definition",
+   "x": 2262,
+   "y": 974,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e34",
+   "title": "§1 Rational expressions",
+   "detail": "quotients of polynomials",
+   "kind": "definition",
+   "x": 2698,
+   "y": 974,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e29",
+   "title": "Pre-Algebra: congruence",
+   "detail": "translation, rotation, reflection; SAS, ASA",
+   "kind": "assumed",
+   "x": 254,
+   "y": 1212,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e42",
+   "title": "§4 Graph of a linear equation is a line",
+   "detail": "and every line is such a graph",
+   "kind": "theorem",
+   "x": 653,
+   "y": 1212,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e52",
+   "title": "§7 Graph of a function",
+   "detail": "points (x, f(x)); level sets",
+   "kind": "definition",
+   "x": 993,
+   "y": 1212,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e64",
+   "title": "§11 Completing the square",
+   "detail": "vertex at −b/(2a); at most two zeros",
+   "kind": "theorem",
+   "x": 2087,
+   "y": 1212,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e60",
+   "title": "§10 Roots, rational exponents",
+   "detail": "positive n-th root; α^(m/n)",
+   "kind": "definition",
+   "x": 2353,
+   "y": 1212,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e47",
+   "title": "§6 Parallel lines",
+   "detail": "parallel exactly when slopes are equal",
+   "kind": "theorem",
+   "x": 121,
+   "y": 1450,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e43",
+   "title": "§4 Equations of lines",
+   "detail": "slope and y-intercept; point-slope; x-intercept",
+   "kind": "theorem",
+   "x": 461,
+   "y": 1450,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e45",
+   "title": "§6 Linear systems",
+   "detail": "solutions = where the two graphs meet",
+   "kind": "theorem",
+   "x": 727,
+   "y": 1450,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e53",
+   "title": "§8 Linear functions",
+   "detail": "graph of ax + b is a line",
+   "kind": "theorem",
+   "x": 993,
+   "y": 1450,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e65",
+   "title": "§11 Graph is a parabola",
+   "detail": "similar to the graph of x²",
+   "kind": "theorem",
+   "x": 1333,
+   "y": 1450,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e61",
+   "title": "§10 Laws of exponents",
+   "detail": "for all rational exponents",
+   "kind": "theorem",
+   "x": 2087,
+   "y": 1450,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e66",
+   "title": "§12 Quadratic formula",
+   "detail": "",
+   "kind": "theorem",
+   "x": 2353,
+   "y": 1450,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e49",
+   "title": "§6 Perpendicular lines",
+   "detail": "product of slopes is −1",
+   "kind": "theorem",
+   "x": 0,
+   "y": 1688,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e44",
+   "title": "§5 Constant speed",
+   "detail": "speed v means distance = vt",
+   "kind": "method",
+   "x": 315,
+   "y": 1688,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e48",
+   "title": "§6 Nature of the solution",
+   "detail": "one, none, or infinitely many",
+   "kind": "theorem",
+   "x": 581,
+   "y": 1688,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e56",
+   "title": "§9 Plane separation",
+   "detail": "a line cuts the plane into two half-planes",
+   "kind": "theorem",
+   "x": 993,
+   "y": 1688,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e46",
+   "title": "§6 Elimination",
+   "detail": "equivalent systems; solve, then verify",
+   "kind": "method",
+   "x": 1434,
+   "y": 1688,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e62",
+   "title": "§10 Exponential function",
+   "detail": "2ˣ is increasing",
+   "kind": "definition",
+   "x": 2002,
+   "y": 1688,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e67",
+   "title": "§12 Roots and factors",
+   "detail": "a(x − r₁)(x − r₂); sum and product of roots",
+   "kind": "theorem",
+   "x": 2414,
+   "y": 1688,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e54",
+   "title": "§8 Proportional reasoning",
+   "detail": "constant rate; f(x) = cx",
+   "kind": "method",
+   "x": 521,
+   "y": 1926,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e57",
+   "title": "§9 Graph of a linear inequality",
+   "detail": "ax + by > c is a half-plane",
+   "kind": "theorem",
+   "x": 993,
+   "y": 1926,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e50",
+   "title": "§6 Partial fractions, Pythagorean triples",
+   "detail": "",
+   "kind": "method",
+   "x": 1534,
+   "y": 1926,
+   "w": 230,
+   "h": 88
+  },
+  {
+   "id": "e58",
+   "title": "§9 Linear programming",
+   "detail": "maximum is reached at a corner",
+   "kind": "theorem",
+   "x": 1163,
+   "y": 2164,
+   "w": 230,
+   "h": 88
+  }
+ ],
+ "edges": [
+  {
+   "from": "e46",
+   "to": "e50",
+   "prove": true,
+   "bends": [
+    "v",
+    100
+   ]
+  },
+  {
+   "from": "e34",
+   "to": "e50",
+   "prove": false,
+   "bends": [
+    "v",
+    126,
+    -4,
+    -66
+   ]
+  },
+  {
+   "from": "e51",
+   "to": "e52",
+   "prove": false,
+   "bends": [
+    "v",
+    110,
+    -457,
+    -97
+   ]
+  },
+  {
+   "from": "e39",
+   "to": "e52",
+   "prove": false,
+   "bends": [
+    "v",
+    79
+   ]
+  },
+  {
+   "from": "e52",
+   "to": "e53",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e42",
+   "to": "e53",
+   "prove": true,
+   "bends": [
+    "v",
+    79
+   ]
+  },
+  {
+   "from": "e53",
+   "to": "e54",
+   "prove": true,
+   "bends": [
+    "v",
+    93,
+    -241,
+    -102
+   ]
+  },
+  {
+   "from": "e44",
+   "to": "e54",
+   "prove": true,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e36",
+   "to": "e55",
+   "prove": false,
+   "bends": [
+    "v",
+    95
+   ]
+  },
+  {
+   "from": "e27",
+   "to": "e55",
+   "prove": false,
+   "bends": [
+    "v",
+    118,
+    -2,
+    -66
+   ]
+  },
+  {
+   "from": "e55",
+   "to": "e56",
+   "prove": true,
+   "bends": [
+    "v",
+    95,
+    -162,
+    -95
+   ]
+  },
+  {
+   "from": "e53",
+   "to": "e56",
+   "prove": true,
+   "bends": null
+  },
+  {
+   "from": "e47",
+   "to": "e56",
+   "prove": true,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e56",
+   "to": "e57",
+   "prove": true,
+   "bends": null
+  },
+  {
+   "from": "e57",
+   "to": "e58",
+   "prove": true,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e52",
+   "to": "e58",
+   "prove": false,
+   "bends": [
+    "v",
+    95,
+    187,
+    -66
+   ]
+  },
+  {
+   "from": "e46",
+   "to": "e58",
+   "prove": true,
+   "bends": [
+    "v",
+    100,
+    -132,
+    -66
+   ]
+  },
+  {
+   "from": "e26",
+   "to": "e59",
+   "prove": false,
+   "bends": [
+    "v",
+    172,
+    213,
+    -66
+   ]
+  },
+  {
+   "from": "e59",
+   "to": "e60",
+   "prove": false,
+   "bends": [
+    "v",
+    141,
+    -85,
+    -66
+   ]
+  },
+  {
+   "from": "e55",
+   "to": "e60",
+   "prove": false,
+   "bends": [
+    "v",
+    95
+   ]
+  },
+  {
+   "from": "e60",
+   "to": "e61",
+   "prove": false,
+   "bends": [
+    "v",
+    126
+   ]
+  },
+  {
+   "from": "e61",
+   "to": "e62",
+   "prove": false,
+   "bends": [
+    "v",
+    103
+   ]
+  },
+  {
+   "from": "e51",
+   "to": "e62",
+   "prove": false,
+   "bends": [
+    "v",
+    110,
+    5,
+    -76
+   ]
+  },
+  {
+   "from": "e51",
+   "to": "e63",
+   "prove": false,
+   "bends": [
+    "v",
+    110
+   ]
+  },
+  {
+   "from": "e33",
+   "to": "e63",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e63",
+   "to": "e64",
+   "prove": false,
+   "bends": [
+    "v",
+    110
+   ]
+  },
+  {
+   "from": "e32",
+   "to": "e64",
+   "prove": true,
+   "bends": [
+    "v",
+    136,
+    -3,
+    -81
+   ]
+  },
+  {
+   "from": "e64",
+   "to": "e65",
+   "prove": true,
+   "bends": [
+    "v",
+    110
+   ]
+  },
+  {
+   "from": "e52",
+   "to": "e65",
+   "prove": false,
+   "bends": [
+    "v",
+    95
+   ]
+  },
+  {
+   "from": "e30",
+   "to": "e65",
+   "prove": false,
+   "bends": [
+    "v",
+    82,
+    141,
+    -66
+   ]
+  },
+  {
+   "from": "e29",
+   "to": "e65",
+   "prove": false,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e64",
+   "to": "e66",
+   "prove": true,
+   "bends": [
+    "v",
+    110
+   ]
+  },
+  {
+   "from": "e60",
+   "to": "e66",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e66",
+   "to": "e67",
+   "prove": true,
+   "bends": [
+    "v",
+    113
+   ]
+  },
+  {
+   "from": "e33",
+   "to": "e67",
+   "prove": false,
+   "bends": [
+    "v",
+    126,
+    231,
+    -66
+   ]
+  },
+  {
+   "from": "e26",
+   "to": "e32",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e31",
+   "to": "e32",
+   "prove": false,
+   "bends": [
+    "v",
+    118
+   ]
+  },
+  {
+   "from": "e32",
+   "to": "e33",
+   "prove": false,
+   "bends": [
+    "v",
+    136
+   ]
+  },
+  {
+   "from": "e33",
+   "to": "e34",
+   "prove": false,
+   "bends": [
+    "v",
+    126
+   ]
+  },
+  {
+   "from": "e31",
+   "to": "e35",
+   "prove": false,
+   "bends": [
+    "v",
+    118
+   ]
+  },
+  {
+   "from": "e35",
+   "to": "e36",
+   "prove": false,
+   "bends": [
+    "v",
+    100
+   ]
+  },
+  {
+   "from": "e27",
+   "to": "e36",
+   "prove": false,
+   "bends": [
+    "v",
+    118
+   ]
+  },
+  {
+   "from": "e35",
+   "to": "e37",
+   "prove": false,
+   "bends": [
+    "v",
+    100
+   ]
+  },
+  {
+   "from": "e26",
+   "to": "e37",
+   "prove": false,
+   "bends": [
+    "v",
+    172,
+    -515,
+    -84
+   ]
+  },
+  {
+   "from": "e28",
+   "to": "e38",
+   "prove": false,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e38",
+   "to": "e39",
+   "prove": false,
+   "bends": [
+    "v",
+    64,
+    159,
+    -81
+   ]
+  },
+  {
+   "from": "e37",
+   "to": "e39",
+   "prove": false,
+   "bends": [
+    "v",
+    79
+   ]
+  },
+  {
+   "from": "e38",
+   "to": "e40",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e30",
+   "to": "e40",
+   "prove": false,
+   "bends": [
+    "v",
+    82
+   ]
+  },
+  {
+   "from": "e40",
+   "to": "e41",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e39",
+   "to": "e42",
+   "prove": false,
+   "bends": [
+    "v",
+    79
+   ]
+  },
+  {
+   "from": "e41",
+   "to": "e42",
+   "prove": true,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e42",
+   "to": "e43",
+   "prove": true,
+   "bends": [
+    "v",
+    79
+   ]
+  },
+  {
+   "from": "e43",
+   "to": "e44",
+   "prove": true,
+   "bends": [
+    "v",
+    74
+   ]
+  },
+  {
+   "from": "e37",
+   "to": "e44",
+   "prove": true,
+   "bends": [
+    "v",
+    79,
+    -1329,
+    -105
+   ]
+  },
+  {
+   "from": "e39",
+   "to": "e45",
+   "prove": false,
+   "bends": [
+    "v",
+    79,
+    -63,
+    -81
+   ]
+  },
+  {
+   "from": "e42",
+   "to": "e45",
+   "prove": true,
+   "bends": [
+    "v",
+    79
+   ]
+  },
+  {
+   "from": "e45",
+   "to": "e46",
+   "prove": true,
+   "bends": [
+    "v",
+    84
+   ]
+  },
+  {
+   "from": "e37",
+   "to": "e46",
+   "prove": true,
+   "bends": [
+    "v",
+    79,
+    163,
+    -86
+   ]
+  },
+  {
+   "from": "e40",
+   "to": "e47",
+   "prove": false,
+   "bends": [
+    "v",
+    64,
+    -474,
+    -97
+   ]
+  },
+  {
+   "from": "e28",
+   "to": "e47",
+   "prove": false,
+   "bends": [
+    "v",
+    64,
+    -275,
+    -97
+   ]
+  },
+  {
+   "from": "e29",
+   "to": "e47",
+   "prove": false,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e47",
+   "to": "e48",
+   "prove": true,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e43",
+   "to": "e48",
+   "prove": true,
+   "bends": [
+    "v",
+    74
+   ]
+  },
+  {
+   "from": "e45",
+   "to": "e48",
+   "prove": true,
+   "bends": [
+    "v",
+    84
+   ]
+  },
+  {
+   "from": "e47",
+   "to": "e49",
+   "prove": true,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e29",
+   "to": "e49",
+   "prove": false,
+   "bends": [
+    "v",
+    64,
+    -282,
+    -115
+   ]
+  }
+ ],
+ "texts": [
+  {
+   "text": "Wu's school algebra as a DAG",
+   "size": "title",
+   "x": 0,
+   "y": 0
+  },
+  {
+   "text": "Each block needs every block that points to it.",
+   "size": "large",
+   "x": 0,
+   "y": 84
+  },
+  {
+   "text": "Grey: assumed from Pre-Algebra. Blue: definition. Green: theorem. Yellow: method or application. Solid arrow: needed to state it. Dashed arrow: needed to prove it.\nNodes follow the sections of Wu's Introduction to School Algebra (2010 draft notes). The arrows are Claude's reading of the notes, to be checked.",
+   "size": "body",
+   "x": 0,
+   "y": 140
+  }
+ ]
+}

@@ -1,0 +1,1273 @@
+{
+ "source": "https://claude.ai/artifact/VXoFQ7VKBpfGDtzu8Lgu68",
+ "board": "methods",
+ "importedAt": "2026-11-22",
+ "nodes": [
+  {
+   "id": "e5",
+   "title": "Expand with the distributive law",
+   "detail": "§1 · rests on Pre-Algebra: number laws",
+   "kind": "method",
+   "x": 968,
+   "y": 340,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    1
+   ],
+   "restsOn": [
+    "e26"
+   ]
+  },
+  {
+   "id": "e6",
+   "title": "Collect like terms",
+   "detail": "§1 · rests on Pre-Algebra: number laws",
+   "kind": "method",
+   "x": 1452,
+   "y": 340,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    1
+   ],
+   "restsOn": [
+    "e26"
+   ]
+  },
+  {
+   "id": "e13",
+   "title": "Transpose a term",
+   "detail": "§3 · rests on Pre-Algebra: number laws",
+   "kind": "method",
+   "x": 2420,
+   "y": 340,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    3
+   ],
+   "restsOn": [
+    "e26"
+   ]
+  },
+  {
+   "id": "e44",
+   "title": "Simplify with the laws of exponents",
+   "detail": "§10 · rests on Laws of exponents",
+   "kind": "method",
+   "x": 2686,
+   "y": 340,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    10
+   ],
+   "restsOn": [
+    "e61"
+   ]
+  },
+  {
+   "id": "e8",
+   "title": "Apply an identity, forwards or backwards",
+   "detail": "§1 · rests on Identities",
+   "kind": "method",
+   "x": 362,
+   "y": 578,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    1
+   ],
+   "restsOn": [
+    "e32"
+   ]
+  },
+  {
+   "id": "e7",
+   "title": "Multiply polynomials",
+   "detail": "§1 · rests on Polynomials",
+   "kind": "method",
+   "x": 968,
+   "y": 578,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    1
+   ],
+   "restsOn": [
+    "e33"
+   ]
+  },
+  {
+   "id": "e15",
+   "title": "Solve ax = b by dividing",
+   "detail": "§3 · rests on Linear equations",
+   "kind": "method",
+   "x": 1622,
+   "y": 578,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    3
+   ],
+   "restsOn": [
+    "e37"
+   ]
+  },
+  {
+   "id": "e16",
+   "title": "Clear denominators",
+   "detail": "§3 · rests on Linear equations",
+   "kind": "method",
+   "x": 1888,
+   "y": 578,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    3
+   ],
+   "restsOn": [
+    "e37"
+   ]
+  },
+  {
+   "id": "e14",
+   "title": "Isolate the variable",
+   "detail": "§3 · rests on Linear equations",
+   "kind": "method",
+   "x": 2420,
+   "y": 578,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    3
+   ],
+   "restsOn": [
+    "e37"
+   ]
+  },
+  {
+   "id": "e45",
+   "title": "Show equality by comparing n-th powers",
+   "detail": "§10 · rests on Roots, rational exponents",
+   "kind": "method",
+   "x": 2686,
+   "y": 578,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    10
+   ],
+   "restsOn": [
+    "e60"
+   ]
+  },
+  {
+   "id": "e46",
+   "title": "Complete the square",
+   "detail": "§11 · rests on Completing the square",
+   "kind": "method",
+   "x": 11,
+   "y": 816,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    11
+   ],
+   "restsOn": [
+    "e64"
+   ]
+  },
+  {
+   "id": "e12",
+   "title": "Sum a finite geometric series",
+   "detail": "§1 · rests on Identities",
+   "kind": "method",
+   "x": 277,
+   "y": 816,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    1
+   ],
+   "restsOn": [
+    "e32"
+   ]
+  },
+  {
+   "id": "e9",
+   "title": "Factor a quadratic by trial",
+   "detail": "§1 · rests on Polynomials",
+   "kind": "method",
+   "x": 617,
+   "y": 816,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    1
+   ],
+   "restsOn": [
+    "e33"
+   ]
+  },
+  {
+   "id": "e52",
+   "title": "Divide a quadratic by x − r",
+   "detail": "§12 · rests on Roots and factors",
+   "kind": "method",
+   "x": 883,
+   "y": 816,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    12
+   ],
+   "restsOn": [
+    "e67"
+   ]
+  },
+  {
+   "id": "e36",
+   "title": "Transcribe sentence by sentence",
+   "detail": "§2 · word problems",
+   "kind": "word-problem",
+   "x": 1223,
+   "y": 816,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    2
+   ],
+   "restsOn": []
+  },
+  {
+   "id": "e17",
+   "title": "Solve a linear equation, then check",
+   "detail": "§3 · rests on Linear equations",
+   "kind": "method",
+   "x": 1888,
+   "y": 816,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    3
+   ],
+   "restsOn": [
+    "e37"
+   ]
+  },
+  {
+   "id": "e19",
+   "title": "Rewrite as y = mx + k",
+   "detail": "§4 · rests on Equations of lines",
+   "kind": "method",
+   "x": 2686,
+   "y": 816,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    4
+   ],
+   "restsOn": [
+    "e43"
+   ]
+  },
+  {
+   "id": "e20",
+   "title": "Slope from two points",
+   "detail": "§4 · rests on Slope",
+   "kind": "method",
+   "x": 3484,
+   "y": 816,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    4
+   ],
+   "restsOn": [
+    "e40"
+   ]
+  },
+  {
+   "id": "e38",
+   "title": "Solve a linear inequality",
+   "detail": "§9 · rests on Inequality facts",
+   "kind": "method",
+   "x": 3949,
+   "y": 816,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    9
+   ],
+   "restsOn": [
+    "e55"
+   ]
+  },
+  {
+   "id": "e47",
+   "title": "Find the vertex, maximum or minimum",
+   "detail": "§11 · rests on Completing the square",
+   "kind": "method",
+   "x": 0,
+   "y": 1054,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    11
+   ],
+   "restsOn": [
+    "e64"
+   ]
+  },
+  {
+   "id": "e48",
+   "title": "Solve with the quadratic formula",
+   "detail": "§12 · rests on Quadratic formula",
+   "kind": "method",
+   "x": 266,
+   "y": 1054,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    12
+   ],
+   "restsOn": [
+    "e66"
+   ]
+  },
+  {
+   "id": "e10",
+   "title": "Cancel a common factor",
+   "detail": "§1 · rests on Rational expressions",
+   "kind": "method",
+   "x": 617,
+   "y": 1054,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    1
+   ],
+   "restsOn": [
+    "e34"
+   ]
+  },
+  {
+   "id": "e37",
+   "title": "Constant rate: write f(x) = cx",
+   "detail": "§8 · rests on Proportional reasoning",
+   "kind": "word-problem",
+   "x": 1223,
+   "y": 1054,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    8
+   ],
+   "restsOn": [
+    "e54"
+   ]
+  },
+  {
+   "id": "e18",
+   "title": "Find solutions of an equation in x and y",
+   "detail": "§4 · rests on Graph of an equation",
+   "kind": "method",
+   "x": 1489,
+   "y": 1054,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    4
+   ],
+   "restsOn": [
+    "e39"
+   ]
+  },
+  {
+   "id": "e25",
+   "title": "Eliminate a variable",
+   "detail": "§6 · rests on Elimination",
+   "kind": "method",
+   "x": 1755,
+   "y": 1054,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    6
+   ],
+   "restsOn": [
+    "e46"
+   ]
+  },
+  {
+   "id": "e21",
+   "title": "Line from a slope and a point",
+   "detail": "§4 · rests on Equations of lines",
+   "kind": "method",
+   "x": 2021,
+   "y": 1054,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    4
+   ],
+   "restsOn": [
+    "e43"
+   ]
+  },
+  {
+   "id": "e23",
+   "title": "Find the intercepts",
+   "detail": "§4 · rests on Equations of lines",
+   "kind": "method",
+   "x": 2287,
+   "y": 1054,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    4
+   ],
+   "restsOn": [
+    "e43"
+   ]
+  },
+  {
+   "id": "e26",
+   "title": "Set two expressions for y equal",
+   "detail": "§6 · rests on Linear systems",
+   "kind": "method",
+   "x": 2553,
+   "y": 1054,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    6
+   ],
+   "restsOn": [
+    "e45"
+   ]
+  },
+  {
+   "id": "e40",
+   "title": "Graph a linear inequality with a test point",
+   "detail": "§9 · rests on Graph of a linear inequality",
+   "kind": "method",
+   "x": 2819,
+   "y": 1054,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    9
+   ],
+   "restsOn": [
+    "e57"
+   ]
+  },
+  {
+   "id": "e28",
+   "title": "Test for parallel lines",
+   "detail": "§6 · rests on Parallel lines",
+   "kind": "method",
+   "x": 3085,
+   "y": 1054,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    6
+   ],
+   "restsOn": [
+    "e47"
+   ]
+  },
+  {
+   "id": "e29",
+   "title": "Test for perpendicular lines",
+   "detail": "§6 · rests on Perpendicular lines",
+   "kind": "method",
+   "x": 3351,
+   "y": 1054,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    6
+   ],
+   "restsOn": [
+    "e49"
+   ]
+  },
+  {
+   "id": "e24",
+   "title": "Test whether a point is on a line",
+   "detail": "§4 · rests on Key Lemma",
+   "kind": "method",
+   "x": 3617,
+   "y": 1054,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    4
+   ],
+   "restsOn": [
+    "e41"
+   ]
+  },
+  {
+   "id": "e22",
+   "title": "Line through two points",
+   "detail": "§4 · rests on Equations of lines",
+   "kind": "method",
+   "x": 3883,
+   "y": 1054,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    4
+   ],
+   "restsOn": [
+    "e43"
+   ]
+  },
+  {
+   "id": "e39",
+   "title": "Solve an absolute-value inequality",
+   "detail": "§9 · rests on Inequality facts",
+   "kind": "method",
+   "x": 4149,
+   "y": 1054,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    9
+   ],
+   "restsOn": [
+    "e55"
+   ]
+  },
+  {
+   "id": "e50",
+   "title": "Factor from the roots",
+   "detail": "§12 · rests on Roots and factors",
+   "kind": "method",
+   "x": 255,
+   "y": 1292,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    12
+   ],
+   "restsOn": [
+    "e67"
+   ]
+  },
+  {
+   "id": "e49",
+   "title": "Count roots from b² − 4ac",
+   "detail": "§12 · rests on Quadratic formula",
+   "kind": "method",
+   "x": 521,
+   "y": 1292,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    12
+   ],
+   "restsOn": [
+    "e66"
+   ]
+  },
+  {
+   "id": "e31",
+   "title": "Compare coefficients",
+   "detail": "§6, §12 · equal polynomials",
+   "kind": "method",
+   "x": 787,
+   "y": 1292,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    6,
+    12
+   ],
+   "restsOn": []
+  },
+  {
+   "id": "e11",
+   "title": "Add, multiply, divide rational expressions",
+   "detail": "§1 · rests on Rational expressions",
+   "kind": "method",
+   "x": 1053,
+   "y": 1292,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    1
+   ],
+   "restsOn": [
+    "e34"
+   ]
+  },
+  {
+   "id": "e27",
+   "title": "Solve a system, then check",
+   "detail": "§6 · rests on Linear systems",
+   "kind": "method",
+   "x": 1955,
+   "y": 1292,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    6
+   ],
+   "restsOn": [
+    "e45"
+   ]
+  },
+  {
+   "id": "e41",
+   "title": "Graph several inequalities together",
+   "detail": "§9 · rests on Graph of a linear inequality",
+   "kind": "method",
+   "x": 2620,
+   "y": 1292,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    9
+   ],
+   "restsOn": [
+    "e57"
+   ]
+  },
+  {
+   "id": "e30",
+   "title": "Count the solutions of a system",
+   "detail": "§6 · rests on Nature of the solution",
+   "kind": "method",
+   "x": 3085,
+   "y": 1292,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    6
+   ],
+   "restsOn": [
+    "e48"
+   ]
+  },
+  {
+   "id": "e51",
+   "title": "Use the sum and product of roots",
+   "detail": "§12 · rests on Roots and factors",
+   "kind": "method",
+   "x": 521,
+   "y": 1530,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    12
+   ],
+   "restsOn": [
+    "e67"
+   ]
+  },
+  {
+   "id": "e32",
+   "title": "Split into partial fractions",
+   "detail": "§6 · rests on Partial fractions",
+   "kind": "method",
+   "x": 1053,
+   "y": 1530,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    6
+   ],
+   "restsOn": [
+    "e50"
+   ]
+  },
+  {
+   "id": "e42",
+   "title": "Find the corners of a region",
+   "detail": "§9 · rests on Linear programming",
+   "kind": "method",
+   "x": 2088,
+   "y": 1530,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    9
+   ],
+   "restsOn": [
+    "e58"
+   ]
+  },
+  {
+   "id": "e33",
+   "title": "Evaluate a function",
+   "detail": "§7 · rests on Function",
+   "kind": "method",
+   "x": 2354,
+   "y": 1530,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    7
+   ],
+   "restsOn": [
+    "e51"
+   ]
+  },
+  {
+   "id": "e43",
+   "title": "Maximize a linear function at the corners",
+   "detail": "§9 · rests on Linear programming",
+   "kind": "method",
+   "x": 2088,
+   "y": 1768,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    9
+   ],
+   "restsOn": [
+    "e58"
+   ]
+  },
+  {
+   "id": "e34",
+   "title": "Graph by plotting points",
+   "detail": "§7 · rests on Graph of a function",
+   "kind": "method",
+   "x": 2354,
+   "y": 1768,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    7
+   ],
+   "restsOn": [
+    "e52"
+   ]
+  },
+  {
+   "id": "e35",
+   "title": "Average rate of change",
+   "detail": "§8 · rests on Function",
+   "kind": "method",
+   "x": 2620,
+   "y": 1768,
+   "w": 230,
+   "h": 88,
+   "sections": [
+    8
+   ],
+   "restsOn": [
+    "e51"
+   ]
+  }
+ ],
+ "edges": [
+  {
+   "from": "e44",
+   "to": "e45",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e8",
+   "to": "e46",
+   "prove": false,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e46",
+   "to": "e47",
+   "prove": false,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e46",
+   "to": "e48",
+   "prove": false,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e48",
+   "to": "e49",
+   "prove": false,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e48",
+   "to": "e50",
+   "prove": false,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e50",
+   "to": "e51",
+   "prove": false,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e31",
+   "to": "e51",
+   "prove": false,
+   "bends": [
+    "v",
+    100
+   ]
+  },
+  {
+   "from": "e7",
+   "to": "e52",
+   "prove": false,
+   "bends": [
+    "v",
+    100
+   ]
+  },
+  {
+   "from": "e5",
+   "to": "e7",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e6",
+   "to": "e7",
+   "prove": false,
+   "bends": [
+    "v",
+    172
+   ]
+  },
+  {
+   "from": "e5",
+   "to": "e8",
+   "prove": false,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e7",
+   "to": "e9",
+   "prove": false,
+   "bends": [
+    "v",
+    100
+   ]
+  },
+  {
+   "from": "e8",
+   "to": "e10",
+   "prove": false,
+   "bends": [
+    "v",
+    64,
+    96,
+    -66
+   ]
+  },
+  {
+   "from": "e9",
+   "to": "e10",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e10",
+   "to": "e11",
+   "prove": false,
+   "bends": [
+    "v",
+    86
+   ]
+  },
+  {
+   "from": "e7",
+   "to": "e11",
+   "prove": false,
+   "bends": [
+    "v",
+    100,
+    66,
+    -66
+   ]
+  },
+  {
+   "from": "e8",
+   "to": "e12",
+   "prove": false,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e13",
+   "to": "e14",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e6",
+   "to": "e14",
+   "prove": false,
+   "bends": [
+    "v",
+    172
+   ]
+  },
+  {
+   "from": "e5",
+   "to": "e16",
+   "prove": false,
+   "bends": [
+    "v",
+    64
+   ]
+  },
+  {
+   "from": "e14",
+   "to": "e17",
+   "prove": false,
+   "bends": [
+    "v",
+    172
+   ]
+  },
+  {
+   "from": "e15",
+   "to": "e17",
+   "prove": false,
+   "bends": [
+    "v",
+    136
+   ]
+  },
+  {
+   "from": "e16",
+   "to": "e17",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e17",
+   "to": "e18",
+   "prove": false,
+   "bends": [
+    "v",
+    86
+   ]
+  },
+  {
+   "from": "e14",
+   "to": "e19",
+   "prove": false,
+   "bends": [
+    "v",
+    172
+   ]
+  },
+  {
+   "from": "e17",
+   "to": "e21",
+   "prove": false,
+   "bends": [
+    "v",
+    86
+   ]
+  },
+  {
+   "from": "e20",
+   "to": "e22",
+   "prove": false,
+   "bends": [
+    "v",
+    129
+   ]
+  },
+  {
+   "from": "e19",
+   "to": "e23",
+   "prove": false,
+   "bends": [
+    "v",
+    107
+   ]
+  },
+  {
+   "from": "e17",
+   "to": "e23",
+   "prove": false,
+   "bends": [
+    "v",
+    86
+   ]
+  },
+  {
+   "from": "e20",
+   "to": "e24",
+   "prove": false,
+   "bends": [
+    "v",
+    129
+   ]
+  },
+  {
+   "from": "e17",
+   "to": "e25",
+   "prove": false,
+   "bends": [
+    "v",
+    86
+   ]
+  },
+  {
+   "from": "e19",
+   "to": "e26",
+   "prove": false,
+   "bends": [
+    "v",
+    107
+   ]
+  },
+  {
+   "from": "e17",
+   "to": "e26",
+   "prove": false,
+   "bends": [
+    "v",
+    86
+   ]
+  },
+  {
+   "from": "e25",
+   "to": "e27",
+   "prove": false,
+   "bends": [
+    "v",
+    107
+   ]
+  },
+  {
+   "from": "e26",
+   "to": "e27",
+   "prove": false,
+   "bends": [
+    "v",
+    129
+   ]
+  },
+  {
+   "from": "e20",
+   "to": "e28",
+   "prove": false,
+   "bends": [
+    "v",
+    129
+   ]
+  },
+  {
+   "from": "e19",
+   "to": "e28",
+   "prove": false,
+   "bends": [
+    "v",
+    107
+   ]
+  },
+  {
+   "from": "e20",
+   "to": "e29",
+   "prove": false,
+   "bends": [
+    "v",
+    129
+   ]
+  },
+  {
+   "from": "e19",
+   "to": "e29",
+   "prove": false,
+   "bends": [
+    "v",
+    107
+   ]
+  },
+  {
+   "from": "e28",
+   "to": "e30",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e11",
+   "to": "e32",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e31",
+   "to": "e32",
+   "prove": false,
+   "bends": [
+    "v",
+    100
+   ]
+  },
+  {
+   "from": "e27",
+   "to": "e32",
+   "prove": false,
+   "bends": [
+    "v",
+    136
+   ]
+  },
+  {
+   "from": "e33",
+   "to": "e34",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e33",
+   "to": "e35",
+   "prove": false,
+   "bends": [
+    "v",
+    118
+   ]
+  },
+  {
+   "from": "e36",
+   "to": "e37",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e17",
+   "to": "e37",
+   "prove": false,
+   "bends": [
+    "v",
+    86
+   ]
+  },
+  {
+   "from": "e14",
+   "to": "e38",
+   "prove": false,
+   "bends": [
+    "v",
+    172
+   ]
+  },
+  {
+   "from": "e38",
+   "to": "e39",
+   "prove": false,
+   "bends": [
+    "v",
+    150
+   ]
+  },
+  {
+   "from": "e19",
+   "to": "e40",
+   "prove": false,
+   "bends": [
+    "v",
+    107
+   ]
+  },
+  {
+   "from": "e40",
+   "to": "e41",
+   "prove": false,
+   "bends": [
+    "v",
+    150
+   ]
+  },
+  {
+   "from": "e41",
+   "to": "e42",
+   "prove": false,
+   "bends": [
+    "v",
+    172
+   ]
+  },
+  {
+   "from": "e27",
+   "to": "e42",
+   "prove": false,
+   "bends": [
+    "v",
+    136
+   ]
+  },
+  {
+   "from": "e42",
+   "to": "e43",
+   "prove": false,
+   "bends": null
+  },
+  {
+   "from": "e33",
+   "to": "e43",
+   "prove": false,
+   "bends": [
+    "v",
+    118
+   ]
+  }
+ ],
+ "texts": [
+  {
+   "text": "Wu's algebra: methods DAG",
+   "size": "title",
+   "x": 0,
+   "y": 0
+  },
+  {
+   "text": "Each method uses the methods that point to it.",
+   "size": "large",
+   "x": 0,
+   "y": 84
+  },
+  {
+   "text": "Yellow: a method, with Wu's section and the block on the content board that justifies it. Grey: word-problem methods, which your sets ban. Arrow: used as a sub-step.\nDrafted by Claude from summaries of Wu's Introduction to School Algebra (2010 draft notes), to be checked. Wu's notes also use cross-multiplication in §3; it is left out here.",
+   "size": "body",
+   "x": 0,
+   "y": 140,
+   "wrap": 1500
+  }
+ ]
+}

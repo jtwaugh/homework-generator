@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "hw-ui": {
+      "command": "node",
+      "args": ["ui/dev/harness.mjs", "mcp"],
+      "env": { "APP_URL": "http://localhost:4747/" }
+    }
+  }
+}
