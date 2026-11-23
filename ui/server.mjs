@@ -368,7 +368,11 @@ async function runClaude(week, prompt, systemPrompt, onEvent, stage = "outline")
   if (BUDGET) args.push("--max-budget-usd", BUDGET);
   if (st.effort) args.push("--effort", st.effort);
   if (week.started) args.push("--resume", week.sessionId);
-  else args.push("--session-id", week.sessionId, "--system-prompt", systemPrompt);
+  else {
+    // A run that died before replying may still have created this session; a retry needs a fresh id.
+    week.sessionId = randomUUID();
+    args.push("--session-id", week.sessionId, "--system-prompt", systemPrompt);
+  }
   return spawnClaude({ key: week.id, args, prompt, cwd: CLAUDE_CWD, onEvent });
 }
 
@@ -858,6 +862,7 @@ async function handle(req, res) {
         logEvent("stage", "dry-run", { week: id, kind, plan });
         return send(res, 200, { dryRun: true, plan, promptChars: prompt.length, prompt: clip(prompt, 20000) });
       }
+      if (kind === "start" && !week.started) week.messages = []; // a retry replaces the start that got no reply
       week.messages.push(userMsg);
       await saveWeek(week);
 
