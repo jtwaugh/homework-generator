@@ -13,6 +13,32 @@ const KIND_LABEL = { assumed: "Assumed (pre-algebra)", definition: "Definition",
 
 // ---------- pure ----------
 
+// Lesson plan: every U unit in curriculum_ladder.md, in ladder order, grouped by the ladder's "## " sections,
+// with its status and note from weekly_status.md and any prerequisite not yet taught (only flagged once the
+// unit itself is taught or current, as in the Create Homework units widget).
+export function lessonPlan(ladderMd, statusMd) {
+  const { map } = parseUnitStatuses(statusMd || "");
+  const st = (id) => map[id]?.status || "FUTURE";
+  const ok = (id) => ["TAUGHT", "CURRENT"].includes(st(id));
+  const groups = []; let group = null;
+  for (const line of (ladderMd || "").split("\n")) {
+    const h = line.match(/^##\s+(.*)$/);
+    if (h) { group = { title: h[1].trim(), units: [] }; groups.push(group); continue; }
+    const u = line.match(/^-\s+(U\d\d)\s+([^.]+)\.(.*)$/);
+    if (!u) continue;
+    if (!group) { group = { title: "", units: [] }; groups.push(group); }
+    const rest = u[3].trim();
+    const needs = (rest.match(/Needs\s+([^.]+)\./) || [, ""])[1].match(/U\d\d|M\d|F\d/g) || [];
+    const stance = (rest.match(/\b(Formal|Informal[^.]*)\./) || [, ""])[1];
+    const about = rest.split(/\s*Needs\s/)[0].trim();
+    const s = st(u[1]);
+    group.units.push({ id: u[1], name: u[2].trim(), about, needs, stance, status: s, note: (map[u[1]]?.note || "").replace(/^\(|\)$/g, ""),
+      missing: ok(u[1]) ? needs.filter((n) => !ok(n)) : [] });
+  }
+  return groups.filter((g) => g.units.length);
+}
+
+
 export const keyOf = (board, id) => (board === "methods" ? "m:" + id : id);
 
 // Right-angle route for an edge, following the board's `bends` format (see ui/scripts/import-dag.mjs):
@@ -122,7 +148,8 @@ export function ladderHints(statusMd, ladderToWu, guess, overrides) {
 
 const D = { data: null, mode: "content", sel: null, view: null, poll: null, side: "info", dragging: null, run: null, runs: {} };
 Object.defineProperty(D, "board", { get: () => (D.mode === "methods" ? "methods" : "content"), enumerable: true });
-const MODE_LABEL = { content: "Content", methods: "Methods", runs: "Inference history" };
+const MODE_LABEL = { content: "Content", methods: "Methods", plan: "Lesson plan", runs: "Inference history" };
+const STATUS_LABEL = { TAUGHT: "Taught", CURRENT: "Current", NEXT: "Next", FUTURE: "Future" };
 
 function bbox(dag) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -282,6 +309,24 @@ async function pickRun(id) {
   }
 }
 
+function planHtml() {
+  const groups = lessonPlan(S.ladder, S.status);
+  if (!groups.length) return '<p class="muted plan-empty">No U units found in curriculum_ladder.md.</p>';
+  return `<div class="plan">${groups.map((g) => `
+    <section class="plan-group">${g.title ? `<h3>${esc(g.title)}</h3>` : ""}
+      <ol class="plan-list">${g.units.map((u) => `
+        <li class="plan-unit s-${u.status}" data-unit="${u.id}">
+          <span class="chip s-${u.status}${u.note && u.status === "TAUGHT" ? " partial" : ""}${u.missing.length ? " warn" : ""}">${u.id}</span>
+          <div class="plan-body">
+            <div class="plan-title"><b>${esc(u.name)}</b> <span class="st s-${u.status}">${STATUS_LABEL[u.status]}</span>${u.stance ? ` <span class="muted small">${esc(u.stance)}</span>` : ""}</div>
+            ${u.about ? `<div class="plan-about">${esc(u.about)}</div>` : ""}
+            ${u.note ? `<div class="plan-note small">${esc(u.note)}</div>` : ""}
+            ${u.needs.length ? `<div class="muted small">Needs ${u.needs.map(esc).join(", ")}${u.missing.length ? ` · <span class="bad-text">${u.missing.map(esc).join(", ")} not taught yet</span>` : ""}</div>` : ""}
+          </div>
+        </li>`).join("")}</ol>
+    </section>`).join("")}</div>`;
+}
+
 function runsHtml() {
   return `<div class="h-wrap dag-runs"><aside class="h-list">${runsListHtml()}</aside><div class="h-main run-main">${runDetailHtml()}</div></div>`;
 }
@@ -290,6 +335,12 @@ function runsHtml() {
 
 function headHtml() {
   const job = D.data.job, running = job?.running;
+  if (D.mode === "plan") {
+    const us = lessonPlan(S.ladder, S.status).flatMap((g) => g.units), n = (s) => us.filter((u) => u.status === s).length;
+    return `<h2>Progress map <span class="muted">· Lesson plan</span></h2>
+      <span class="dag-count"><b>${n("TAUGHT")} of ${us.length} taught</b> · ${n("CURRENT")} current${n("NEXT") ? ` · ${n("NEXT")} next` : ""}</span>
+      <span class="spacer"></span><span class="muted small">From curriculum_ladder.md and weekly_status.md · change statuses on Create Homework</span>`;
+  }
   const count = D.mode === "runs" ? "" : (() => { const c = counts(curDag(), statesNow()); return `<span class="dag-count"><b>${c.done} of ${c.total} done</b>${c.partial ? ` · ${c.partial} partly` : ""} · ${c.ready} ready</span>`; })();
   return `<h2>Progress map <span class="muted">· ${esc(MODE_LABEL[D.mode])}</span></h2>
     ${count}
@@ -306,6 +357,7 @@ function syncSidebar() {
 function drawAll() {
   const d = $("#p-dag");
   syncSidebar();
+  if (D.mode === "plan") { d.innerHTML = `<div class="dag-head row">${headHtml()}</div>${planHtml()}`; return; }
   if (!D.data) { d.innerHTML = `<p class="muted">Loading…</p>`; return; }
   if (!curDag()) { d.innerHTML = `<div class="row dag-head"><h2>Progress map</h2></div><p class="err">ui/data/wu_dag.json is missing.</p>`; return; }
   if (D.mode === "runs") {

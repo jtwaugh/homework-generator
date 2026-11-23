@@ -88,6 +88,8 @@ try {
   await step("Progress Map tab", "ui_click", sel(".nav-item[data-page=dag]"), /ui: page from=\w+ to=dag/, /GET \/api\/dag status=200/);
   await step("Methods sub-item", "ui_click", sel("[data-dag=methods]"), /GET \/api\/dag status=200/);
   await step("shows the methods board", "ui_eval", { js: "__hw.summary().dag.board" }, /methods/);
+  await step("Lesson plan sub-item", "ui_click", sel("[data-dag=plan]"), /GET \/api\/dag status=200/);
+  await step("lists the U units", "ui_eval", { js: "[...document.querySelectorAll('#p-dag .plan-unit')].map((x) => x.dataset.unit).join(' ')" }, /U01 .*U24/);
   await step("Inference history sub-item", "ui_click", sel("[data-dag=runs]"), /GET \/api\/dag status=200/);
   await step("lists runs", "ui_eval", { js: "document.querySelector('#p-dag .dag-runs') ? 'runs view' : 'missing'" }, /runs view/);
   await step("Content sub-item", "ui_click", sel("[data-dag=content]"), /GET \/api\/dag status=200/);

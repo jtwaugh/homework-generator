@@ -499,3 +499,17 @@ body { display: grid; grid-template-columns: 208px 1fr; overflow: hidden; }
 .cot summary { cursor: pointer; font-weight: 600; font-size: 12.5px; }
 .cot .md pre { max-height: 320px; overflow: auto; font-size: 11.5px; }
 .cot-json { margin-top: 6px; } .cot-json pre { max-height: 320px; overflow: auto; font-size: 11.5px; background: #f8f7f3; padding: 8px; border-radius: 6px; }
+
+/* progress map: lesson plan (every U unit with its status) */
+.plan { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px 28px; }
+.plan-group h3 { margin: 14px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.plan-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-width: 900px; }
+.plan-unit { display: flex; gap: 12px; align-items: flex-start; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.plan-unit.s-CURRENT { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.plan-unit.s-FUTURE { background: #fbfaf7; }
+.plan-unit .chip { flex: none; margin-top: 1px; }
+.plan-body { display: grid; gap: 3px; min-width: 0; }
+.plan-title .st { margin-left: 4px; }
+.plan-about { font-size: 13px; color: #4a4944; }
+.plan-note { color: var(--accent); }
+.plan-empty { padding: 18px; }

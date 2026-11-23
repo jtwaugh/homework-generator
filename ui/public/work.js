@@ -220,7 +220,7 @@ function renderSetup() {
   if (!vals["Date (for title)"] && S.texFiles && document.activeElement !== $("#f-date")) return setField("Date (for title)", nextSetDate(S.texFiles, ""));
   for (const [id, key] of Object.entries(FIELD_IDS)) { const f = $("#" + id); if (document.activeElement !== f) f.value = vals[key] || ""; }
   topics.sync();
-  $$(".seg").forEach((seg) => {
+  $$("#v-setup .seg").forEach((seg) => {
     const btns = $$("button", seg);
     let v = (vals[seg.dataset.key] || seg.dataset.default).toLowerCase().trim();
     if (seg.dataset.other && (setupUI.sectionsOther || !btns.some((b) => b.dataset.v === v))) { v = "other"; setupUI.sectionsOther = true; }

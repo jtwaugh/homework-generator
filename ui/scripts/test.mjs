@@ -11,7 +11,7 @@ import { decideAuth } from "../lib/auth.mjs";
 import { hashPassword, verifyPassword, validHash, rateLimiter, parseCookies } from "../lib/login.mjs";
 import { stageFor, modelFor, assumptionsOf, STAGES } from "../server.mjs";
 import { parseTopics, serializeTopics, historyTopics } from "../public/topics.js";
-import { computeStates, statusText } from "../public/dag.js";
+import { computeStates, statusText, lessonPlan } from "../public/dag.js";
 import { S, lintTex, nextSetDate } from "../public/lib.js";
 import { parseTags } from "../lib/tagger.mjs";
 
@@ -58,6 +58,17 @@ test("quick set: next date is a week after the last saved set, never in the past
   assert.equal(nextSetDate(files, "", new Date(2026, 11, 20)), "12/26/2026");
 });
 
+test("lesson plan: every U unit in ladder order, grouped by section, with status and unmet needs", () => {
+  const ladder = "## Ordered units\n- U01 Fractions. Patterns. Formal.\n- U02 Lines. Slope. Needs U01. Formal.\n## Middle block\n- M1 Absolute value. Needs U01. Formal.\n## Later units\n- U19 Polynomials. Needs U03. Informal for proofs.\n";
+  const status = "TAUGHT: U01\nCURRENT: U19 (positive exponents only)\nNEXT: U02\nFUTURE: everything else";
+  const g = lessonPlan(ladder, status);
+  assert.deepEqual(g.map((x) => x.title), ["Ordered units", "Later units"], "sections without U units are dropped");
+  assert.deepEqual(g.flatMap((x) => x.units.map((u) => [u.id, u.status])), [["U01", "TAUGHT"], ["U02", "NEXT"], ["U19", "CURRENT"]]);
+  const u19 = g[1].units[0];
+  assert.equal(u19.note, "positive exponents only"); assert.equal(u19.stance, "Informal for proofs"); assert.deepEqual(u19.missing, ["U03"]);
+  assert.deepEqual(g[0].units[1].missing, [], "a unit not yet started flags nothing");
+  assert.equal(g[0].units[0].about, "Patterns. Formal.");
+});
 test("topic chips round-trip through weekly_status text", () => {
   const chips = [{ text: "Systems of linear inequalities", id: "U14" }, { text: "harder line questions", id: null }, { text: "Substitution", id: "m:e12" }];
   assert.deepEqual(parseTopics(serializeTopics(chips)), chips);
