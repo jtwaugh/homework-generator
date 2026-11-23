@@ -37,6 +37,8 @@ export const problemId = (tex) => "p" + createHash("sha256").update(normTex(tex)
 
 const asList = (x) => (Array.isArray(x) ? x : x ? String(x).split(/[,;]\s*/) : []).map((s) => String(s).trim()).filter(Boolean);
 
+export const sameAnswer = (a, b) => String(a ?? "").replace(/\s+/g, "") === String(b ?? "").replace(/\s+/g, "");
+
 // Add or merge problems. Returns { added: [ids], merged: [ids] }.
 export function addProblems(items, incoming, { file } = {}) {
   const byId = new Map(items.map((p) => [p.id, p]));
@@ -56,7 +58,8 @@ export function addProblems(items, incoming, { file } = {}) {
       old.wuNodes = [...new Set([...(old.wuNodes || []), ...wuNodes])];
       old.tags = [...new Set([...old.tags, ...tags])];
       if (!old.answer && raw.answer) old.answer = String(raw.answer);
-      if (raw.casVerified) old.casVerified = true;
+      // A verification only carries over to the same problem with the same answer (not to a near-copy).
+      if (raw.casVerified && old.id === id && (!old.answer || sameAnswer(old.answer, raw.answer))) old.casVerified = true;
       if (raw.status === "used" && old.status === "candidate") old.status = "used";
       if (raw.usedOn) old.usedOn = [...new Set([...(old.usedOn || []), ...asList(raw.usedOn)])].sort();
       merged.push(old.id);
@@ -215,13 +218,14 @@ export function formatHits(hits) {
   return hits.map(({ p, why }) => {
     const used = p.usedOn?.length ? `used ${p.usedOn.join(", ")}${why.recent ? " (recent: adapt, don't reuse)" : ""}` : "unused";
     const src = p.source?.file || p.source?.url || p.source?.kind;
-    return `- [${p.id}] ${p.units.join(",") || "no unit"} · ${p.status}${p.status === "favorite" ? " ★" : ""} · ${used} · ${src}${p.context ? ` · ${p.context}` : ""}\n  ${p.tex.replace(/\s*\n\s*/g, " ").slice(0, 400)}${p.answer ? `\n  answer: ${p.answer.slice(0, 200)}` : ""}`;
+    return `- [${p.id}] ${p.units.join(",") || "no unit"} · ${p.status}${p.status === "favorite" ? " ★" : ""}${p.casVerified ? " · cas ✓" : ""} · ${used} · ${src}${p.context ? ` · ${p.context}` : ""}\n  ${p.tex.replace(/\s*\n\s*/g, " ").slice(0, 400)}${p.answer ? `\n  answer: ${p.answer.slice(0, 200)}` : ""}`;
   }).join("\n");
 }
 
 export function patchProblem(items, id, patch, { file } = {}) {
   const p = items.find((x) => x.id === id);
   if (!p) return null;
+  if ("answer" in patch && !sameAnswer(p.answer, patch.answer)) p.casVerified = false; // the check was for the old answer
   for (const k of ["status", "units", "tags", "wuNodes", "answer"]) if (k in patch) p[k] = patch[k];
   if (file !== false) saveCorpus(items, file);
   return p;

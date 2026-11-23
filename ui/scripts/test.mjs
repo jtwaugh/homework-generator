@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { searchCorpus, splitTex, problemId, addProblems, attachTex, shapeSim, coverage } from "../lib/corpus.mjs";
+import { searchCorpus, splitTex, problemId, addProblems, attachTex, shapeSim, coverage, patchProblem, formatHits } from "../lib/corpus.mjs";
 import { buildBrief, briefText } from "../lib/preflight.mjs";
 import { decideAuth } from "../lib/auth.mjs";
 import { hashPassword, verifyPassword, validHash, rateLimiter, parseCookies } from "../lib/login.mjs";
@@ -39,6 +39,18 @@ test("corpus search: favorites first, rejected never returned", () => {
 test("corpus save merges duplicates", () => {
   const a = addProblems(structuredClone(items), [{ tex: "Solve the system $x + y = 5$, $x - y = 1$.", units: ["U14"] }, { tex: "Brand new $y=3$", units: ["U01"] }], { file: false });
   assert.equal(a.added.length, 1); assert.equal(a.merged.length, 1);
+});
+test("CAS verification is cached per problem and answer", () => {
+  const list = [];
+  addProblems(list, [{ tex: "Solve $2x = 6$.", answer: "x = 3" }], { file: false });
+  addProblems(list, [{ tex: "Solve $2x = 6$.", answer: "x=3", casVerified: true }], { file: false });
+  assert.equal(list[0].casVerified, true, "same problem, same answer (modulo spaces) picks up the check");
+  assert.match(formatHits([{ p: { ...list[0], units: [] }, why: {} }]), /cas ✓/);
+  addProblems(list, [{ tex: "Solve $2x = 8$.", answer: "x = 4" }], { file: false });
+  addProblems(list, [{ tex: "Solve $2x = 8$.", answer: "x = 5", casVerified: true }], { file: false });
+  assert.equal(list[1].casVerified, false, "a check of a different answer doesn't carry over");
+  patchProblem(list, list[0].id, { answer: "x = 4" }, { file: false });
+  assert.equal(list[0].casVerified, false, "editing the answer drops the cached check");
 });
 test("splitTex finds the problems in a homework file", () => {
   const items = splitTex(fs.readFileSync(path.join(HERE, "fixtures", "hw_12_5_2026.tex"), "utf8"));

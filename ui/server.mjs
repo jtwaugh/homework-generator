@@ -12,7 +12,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { tagProblems, needsTags, TAG_MODEL } from "./lib/tagger.mjs";
-import { loadCorpus, saveCorpus, searchCorpus, formatHits, addProblems, patchProblem, dateFromName, tokenize, attachTex, problemId, nearDuplicates } from "./lib/corpus.mjs";
+import { loadCorpus, saveCorpus, searchCorpus, formatHits, addProblems, patchProblem, dateFromName, tokenize, attachTex, problemId, nearDuplicates, sameAnswer } from "./lib/corpus.mjs";
 import { ctx, loadCorpusDb, saveStatus, latestStatus, statusHistory, recordAssignment, setActiveEnrollment } from "./lib/store.mjs";
 import { closeDb, getSetting, setSetting } from "./lib/db.mjs";
 import * as Cur from "./lib/curriculum.mjs";
@@ -62,10 +62,9 @@ export const STAGES = {
   outline: { model: null, tools: "WebSearch,WebFetch", allowed: ALLOWED_TOOLS, why: "choose, adapt and vet problems; write the checkpoint" },
   final: { model: process.env.HW_WRITE_MODEL || MODELS.sonnet, tools: "", allowed: "mcp__hw__cas,mcp__hw__corpus_search", effort: "medium", why: "write the approved outline out as .tex + status + manifest" },
   fix: { model: process.env.HW_FIX_MODEL || MODELS.haiku, tools: "", allowed: "mcp__hw__cas", effort: "low", why: "compile/lint fixes" },
-  verify: { model: process.env.HW_CHECK_MODEL || MODELS.haiku, tools: "", allowed: "mcp__hw__cas", effort: "low", why: "check every answer with sympy" },
 };
 const DRY_STAGES = process.env.HW_DRY_STAGES === "1";
-// HW_STAGES_OFF=research,verify turns the extra stages off (e.g. to compare cost).
+// HW_STAGES_OFF=research turns the extra stages off (e.g. to compare cost).
 const STAGES_OFF = new Set((process.env.HW_STAGES_OFF || "").split(",").map((x) => x.trim()).filter(Boolean));
 // Which stage handles a teacher message. Outline edits stay on the main model; anything after the final is a rewrite.
 export function stageFor(kind, week) {
@@ -371,7 +370,7 @@ async function buildSystemPrompt(c = C()) {
     "- There is no opening question round in this app. Never reply with only questions, and never stop before the checkpoint. Whenever the workflow says to ask the teacher (missing fields, unit confirmations, definitions for a new unit, edge cases), make the most conservative reasonable choice, use it, and list it in the checkpoint: under **Assumptions** (one line each) for choices you made, and under **Needs your call** (at most 5) for the ones the teacher should rule on. For a new unit's definitions, use the standard precise definition in Wu's style, state it in the checkpoint, and avoid its edge cases. The checkpoint is the teacher's only chance to correct you, so make it complete.",
     "- Treat the brief's decisions and standing rulings as the teacher's answers. Never ask about them again.",
     "- Tools: web search, web fetch, and the app's own tools `cas`, `corpus_search` and `corpus_add`. There is no bash tool. The app compiles your .tex with Tectonic and will send you any errors or overfull-box warnings. In the final step, write \"not compiled (the app will compile it)\".",
-    "- A separate checker re-verifies every answer with sympy after the final, and sends you any failures. Still use `cas` while vetting candidates for the checkpoint, and to verify every answer key entry in the final: substitute solutions back, check for extraneous roots, confirm factorizations. Batch the problems into a few calls that print one line per problem. In the final reply say how many answers you checked with the CAS.",
+    "- Use `cas` while vetting candidates for the checkpoint, and in the final to verify every answer-key entry that isn't already verified: substitute solutions back, check for extraneous roots, confirm factorizations. Corpus problems marked `cas ✓` already have a CAS-checked answer: if you use one verbatim (same text, same answer), don't re-check it, just set casVerified true in the manifest. Adapted, web and new problems still need checking. Batch the problems into a few calls that print one line per problem. In the final reply say how many answers you checked with the CAS and how many came verified from the corpus.",
     "- Problem corpus: the teacher's cache of problems from past sets, earlier research and favorites. The first message includes the best matches for this week. Draw from the corpus first, and adapt rather than copy problems marked used (especially recent ones). Use `corpus_search` for more. Web search only for sections where the corpus has fewer than 3 suitable candidates. Whenever you find good problems on the web, call `corpus_add` with them, including ones you won't use this week. In the checkpoint, say which problems came from the corpus (by id) and which came from the web.",
     "- In the final step put the complete .tex in exactly one ```latex fenced block, and the complete updated weekly_status.md in exactly one ```markdown fenced block. The app extracts both.",
     "- After the .tex and status blocks, add one ```json fenced block: a problem manifest, an array with one object per \\item in the set, in the order they appear in the .tex: {\"part\": 1, \"n\": 3, \"answer\": \"...\", \"units\": [\"U14\"], \"source\": \"corpus:<id>\" or \"web:<url>\" or \"new\", \"casVerified\": true}. Don't repeat the problem text: the app reads it from the .tex. The app saves it to the corpus when the teacher saves the set.",
@@ -548,45 +547,12 @@ function researchNotes(res) {
     (r.rejected?.length ? "\nRejected: " + r.rejected.map((x) => `${x.url}: ${x.reason}`).join("; ") : "");
 }
 
-const VERIFY_SCHEMA = {
-  type: "object", required: ["checked", "failures"],
-  properties: {
-    checked: { type: "number" },
-    failures: { type: "array", items: { type: "object", required: ["problem", "reason"], properties: { problem: { type: "string", description: "e.g. P2.3" }, reason: { type: "string" }, expected: { type: "string" } } } },
-    unchecked: { type: "array", items: { type: "string" }, description: "problems that can't be checked by computation (proofs, graphs)" },
-  },
-};
-// Independent answer check: a cheap model turns the manifest into one sympy script, runs it with `cas`, and reports.
-export async function runVerify(week, text, onEvent) {
-  const tex = extractBlocks(text, "latex")[0] || extractBlocks(text, "tex")[0];
-  if (!tex) return null;
-  const manifest = extractBlocks(text, "json").reverse().find((b) => { try { return Array.isArray(JSON.parse(b)); } catch { return false; } }) || "[]";
-  const prompt = [
-    "Check the answer key of this homework set by computation. Write ONE Python program (sympy) that, for every problem with a computable answer, re-derives the answer from the printed problem and compares it with the manifest. Print one line per problem: 'P<part>.<n> ok' or 'P<part>.<n> FAIL <why>'. Run it with the cas tool (fix and re-run if it crashes). Do not trust the manifest; work from the problem text. Then return the structured result: failures only for real mismatches.",
-    "", "## Manifest", manifest, "", "## The set", "```latex", tex, "```",
-  ].join("\n");
-  let model = STAGES.verify.model;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const r = await callAgent({ key: week.id, weekId: week.id, model, messages: [{ role: "user", content: prompt }], toolNames: allowedOf(STAGES.verify),
-      effort: STAGES.verify.effort, schema: VERIFY_SCHEMA, onEvent: (e) => e.type !== "text" && onEvent(e) });
-    const usedCas = r.tools.some((t) => /cas$/.test(t.name) && t.ok);
-    if (r.ok && r.structured && Array.isArray(r.structured.failures) && usedCas) {
-      logEvent("stage", "verify-done", { week: week.id, model, checked: r.structured.checked, failures: r.structured.failures.length });
-      return { model, usage: r.usage, tools: r.tools, ...r.structured };
-    }
-    logEvent("stage", "verify-retry", { week: week.id, model, error: r.error || (usedCas ? "bad output" : "did not run the CAS") });
-    if (!NEXT_TIER[model]) return { model, usage: r.usage, tools: r.tools, error: r.error || "checker failed" };
-    model = NEXT_TIER[model];
-  }
-}
-
 // What each stage would do for a message, without running anything (logged; returned by HW_DRY_STAGES=1).
 function planStages(kind, week, brief) {
   const stage = stageFor(kind, week);
   const out = [];
   if (kind === "start") out.push({ stage: "research", model: STAGES.research.model, skip: !brief.needsResearch.length, why: brief.needsResearch.length ? `corpus thin for ${brief.needsResearch.join(", ")}` : "corpus covers every section" });
   out.push({ stage, model: modelFor(stage, week), why: STAGES[stage].why });
-  if (stage === "final" || stage === "fix") out.push({ stage: "verify", model: STAGES.verify.model, why: STAGES.verify.why });
   return out;
 }
 
@@ -613,6 +579,11 @@ function saveManifest(week, name, tex) {
   if (!list.length) return { added: 0, merged: 0, total: 0 };
   const date = dateFromName(name) || new Date().toISOString().slice(0, 10);
   const items = loadCorpus();
+  // Cached verification: a problem used verbatim, with the same answer, keeps the corpus copy's CAS check.
+  for (const p of list) {
+    const pid = problemId(p.tex), have = items.find((x) => x.id === pid);
+    if (have?.casVerified && sameAnswer(have.answer, p.answer)) p.casVerified = true;
+  }
   const r = addProblems(items, list.map((p) => ({
     tex: p.tex, answer: p.answer, units: p.units, tags: p.tags, casVerified: p.casVerified, status: "used",
     context: p.part ? `Part ${p.part}` : "", source: { kind: "final", file: name, date, week: week.id, origin: p.source },
@@ -1131,32 +1102,14 @@ async function handle(req, res) {
         account("outline", model, r2, { auto: true });
         if (r2.text || r2.ok) result = { ...r2, text: r2.text || result.text };
       }
-      // 4. Final-type turns: independent answer check, then one fix turn for real mismatches.
-      let verify;
-      if (result.ok && (stage === "final" || stage === "fix") && hasBlock(result.text) && !stopped.has(id) && !STAGES_OFF.has("verify")) {
-        say("verify", STAGES.verify.model);
-        const v = await runVerify(week, result.text, emit);
-        if (v) {
-          account("verify", v.model, v, { checked: v.checked, failures: v.failures?.length, error: v.error });
-          verify = { model: v.model, checked: v.checked, failures: v.failures || [], unchecked: v.unchecked || [], error: v.error };
-          if (v.failures?.length) {
-            const fixModel = modelFor("final", week);
-            say("final", fixModel);
-            emit({ type: "text", text: "\n\n---\n\n" });
-            const r3 = await runClaude(week, "An independent sympy check of the answer key found these problems:\n" + v.failures.map((f) => `- ${f.problem}: ${f.reason}${f.expected ? ` (expected ${f.expected})` : ""}`).join("\n") + "\nCheck each with cas. Fix the real errors (answer key or problem), ignore false alarms, and resend the full .tex, status and manifest. Say in one line per item what you did.", null, emit, "final");
-            account("final", fixModel, r3, { auto: true, reason: "verify" });
-            if (r3.ok && hasBlock(r3.text)) { preamble = result.text; result = r3; verify.fixed = true; }
-          }
-        }
-      }
-      // 5. On approval, the checkpoint's assumptions become standing rulings.
+      // 4. On approval, the checkpoint's assumptions become standing rulings.
       if (kind === "approve") {
         const cp = [...week.messages].reverse().find((m) => m.role === "assistant" && isCheckpointText(m.text));
         const add = assumptionsOf(cp?.text || "").map((t) => ({ text: t, week: id }));
         if (add.length) { try { saveRulings(DATA, add); } catch (e) { logEvent("stage", "rulings-error", { error: e.message }); } }
       }
       if (result.text || result.ok) {
-        week.messages.push({ role: "assistant", text: result.text, at: new Date().toISOString(), error: result.ok ? undefined : result.error, usage: usage || undefined, tools, trace: live.trace, stage, model, stages, ...(preamble ? { preamble } : {}), ...(verify ? { verify } : {}) });
+        week.messages.push({ role: "assistant", text: result.text, at: new Date().toISOString(), error: result.ok ? undefined : result.error, usage: usage || undefined, tools, trace: live.trace, stage, model, stages, ...(preamble ? { preamble } : {}) });
       } else {
         week.messages.pop(); // nothing happened; let the teacher retry
         week.lastError = result.error;
