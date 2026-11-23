@@ -39,13 +39,12 @@ ANTHROPIC_API_KEY=sk-ant-... HW_STUDENT="Sam" node ui/server.mjs
 ```
 
 (or put the key in `.env` and run `node --env-file=.env ui/server.mjs`), and open http://localhost:4747. `HW_STUDENT` is the student's name as it appears in the header and prompts (leave it
-out for a generic "the student"). On first run the server copies the files from `examples/` into the repo root:
+out for a generic "the student"). On first run the server copies two files from `examples/` into the repo root:
 
 | file | what it is |
 |---|---|
 | `project_instructions.md` | the workflow and house style Claude follows: gates, checkpoint, audit passes, LaTeX conventions |
 | `curriculum_ladder.md` | the ordered units, what each needs first, and which are formal or informal |
-| `weekly_status.md` | unit statuses, review priority, standing conventions, history and this week's input; the app edits this as you work |
 
 Those copies are yours and are not tracked by git, so edit them freely.
 
@@ -159,11 +158,14 @@ implied).
 1. **Put your past sets in the repo root** as `hw_M_D_YYYY.tex`, e.g. `hw_9_24_2026.tex`. The date in the name orders
    them. The three most recent go into every prompt as style examples ("gold files", `HW_GOLD_FILES` to change), so a
    few good sets in your own format matter more than anything else. To keep them elsewhere, set `HW_ROOT=/path/to/dir`
-   (that folder then holds the `.tex` files and the three `.md` files).
+   (that folder then holds the `.tex` files and the two `.md` files).
 2. **Edit `curriculum_ladder.md`** to match your course: one `- Uxx Name. Description. Needs Uyy. Formal.` line per
    unit. The app reads the unit ids, names and dependencies from these lines.
-3. **Edit `weekly_status.md`**: set each unit to TAUGHT, CURRENT, NEXT or FUTURE. Claude only uses TAUGHT and CURRENT
-   material. The app keeps this file up to date as you finish sets, so you mostly set it once.
+3. **Set the unit statuses** in the app (Create Homework): each unit is TAUGHT, CURRENT, NEXT or FUTURE. Claude only
+   uses TAUGHT and CURRENT material. The status (statuses, review priority, standing conventions, history) lives in
+   `ui/data/hw.db`, starts from `examples/weekly_status.md`, and the app keeps it up to date as you finish sets. Export or
+   upload it as `status.md` on Progress map › Lesson plan. (A `weekly_status.md` already in the root is imported once,
+   when `hw.db` is first created, and not read after that.)
 4. **Edit `project_instructions.md`** for your own conventions (title format, number of sections, what to avoid).
 5. Restart the server if it was running, then click **Make a set** or **Generate outline**.
 

@@ -1,6 +1,7 @@
 // App state shared by every module, the talk-to-Claude loop, phase logic and the render registry.
 // ES modules can't reassign imported bindings, so state lives on mutable exported objects (app, S).
 import { $, $$, api, S, parseLadder, extractBlock, lintTex, log } from "./lib.js";
+import { applyWeekUpdate, weekUpdateInputs } from "./statusmd.js";
 
 export const app = {
   week: null,              // current week from the server, or null while setting up
@@ -65,11 +66,13 @@ export function currentFinal() {
   const msg = [...final].reverse().find(hasTex);
   if (!msg) return null;
   const tex = app.texOverride?.src === msg.at ? app.texOverride.text : extractBlock(msg.text, ["latex", "tex"]);
-  const status = extractBlock(msg.text, ["markdown", "md", ""], (b) => /Unit statuses|weekly_status/i.test(b));
-  let manifest = null;
-  const j = extractBlock(msg.text, ["json"]);
-  if (j) { try { const a = JSON.parse(j); if (Array.isArray(a)) manifest = a; } catch {} }
-  return { msg, tex, status, manifest };
+  // Next week's status, as Save & finish will write it: the app applies the week's promotions and the final's
+  // status-update block to its own record (the server does the same from the same inputs). null: no change.
+  const inputs = weekUpdateInputs(app.week, msg, S.savedStatus);
+  const next = applyWeekUpdate(S.savedStatus, inputs);
+  const status = next.trimEnd() !== S.savedStatus.trimEnd() ? next : null;
+  const manifest = extractBlock(msg.text, ["json"], (b) => { try { return Array.isArray(JSON.parse(b)); } catch { return false; } });
+  return { msg, tex, status, update: inputs.update, manifest: manifest ? JSON.parse(manifest) : null };
 }
 
 export function fnameFromDate() {

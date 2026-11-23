@@ -65,7 +65,7 @@ function stepsHtml(m, prefix) {
 
 // ---------- messages ----------
 
-// Long fenced blocks (the .tex, weekly_status.md, the manifest) go to the work pane; show a stub here.
+// Long fenced blocks (the .tex, the manifest; weekly_status.md in older weeks) go to the work pane; show a stub here.
 const BLOCK_NAME = { latex: "LaTeX source", tex: "LaTeX source", markdown: "weekly_status.md", md: "weekly_status.md", json: "problem manifest" };
 // archive: the History transcript, where there is no work pane, so each block folds open in place.
 function assistantHtml(text, archive = false) {
@@ -85,7 +85,7 @@ function assistantHtml(text, archive = false) {
 function userLabel(m, archive = false) {
   const t = m.text || "";
   switch (kindOf(m)) {
-    case "start": return `📋 Sent this week's status${m.preload ? ` and ${m.preload.count} corpus matches (${esc(m.preload.units.join(", ") || "no units")})` : ""}${archive ? `<details><summary class="muted small">what was sent</summary><pre>${esc(t)}</pre></details>` : ""}`;
+    case "start": return `📋 Sent this week's brief${m.preload ? ` and ${m.preload.count} corpus matches (${esc(m.preload.units.join(", ") || "no units")})` : ""}${archive ? `<details><summary class="muted small">what was sent</summary><pre>${esc(t)}</pre></details>` : ""}`;
     case "approve": { const e = t.match(/with these edits:\n([\s\S]*?)\nWrite the final/); return `✓ Approved the outline${e ? `, with edits:<div class="quote">${esc(e[1])}</div>` : ""}`; }
     case "fix": return `🔧 Sent the compile and check results for fixing<details><summary class="muted small">details</summary><pre>${esc(t)}</pre></details>`;
     default: return esc(t.replace(/\n\nSend the complete revised[\s\S]*$/, "").replace(/\n\n(For anything I didn't answer, use|Use) your stated default[\s\S]*$/, "\n\n(use your defaults for the rest)"));
@@ -160,8 +160,15 @@ onRender(function renderChat({ phase }) {
     lastSig = sig;
     const nearBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 80;
     const open = new Set($$("details[data-key][open]", thread).map((d) => d.dataset.key));
+    // Thought bodies are their own scroll boxes; rebuilding the thread would jump them back to the top.
+    const thinkScroll = new Map($$(".think-body", thread).map((b) => [b.parentElement.dataset.key, { top: b.scrollTop, atBottom: b.scrollHeight - b.scrollTop - b.clientHeight < 24 }]));
     thread.innerHTML = threadHtml();
     for (const d of $$("details[data-key]", thread)) if (open.has(d.dataset.key)) d.open = true;
+    for (const b of $$(".think-body", thread)) {
+      const s = thinkScroll.get(b.parentElement.dataset.key);
+      const live = b.closest(".tr-think.now");
+      b.scrollTop = live && (!s || s.atBottom) ? b.scrollHeight : s ? s.top : 0;
+    }
     if (nearBottom || !open.size) { thread.scrollTop = thread.scrollHeight; requestAnimationFrame(() => (thread.scrollTop = thread.scrollHeight)); }
   }
   const mode = composerMode(phase);

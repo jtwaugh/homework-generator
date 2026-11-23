@@ -15,7 +15,7 @@ const SRC_ROOT = process.env.HW_ROOT || REPO;
 const SRC_DATA = process.env.HW_DATA || path.join(REPO, "ui", "data");
 
 const ROOT_FILES = (n) => /^hw_.*\.tex$/i.test(n) || ["weekly_status.md", "project_instructions.md", "curriculum_ladder.md"].includes(n);
-const DATA_KEEP = ["backups", "corpus", "notes", "weeks", "jobs", "dag_state.json", "definitions.json", "sessions.json", "curricula", "legacy-v0"];
+const DATA_KEEP = ["backups", "corpus", "notes", "weeks", "jobs", "dag_state.json", "sessions.json", "curricula", "legacy-v0"];
 
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), "hw-migrate-"));
 const roots = { root: path.join(stage, "root"), data: path.join(stage, "data") };

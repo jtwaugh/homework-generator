@@ -97,8 +97,8 @@ export async function quickSet(id) {
   await startWeek(QUICK_PROMPT);
 }
 const QUICK_PROMPT = "This is a quick set: the teacher picked the unit and wants the finished set in one pass. " +
-  "Don't ask questions and don't send a checkpoint. Treat the unit statuses in weekly_status.md as correct for this week. Wherever you would ask, use your default and say so. " +
-  "Do the research, then reply directly with the final: the complete .tex, the complete updated weekly_status.md and the problem manifest. " +
+  "Don't ask questions and don't send a checkpoint. Treat the unit statuses in the brief as correct for this week. Wherever you would ask, use your default and say so. " +
+  "Do the research, then reply directly with the final: the complete .tex, the problem manifest and the status-update block. " +
   "Start the reply with a short **Judgment calls** list of every default or assumption you made, so the teacher can correct any of them in one message.";
 
 function applyUnitAction(act, id) {
@@ -223,7 +223,7 @@ $("#units").addEventListener("change", (e) => {
   updateStatus(writeUnitStatuses(S.status, map, free));
 });
 $("#status-raw").addEventListener("input", (e) => updateStatus(e.target.value));
-$("#view-md").onclick = () => { const r = $("#raw-wrap"); r.hidden = !r.hidden; $("#view-md").textContent = r.hidden ? "Edit weekly_status.md" : "Close editor"; };
+$("#view-md").onclick = () => { const r = $("#raw-wrap"); r.hidden = !r.hidden; $("#view-md").textContent = r.hidden ? "Edit status (Markdown)" : "Close editor"; };
 $("#more-opts").addEventListener("toggle", (e) => (e.target.dataset.touched = "1"));
 
 // Extra suggestion sources for topic chips, loaded once in the background.
@@ -302,8 +302,8 @@ async function startWeek(instructions, { replace = false } = {}) {
       throw e;
     }
     history.replaceState(null, "", location.pathname);
-    send("start", "Here is this week's weekly_status.md:\n\n```markdown\n" + S.savedStatus.trim() + "\n```\n\n" +
-      "Everything for this week is in its \"This week's input\" section. " + instructions, { overrides: Object.fromEntries([...briefOff].map((k) => [k, false])) });
+    // The server appends the brief, rendered from the app's own status record: that is the whole input.
+    send("start", "Everything for this week is in the brief below. " + instructions, { overrides: Object.fromEntries([...briefOff].map((k) => [k, false])) });
   } finally { starting = false; render(); }
 }
 
@@ -355,7 +355,7 @@ function renderBrief() {
   const plan = (b.stagesPlan || []).map((x) => `${esc(x.stage)}: ${x.skip ? "skipped" : esc((x.model || "").replace(/^claude-/, ""))}`).join(" → ");
   const other = b.decisions.filter((d) => !d.key.startsWith("promote:")).map((d) => `<li>${esc(d.text)}</li>`).join("");
   el.innerHTML = `<div class="small"><b>Decided without asking</b> ${promos || '<span class="muted">nothing to decide</span>'}${other ? `<ul class="muted">${other}</ul>` : ""}</div>
-    <div class="small">${secs}</div><div class="small muted">Stages: ${plan}${b.rulings?.length ? ` · ${b.rulings.length} standing ruling${b.rulings.length > 1 ? "s" : ""}` : ""}</div>`;
+    <div class="small">${secs}</div><div class="small muted">Stages: ${plan}</div>`;
   $$("button[data-key]", el).forEach((btn) => (btn.onclick = () => toggleBrief(btn.dataset.key)));
 }
 $("#quick-set").onclick = () => { if (guardSetup()) { log("quick-set", { from: "setup" }); startWeek(QUICK_PROMPT); } };
@@ -415,7 +415,7 @@ $("#v-outline .main").onclick = () => {
   const t = composerText(); clearComposer();
   if (act === "continue") return send("revise", (t ? t + "\n\n" : "") + "Continue where you left off: finish the outline and send the checkpoint. Keep any further web research brief.");
   if (act === "defaults") return send("revise", (t ? t + "\n\nFor anything I didn't answer, use" : "Use") + " your stated default choices. Now do the research and send the checkpoint.");
-  send("approve", "Approved" + (t ? ", with these edits:\n" + t : ".") + "\nWrite the final .tex, the complete updated weekly_status.md, and the problem manifest.");
+  send("approve", "Approved" + (t ? ", with these edits:\n" + t : ".") + "\nWrite the final .tex, the problem manifest and the status-update block.");
 };
 $("#composer").addEventListener("input", () => phaseOf() === "outline" && renderOutline("outline"));
 $("#start-over").onclick = async () => {
@@ -486,7 +486,7 @@ function renderFinal(phase) {
   so.hidden = sv.hidden = !f.status;
   if (f.status) {
     const ch = statusChanges(S.savedStatus, f.status);
-    $(".status-summary", el).innerHTML = ch.length ? ch.map((x) => `<li class="c-${x.kind}">${x.html}</li>`).join("") : `<li class="c-info">No changes to weekly_status.md</li>`;
+    $(".status-summary", el).innerHTML = ch.length ? ch.map((x) => `<li class="c-${x.kind}">${x.html}</li>`).join("") : `<li class="c-info">No changes to the status</li>`;
     $(".diff", el).innerHTML = diffHtml(S.savedStatus, f.status);
   }
 
@@ -505,16 +505,16 @@ function renderFinal(phase) {
   $(".checks", el).addEventListener("click", (e) => {
     const b = e.target.closest("[data-act]"); if (!b) return;
     if (b.dataset.act === "cas-log") openCasLog();
-    if (b.dataset.act === "cas-verify") send("fix", "Before I save: use the cas tool to verify every answer-key entry in the current .tex (substitute each solution back, check for extraneous roots), batching problems into a few calls. Fix any wrong answers, then send the complete .tex, weekly_status.md and problem manifest again with casVerified set.");
+    if (b.dataset.act === "cas-verify") send("fix", "Before I save: use the cas tool to verify every answer-key entry in the current .tex (substitute each solution back, check for extraneous roots), batching problems into a few calls. Fix any wrong answers, then send the complete .tex, the problem manifest (with casVerified set) and the status-update block again.");
   });
   const save = async () => {
     const f = currentFinal(); const name = $(".fname", el).value.trim();
-    const status = f.status && $(".update-status", el).checked ? f.status : null;
-    try { await api(`/api/weeks/${app.week.id}/finish`, { method: "POST", body: { name, tex: f.tex, status } }); }
+    const updateStatus = !!f.status && $(".update-status", el).checked;
+    try { await api(`/api/weeks/${app.week.id}/finish`, { method: "POST", body: { name, tex: f.tex, updateStatus } }); }
     catch (e) {
       if (e.status !== 409) return alert(e.message);
       if (!confirm(`${name} already exists. Replace it?`)) return;
-      await api(`/api/weeks/${app.week.id}/finish`, { method: "POST", body: { name, tex: f.tex, status, overwrite: true } });
+      await api(`/api/weeks/${app.week.id}/finish`, { method: "POST", body: { name, tex: f.tex, updateStatus, overwrite: true } });
     }
     app.week = await api(`/api/weeks/${app.week.id}`); await refresh(false);
   };
@@ -526,7 +526,7 @@ function renderFinal(phase) {
     if (p.overfull.length) parts.push("Overfull boxes:\n```\n" + p.overfull.join("\n") + "\n```");
     const bad = p.lint.filter(([k]) => k === "bad");
     if (bad.length) parts.push("Checks against the hard gates flagged:\n" + bad.map(([, t]) => "- " + t).join("\n") + "\n(If a flag is a false positive, say so and leave it.)");
-    send("fix", "The app compiled and checked your .tex.\n\n" + parts.join("\n\n") + "\n\nPlease fix these and send the complete corrected .tex, weekly_status.md and problem manifest again.");
+    send("fix", "The app compiled and checked your .tex.\n\n" + parts.join("\n\n") + "\n\nPlease fix these and send the complete corrected .tex, the problem manifest and the status-update block again.");
   };
   $(".savebar .alt", el).onclick = save;
 }
@@ -547,7 +547,7 @@ async function openCasLog() {
 
 function renderDone() {
   const w = app.week, cs = w.corpusSaved;
-  $("#v-done .done-text").innerHTML = `Saved <b>${esc(w.savedAs)}</b> to the project folder${w.statusUpdated ? " and updated weekly_status.md for next week" : ""}.`
+  $("#v-done .done-text").innerHTML = `Saved <b>${esc(w.savedAs)}</b> to the project folder${w.statusUpdated ? " and updated the status for next week" : ""}.`
     + (cs && !cs.error ? `<br><span class="muted">${cs.total ? `${cs.added} new problem${cs.added === 1 ? "" : "s"} added to the corpus${cs.merged ? `, ${cs.merged} already there marked used` : ""}.` : "No problem manifest came with the final, so the corpus is unchanged."}</span>` : "")
     + (cs?.error ? `<br><span class="warn-text">Corpus not updated: ${esc(cs.error)}</span>` : "");
 }

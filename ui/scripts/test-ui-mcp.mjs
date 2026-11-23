@@ -97,7 +97,7 @@ try {
   await step("↩ adds the chip", "ui_key", { key: "Enter", selector: "#f-topics .tinput" }, /key key=Enter/, /weekInput.Topics: "" → "linear inequalities( \(U\d\d\))?"/i);
   await step("We moved on → pick a unit", "ui_click", sel("#units [data-act=choose]"), /data-act=choose/);
   await step("start it", "ui_click", sel("#units [data-act=start]"), /data-act=start/, /units.current: /);
-  await step("autosaves weekly_status.md", "ui_wait", { until: "!__hw.summary().statusDirty", timeoutMs: 10000 }, /PUT \/api\/status status=200/);
+  await step("autosaves the status", "ui_wait", { until: "!__hw.summary().statusDirty", timeoutMs: 10000 }, /PUT \/api\/status status=200/);
   await step("Generate is offered", "ui_eval", { js: "document.querySelector('#generate').disabled ? 'disabled' : 'enabled'" }, /enabled/);
   await step("Quick set is offered", "ui_eval", { js: "document.querySelector('#quick-set')?.textContent" }, /Quick set/);
 
@@ -125,6 +125,9 @@ try {
   await step("shows the methods board", "ui_eval", { js: "__hw.summary().dag.board" }, /methods/);
   await step("Lesson plan sub-item", "ui_click", sel("[data-dag=plan]"), /GET \/api\/dag status=200/);
   await step("lists the U units", "ui_eval", { js: "[...document.querySelectorAll('#p-dag .plan-unit')].map((x) => x.dataset.unit).join(' ')" }, /U01 .*U24/);
+  await step("has status.md export and upload", "ui_eval", { js: "[...document.querySelectorAll('#p-dag [data-act^=status-]')].map((x) => x.dataset.act).join(' ')" }, /status-export status-upload/);
+  await step("export is the app's status record", "ui_eval", { js: "return fetch('/api/status/export').then(async (r) => r.status + ' ' + r.headers.get('content-disposition') + ' ' + /^TAUGHT:/m.test(await r.text()))" }, /^200 attachment; filename="status_.*\.md" true/);
+  await step("upload refuses a file that isn't a status", "ui_eval", { js: "return fetch('/api/status', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: '# notes', source: 'upload' }) }).then((r) => r.status)" }, /400/);
   await step("Content sub-item", "ui_click", sel("[data-dag=content]"), /GET \/api\/dag status=200/);
   await step("select a block", "ui_click", sel("#p-dag g.node[data-id=e28]"), /dag-select board=content id=e28/);
   await step("mark it done", "ui_click", sel("#p-dag [data-set=done]"), /PUT \/api\/dag status=200/);

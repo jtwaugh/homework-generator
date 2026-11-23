@@ -1,11 +1,11 @@
-// Deterministic preflight: everything the app can settle from the files before any LLM call.
-// Builds the week's "brief": inputs with defaults filled in, unit statuses (with automatic promotions instead of
-// questions), standing rulings, a section plan, and per-section corpus coverage (which sections need research).
+// Deterministic preflight: everything the app can settle from its own data before any LLM call.
+// Builds the week's "brief": every input with defaults filled in, unit statuses (with automatic promotions
+// instead of questions), the standing conventions, review priority and recent history, a section plan, and
+// per-section corpus coverage (which sections need research). Claude gets the brief, never the status file.
 // No dependencies; shared by the server and the tests.
-import fs from "node:fs";
-import path from "node:path";
 import { searchCorpus, coverage, tokenize, queryUnits } from "./corpus.mjs";
 import { parseTopics } from "../public/topics.js";
+import { sectionItems, statusLine } from "../public/statusmd.js";
 
 const UNIT_ID = /\b(U\d\d|M\d|F\d)\b/g;
 
@@ -25,10 +25,11 @@ export function statusSection(md, heading) {
   const j = rest.search(/\n##\s/);
   return j < 0 ? rest : rest.slice(0, j);
 }
-export function weekInput(status) {
+// keepLines: multi-line values (a pasted fact sheet) keep their line breaks instead of being joined.
+export function weekInput(status, { keepLines = false } = {}) {
   const sec = statusSection(status, "## This week's input");
   const out = {};
-  for (const m of sec.matchAll(/^([A-Z][^:\n]{1,60}):[ \t]*(.*(?:\n {2,}.*)*)$/gm)) out[m[1].trim()] = m[2].replace(/\n\s+/g, " ").trim();
+  for (const m of sec.matchAll(/^([A-Z][^:\n]{1,60}):[ \t]*(.*(?:\n {2,}.*)*)$/gm)) out[m[1].trim()] = m[2].replace(/\n {2}/g, keepLines ? "\n" : " ").replace(/\s+/g, (w) => (keepLines && w.includes("\n") ? w : " ")).trim();
   return out;
 }
 // "TAUGHT: U01, U02 (note)" -> { U01: "TAUGHT", ... }. Phrases like "rest of U11" mark that unit partial.
@@ -47,19 +48,7 @@ const reviewItems = (status) => statusSection(status, "## Review priority").spli
 // The section plan's default sizes (project_instructions.md: routine ~15, idea-building 4-8).
 const ROUTINE = /arithmetic|drill|practice|simplify|expand|factor|solve|exponent law|basic/i;
 
-// Rulings the teacher (or an approved checkpoint) has made once, so they are never asked again.
-export function loadRulings(dataDir) {
-  try { return JSON.parse(fs.readFileSync(path.join(dataDir, "definitions.json"), "utf8")); } catch { return { rulings: [] }; }
-}
-export function saveRulings(dataDir, add) {
-  const cur = loadRulings(dataDir);
-  const seen = new Set(cur.rulings.map((r) => r.text.toLowerCase()));
-  for (const r of add) if (r?.text && !seen.has(r.text.toLowerCase())) { cur.rulings.push({ at: new Date().toISOString(), ...r }); seen.add(r.text.toLowerCase()); }
-  fs.writeFileSync(path.join(dataDir, "definitions.json"), JSON.stringify(cur, null, 1));
-  return cur;
-}
-
-export function buildBrief({ status, ladder, corpus, dataDir, overrides = {}, now = Date.now() }) {
+export function buildBrief({ status, ladder, corpus, overrides = {}, now = Date.now() }) {
   const units = ladderUnits(ladder);
   const byId = Object.fromEntries(units.map((u) => [u.id, u]));
   const input = weekInput(status);
@@ -77,13 +66,6 @@ export function buildBrief({ status, ladder, corpus, dataDir, overrides = {}, no
   const unitCircle = on(input["Unit circle sheet"]);
   const we = (input["Worked examples"] || "").trim();
   const workedExamples = !on(we) ? 0 : Number(we.match(/^\d+$/)?.[0]) || "auto";
-  // Inputs the app filled in or interpreted; the rest Claude reads verbatim in weekly_status.md.
-  const literal = (v, ok) => ok.test((v || "").trim());
-  const inputNotes = [];
-  if (!literal(input["Graph paper"], /^(yes|no)$/i)) inputNotes.push(`Graph paper: ${graphPaperMode}${graphPaperMode === "auto" ? " (only if the set is graphing-adjacent)" : ""}`);
-  for (const [k, v] of [["Answer key", answerKey], ["Unit circle sheet", unitCircle]]) if (!literal(input[k], /^(yes|no)$/i)) inputNotes.push(`${k}: ${v ? "yes" : "no"}`);
-  if (!literal(we, /^(no|\d+)$/i)) inputNotes.push(`Worked examples: ${!workedExamples ? "no" : "yes (you choose how many)"}`);
-
   // Topics -> units. Unit ids in chips win; else the ladder name / keywords.
   const topicChips = parseTopics(input["Topics"] || "").map((c) => {
     const ids = [...new Set([...(c.id && /^(U|M|F)/.test(c.id) ? [c.id] : []), ...((c.text.match(UNIT_ID)) || [])])];
@@ -125,27 +107,65 @@ export function buildBrief({ status, ladder, corpus, dataDir, overrides = {}, no
   const cov = coverage(corpus, sections, { allowed: [...allowed], now });
   sections.forEach((s, i) => Object.assign(s, { coverage: cov[i].verdict, usable: cov[i].usable, corpusIds: cov[i].ids }));
 
-  const rulings = loadRulings(dataDir).rulings;
   const required = date ? [] : ["date"];
+  const raw = weekInput(status, { keepLines: true });
+  const items = (h) => sectionItems(status, h).filter((l) => !/^\(?\s*none( yet)?\s*\)?$/i.test(l));
   return {
-    date, disclaimer, graphPaper, graphPaperMode, answerKey, unitCircle, workedExamples, inputNotes, required,
-    allowedUnits: [...allowed].sort(), promotions, decisions, rulings,
-    extraBans: statusSection(status, "## Extra bans this week").split("\n").map((l) => l.replace(/^\s*-\s*/, "").trim()).filter((l) => l && !/^\(none\)$/i.test(l)),
+    date, disclaimer, graphPaper, graphPaperMode, answerKey, unitCircle, workedExamples, nSections, required,
+    topics: topicChips.map((c) => c.text),
+    ideas: raw["Example problem ideas (optional)"] || raw["Example problem ideas"] || "",
+    emphasis: raw["Emphasize or avoid"] || "",
+    aux: raw["Fact sheet or other auxiliary file"] || "",
+    statusLines: Object.fromEntries(["TAUGHT", "CURRENT", "NEXT"].map((s) => [s, statusLine(status, s)])),
+    allowedUnits: [...allowed].sort(), promotions, decisions,
+    review: items("## Review priority"),
+    softDefaults: items("## Defaults for this week"),
+    extraBans: items("## Extra bans this week"),
+    conventions: items("## Standing conventions"),
+    history: items("## Recent history").slice(-HISTORY_LINES),
     sections, needsResearch: sections.filter((s) => s.coverage !== "covered").map((s) => s.key),
   };
 }
+const HISTORY_LINES = 6;
 
-// The brief as the text Claude gets (start of the outline stage).
-export function briefText(b, corpusById = {}) {
+// The brief as the text Claude gets (start of the outline stage). It is the whole of the week's input: the app's
+// own record of the student's status, rendered, so nothing here needs to be reconciled with anything else.
+export function briefText(b) {
+  const yn = (v) => (v ? "yes" : "no");
+  const none = (s) => (s && !/^none$/i.test(s.trim()) ? s : "");
+  const list = (xs, numbered = false) => xs.map((x, i) => `${numbered ? `${i + 1}.` : "-"} ${x}`);
   const lines = [
-    b.inputNotes?.length ? `Inputs read as (blank or free-form in weekly_status.md): ${b.inputNotes.join(" · ")}` : "",
+    "## This week's input",
+    `- Date for the title: ${b.date || "(missing)"}`,
+    `- Topics: ${b.topics.length ? b.topics.join("; ") : "(none given: choose from the CURRENT units)"}`,
+    `- Number of sections: ${b.nSections || "3 to 4 (default)"}`,
+    `- Disclaimer: ${b.disclaimer} · Graph paper: ${b.graphPaperMode}${b.graphPaperMode === "auto" ? " (only if the set is graphing-adjacent)" : ""} · Answer key: ${yn(b.answerKey)} · Unit circle sheet: ${yn(b.unitCircle)} · Worked examples: ${!b.workedExamples ? "no" : b.workedExamples === "auto" ? "yes (you choose how many)" : b.workedExamples}`,
+    b.ideas ? `- Example problem ideas: ${b.ideas}` : "",
+    b.emphasis ? `- Emphasize or avoid: ${b.emphasis}` : "",
+    none(b.aux) ? `- Fact sheet or other auxiliary file:\n\n${b.aux}\n` : "- Fact sheet or other auxiliary file: none",
+    "", "## Unit statuses",
+    ...["TAUGHT", "CURRENT", "NEXT"].map((s) => `${s}: ${b.statusLines?.[s] || "(none)"}`),
+    "FUTURE: everything else in curriculum_ladder.md",
     `Allowed units this week (TAUGHT or CURRENT, after promotions): ${b.allowedUnits.join(", ")}`,
-    b.extraBans.length ? `Extra bans: ${b.extraBans.join("; ")}` : "",
+    ...(b.review.length ? ["", "## Review priority (the mixed-review section draws from these first, in order)", ...list(b.review, true)] : []),
+    ...(b.softDefaults.length ? ["", "## Soft defaults for this week", ...list(b.softDefaults)] : []),
+    ...(b.extraBans.length ? ["", "## Extra bans this week", ...list(b.extraBans)] : []),
+    ...(b.conventions.length ? ["", "## Standing conventions (the teacher's rulings from earlier weeks; follow them)", ...list(b.conventions)] : []),
+    ...(b.history.length ? ["", "## Recent sets (oldest first)", ...list(b.history)] : []),
     "", "## Decisions already made (do not ask about these; list them under Assumptions)",
     ...b.decisions.filter((d) => d.accepted !== false).map((d) => `- ${d.text}`),
-    ...(b.rulings.length ? ["", "## Standing rulings from the teacher (apply them; never re-ask)", ...b.rulings.map((r) => `- ${r.text}`)] : []),
     "", "## Section plan (corpus coverage decides where research is needed)",
     ...b.sections.map((s, i) => `${i + 1}. ${s.title} [${s.units.join(", ") || "no unit"}] ${s.kind}, about ${s.target} problems. Corpus: ${s.coverage} (${s.usable} usable${s.corpusIds.length ? ": " + s.corpusIds.slice(0, 12).join(", ") : ""})`),
   ];
   return lines.filter((l) => l !== "").join("\n").replace(/\n## /g, "\n\n## ");
+}
+
+// The student's status for prompts other than the week's (the progress-map guess): statuses, review, history.
+export function statusDigest(status) {
+  const items = (h) => sectionItems(status, h).filter((l) => !/^\(?\s*none( yet)?\s*\)?$/i.test(l));
+  return [
+    ...["TAUGHT", "CURRENT", "NEXT"].map((s) => `${s}: ${statusLine(status, s) || "(none)"}`),
+    ...(items("## Review priority").length ? ["", "Review priority:", ...items("## Review priority").map((x, i) => `${i + 1}. ${x}`)] : []),
+    ...(items("## Recent history").length ? ["", "Recent sets:", ...items("## Recent history").map((x) => `- ${x}`)] : []),
+  ].join("\n");
 }

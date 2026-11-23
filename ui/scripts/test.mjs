@@ -9,7 +9,8 @@ import { searchCorpus, splitTex, problemId, addProblems, attachTex, shapeSim, co
 import { buildBrief, briefText } from "../lib/preflight.mjs";
 import { decideAuth } from "../lib/auth.mjs";
 import { hashPassword, verifyPassword, validHash, rateLimiter, parseCookies } from "../lib/login.mjs";
-import { stageFor, modelFor, assumptionsOf, STAGES } from "../server.mjs";
+import { stageFor, modelFor, STAGES } from "../server.mjs";
+import { applyWeekUpdate, statusUpdateFrom, weekUpdateInputs, checkStatusUpload, promoteUnits } from "../public/statusmd.js";
 import { parseTopics, serializeTopics, historyTopics } from "../public/topics.js";
 import { computeStates, statusText, lessonPlan, planGraph, curvePath } from "../public/dag.js";
 import { S, lintTex, nextSetDate } from "../public/lib.js";
@@ -210,27 +211,27 @@ test("preflight: topics in NEXT/FUTURE units are promoted instead of asked; blan
   const ladder = fs.readFileSync(path.join(HERE, "..", "..", "curriculum_ladder.md"), "utf8");
   const status = ["# Weekly status", "", "TAUGHT: U01, U02, U03, U04, U05, U06, U07, U08, U09, U10, U12, U13, U14", "CURRENT: U11", "NEXT: U15", "",
     "## This week's input", "Date (for title): 11/23/2026", "Topics: Polynomial arithmetic and exponent laws (U19); Functions and domain, introduced only as needed (U21); Parabolas geometrically (U15)", "Disclaimer: ", ""].join("\n");
-  const b = buildBrief({ status, ladder, corpus: fz, dataDir: path.join(HERE, "no-such-dir") });
+  const b = buildBrief({ status, ladder, corpus: fz });
   assert.deepEqual(b.promotions.map((p) => p.id).sort(), ["U15", "U19", "U21"]);
   assert.equal(b.disclaimer, "no");
   assert.deepEqual(b.required, []);
   assert.ok(b.sections.length >= 3 && b.sections.length <= 4);
   assert.ok(b.allowedUnits.includes("U19"));
   assert.match(briefText(b), /do not ask/);
-  const off = buildBrief({ status, ladder, corpus: fz, dataDir: path.join(HERE, "no-such-dir"), overrides: { "promote:U21": false } });
+  const off = buildBrief({ status, ladder, corpus: fz, overrides: { "promote:U21": false } });
   assert.ok(!off.allowedUnits.includes("U21"));
 });
 test("preflight: answer key, worked examples and unit circle sheet reach the brief", () => {
   const ladder = fs.readFileSync(path.join(HERE, "..", "..", "curriculum_ladder.md"), "utf8");
   const base = ["## This week's input", "Date (for title): 11/23/2026", "Topics: Linear equations"];
-  const brief = (extra) => buildBrief({ status: [...base, ...extra, ""].join("\n"), ladder, corpus: fz, dataDir: path.join(HERE, "no-such-dir") });
+  const brief = (extra) => buildBrief({ status: [...base, ...extra, ""].join("\n"), ladder, corpus: fz });
   const none = brief([]);
   assert.equal(none.answerKey, false); assert.equal(none.unitCircle, false); assert.equal(none.workedExamples, 0); assert.equal(none.graphPaperMode, "auto");
   assert.match(briefText(none), /Graph paper: auto \(only if the set is graphing-adjacent\) · Answer key: no · Unit circle sheet: no · Worked examples: no/);
   const all = brief(["Answer key: yes", "Worked examples: 2", "Unit circle sheet: yes", "Graph paper: yes"]);
   assert.equal(all.answerKey, true); assert.equal(all.unitCircle, true); assert.equal(all.workedExamples, 2);
-  assert.deepEqual(all.inputNotes, []); // all literal: Claude reads them in weekly_status.md, the brief doesn't repeat them
-  assert.doesNotMatch(briefText(all), /Answer key|Graph paper|Unit circle|Worked examples/);
+  // The brief is Claude's whole input, so literal inputs are stated too.
+  assert.match(briefText(all), /Graph paper: yes · Answer key: yes · Unit circle sheet: yes · Worked examples: 2/);
   const auto = brief(["Worked examples: yes"]);
   assert.equal(auto.workedExamples, "auto");
   assert.match(briefText(auto), /Worked examples: yes \(you choose how many\)/);
@@ -245,9 +246,49 @@ test("routing: checkpoint on the main model, final on Sonnet, fixes on Haiku the
   assert.notEqual(modelFor("fix", { messages: [{ role: "user", kind: "fix" }, { role: "user", kind: "fix" }] }), STAGES.fix.model);
   assert.equal(stageFor("chat", { messages: [{ role: "assistant", text: "```latex\n\\begin{document}\n```" }] }), "final");
 });
-test("approval: the checkpoint's Assumptions become rulings", () => {
-  const cp = "**Judgment calls:** none\n**Assumptions:**\n- U19 treated as CURRENT: positive integer exponents only.\n- Domain means all real inputs that give a real output.\n**Removed in audit:** none";
-  assert.deepEqual(assumptionsOf(cp), ["U19 treated as CURRENT: positive integer exponents only.", "Domain means all real inputs that give a real output."]);
+test("brief: rendered from the status record, with conventions, review and history; no rulings", () => {
+  const ladder = fs.readFileSync(path.join(HERE, "..", "..", "curriculum_ladder.md"), "utf8");
+  const status = ["TAUGHT: U01, U02", "CURRENT: U03 (just started)", "NEXT: U04", "", "## Review priority", "1. completing the square", "2. slopes", "",
+    "## Extra bans this week", "- (none)", "", "## Standing conventions", "- (12/5) Show a right angle by slopes.", "", "## Recent history", "- 12/5: lines",
+    "", "## This week's input", "Date (for title): 12/12/2026", "Topics: Linear equations", "Disclaimer: no", "Fact sheet or other auxiliary file:", "  Facts", "  more facts", ""].join("\n");
+  const t = briefText(buildBrief({ status, ladder, corpus: fz }));
+  assert.match(t, /CURRENT: U03 \(just started\)/);
+  assert.match(t, /1\. completing the square\n2\. slopes/);
+  assert.match(t, /Show a right angle by slopes/);
+  assert.match(t, /12\/5: lines/);
+  assert.match(t, /Facts\nmore facts/);
+  assert.doesNotMatch(t, /Extra bans|ruling from the teacher|weekly_status/i);
+});
+test("status record: the app applies a finished week itself", () => {
+  const md = ["# Weekly status", "", "## Unit statuses", "TAUGHT: U01", "CURRENT: U02 (rest of U02)", "NEXT: U03, U04", "FUTURE: everything else", "",
+    "## Review priority", "1. old item", "", "## Standing conventions", "- (11/1) Keep it short.", "", "## Recent history", "- 11/1: start", "",
+    "## This week's input", "Date (for title): 12/12/2026", "Topics: Lines (U03)", "Fact sheet or other auxiliary file:", "  line one", "Disclaimer: no", ""].join("\n");
+  const final = 'Done.\n```latex\n\\begin{document}x\\end{document}\n```\n```json\n[{"part":1,"n":1}]\n```\n```json\n{"history": "lines and slopes", "review": ["slopes", "old item"], "conventions": ["Keep it short.", "Use exact values."]}\n```';
+  const week = { title: "HW 12/12/2026", messages: [{ role: "user", kind: "start", brief: { date: "12/12/2026", promotions: [{ id: "U03", accepted: true }, { id: "U04", accepted: false }] } }] };
+  const inputs = weekUpdateInputs(week, { text: final }, md);
+  assert.deepEqual(inputs.promote, ["U03"]);
+  const out = applyWeekUpdate(md, inputs);
+  assert.match(out, /^CURRENT: U02 \(rest of U02\), U03 \(set CURRENT 12\/12\)$/m);
+  assert.match(out, /^NEXT: U04$/m);
+  assert.match(out, /## Review priority\n1\. slopes\n2\. old item\n\n## Standing/);
+  assert.match(out, /- \(11\/1\) Keep it short\.\n- \(12\/12\) Use exact values\.\n/, "a convention already there is not added twice");
+  assert.match(out, /- 11\/1: start\n- 12\/12: lines and slopes/);
+  assert.match(out, /^Date \(for title\): $/m);
+  assert.match(out, /^Topics: $/m);
+  assert.doesNotMatch(out, /line one/);
+  assert.equal(applyWeekUpdate(md, { promote: [], update: null }).split("## This week's input")[0], md.split("## This week's input")[0], "no update: only the input is cleared");
+  assert.equal(promoteUnits("TAUGHT: U01\nCURRENT: (none)\nNEXT: U02", ["U02"]), "TAUGHT: U01\nCURRENT: U02\nNEXT: (none)");
+});
+test("status record: an older final's whole weekly_status.md is read as an update", () => {
+  const base = "## Review priority\n1. a\n\n## Recent history\n- 11/1: x\n";
+  const final = "```markdown\n## Unit statuses\nTAUGHT: U01\n\n## Review priority\n1. b\n2. a\n\n## Recent history\n- 11/1: x\n- 11/8: y\n```";
+  assert.deepEqual(statusUpdateFrom(final, base), { history: "11/8: y", review: ["b", "a"], conventions: [], legacy: true });
+  assert.equal(statusUpdateFrom("no blocks"), null);
+});
+test("status upload: must look like a status file", () => {
+  assert.equal(checkStatusUpload("TAUGHT: U01\nCURRENT: U02\n"), null);
+  assert.match(checkStatusUpload("# notes\nhello"), /TAUGHT/);
+  assert.match(checkStatusUpload("  "), /empty/);
 });
 
 test("auth: the API key is the only way in", () => {

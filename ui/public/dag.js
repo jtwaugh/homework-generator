@@ -354,7 +354,7 @@ function notesPanel() {
   const notes = D.data.notes || [];
   return `<div class="np">
     <h3>Notes for Claude</h3>
-    <p class="muted small">Claude reads every homework .tex in the project, weekly_status.md and these notes when it guesses progress. PDFs and photos of notes work too.</p>
+    <p class="muted small">Claude reads every homework .tex in the project, the unit statuses and these notes when it guesses progress. PDFs and photos of notes work too.</p>
     <label class="drop" id="dag-drop"><input type="file" multiple accept=".tex,.md,.txt,.pdf,.png,.jpg,.jpeg,.heic,.webp,.gif" hidden /><span>Drop files here or <u>choose files</u></span></label>
     <ul class="notes">${notes.map((n) => `<li><a href="/notes/${encodeURIComponent(n.name)}" target="_blank" rel="noopener">${esc(n.name)}</a><small>${Math.ceil(n.size / 1024)} KB</small><button class="ghost" data-del-note="${esc(n.name)}" title="Delete">✕</button></li>`).join("") || '<li class="muted">No notes uploaded yet</li>'}</ul>
   </div>`;
@@ -545,7 +545,9 @@ function headHtml() {
     return `<h2>Progress map <span class="muted">· Lesson plan</span></h2>
       <span class="dag-count"><b>${n("TAUGHT")} of ${us.length} taught</b> · ${n("CURRENT")} current${n("NEXT") ? ` · ${n("NEXT")} next` : ""}${ready ? ` · ${ready} ready` : ""}</span>
       <div class="seg plan-view">${["linear", "dag"].map((v) => `<button data-plan-view="${v}" class="${D.planView === v ? "on" : ""}">${{ linear: "Linear", dag: "DAG" }[v]}</button>`).join("")}</div>
-      <span class="spacer"></span><span class="muted small">Statuses from weekly_status.md · change them on Create Homework</span>${versionPicker()}${planDag() ? '<button class="ghost" data-act="fit" title="Fit to screen">⤢</button>' : ""}
+      <span class="spacer"></span><span class="muted small">Statuses from the app's status record · change them on Create Homework</span>
+      <button class="ghost" data-act="status-export" title="Download the whole status record (unit statuses, review priority, standing conventions, history) as Markdown">Export status.md</button>
+      <button class="ghost" data-act="status-upload" title="Replace the status record with an edited status.md (the old one stays in the history)">Upload status.md</button>${versionPicker()}${planDag() ? '<button class="ghost" data-act="fit" title="Fit to screen">⤢</button>' : ""}
       <button class="secondary" data-act="plan-edit" title="Add, change or remove units in the course's draft">Edit units</button>`;
   }
   const c = counts(curDag(), statesNow()), count = `<span class="dag-count"><b>${c.done} of ${c.total} done</b>${c.partial ? ` · ${c.partial} partly` : ""} · ${c.ready} ready</span>`;
@@ -644,6 +646,25 @@ async function upload(files) {
   drawAll();
 }
 
+// Replace the status record with an edited status.md. The server checks it looks like one; the previous
+// revision stays in the status history.
+function uploadStatus() {
+  const inp = Object.assign(document.createElement("input"), { type: "file", accept: ".md,.markdown,.txt,text/markdown,text/plain" });
+  inp.onchange = async () => {
+    const f = inp.files[0]; if (!f) return;
+    const text = await f.text();
+    const { map } = parseUnitStatuses(text);
+    const n = Object.keys(map).length;
+    if (!confirm(`Replace ${S.student || "the student"}'s status with ${f.name} (${n} unit${n === 1 ? "" : "s"} with a status)? The current one stays in the status history.`)) return;
+    try { await api("/api/status", { method: "PUT", body: { text, source: "upload" } }); }
+    catch (err) { return alert(err.message); }
+    S.status = S.savedStatus = text.replace(/\r\n/g, "\n");
+    log("status-upload", { name: f.name, units: n });
+    load();
+  };
+  inp.click();
+}
+
 export function initDag() {
   const d = $("#p-dag");
   d.addEventListener("click", async (e) => {
@@ -677,6 +698,8 @@ export function initDag() {
     if (a?.dataset.act === "plan-edit") { try { await startEditing(); } catch (err) { alert(err.message); } return; }
     if (a?.dataset.act === "plan-done") { Object.assign(D, { editing: false, edit: null, remove: null, editErr: "", version: null }); log("plan-edit-mode", { on: false }); return load(); }
     if (a?.dataset.act === "fit") { D.view = bbox(curDag()); return drawSvgOnly(); }
+    if (a?.dataset.act === "status-export") { log("status-export", {}); location.href = "/api/status/export"; return; }
+    if (a?.dataset.act === "status-upload") return uploadStatus();
     if (a?.dataset.act === "guess") { try { await api("/api/dag/guess", { method: "POST" }); } catch (err) { alert(err.message); } return load(); }
     if (a?.dataset.act === "stop-guess") { await api("/api/dag/guess/stop", { method: "POST" }); return setTimeout(load, 500); }
     const s = t.closest("[data-set]"); if (s && D.sel) return setNode(keyOf(D.board, D.sel), s.dataset.set);

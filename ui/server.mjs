@@ -17,7 +17,8 @@ import { ctx, loadCorpusDb, saveStatus, latestStatus, statusHistory, recordAssig
 import { closeDb, getSetting, setSetting } from "./lib/db.mjs";
 import * as Cur from "./lib/curriculum.mjs";
 import * as Prog from "./lib/progress.mjs";
-import { buildBrief, briefText, saveRulings, loadRulings } from "./lib/preflight.mjs";
+import { buildBrief, briefText, statusDigest } from "./lib/preflight.mjs";
+import { applyWeekUpdate, weekUpdateInputs, checkStatusUpload } from "./public/statusmd.js";
 import { claudeAuth } from "./lib/auth.mjs";
 import { runAgent, makeClient, addUserTurn } from "./lib/agent.mjs";
 import { agentTools, casRemote } from "./lib/tools.mjs";
@@ -86,15 +87,6 @@ export function modelFor(stage, week) {
   return base;
 }
 const hasBlock = (t) => /```(latex|tex)\n/.test(t || "");
-// "**Assumptions**" list items from a checkpoint (one ruling each).
-export function assumptionsOf(text) {
-  const i = text.search(/\*\*Assumptions:?\*\*|^#+\s*Assumptions/im);
-  if (i < 0) return [];
-  const rest = text.slice(i).split("\n").slice(1);
-  const out = [];
-  for (const l of rest) { if (/^\s*[-*]\s+/.test(l)) out.push(l.replace(/^\s*[-*]\s+/, "").trim()); else if (out.length && (!l.trim() || /^\s*(\*\*|#)/.test(l))) break; else if (/^\s*(\*\*|#)/.test(l)) break; }
-  return out.filter((t) => t.length > 8).slice(0, 20);
-}
 const isCheckpointText = (t) => /judgment calls|removed in audit|sourced ideas/i.test(t || "");
 function mergeUsage(a, b) {
   if (!a) return b; if (!b) return a;
@@ -106,20 +98,21 @@ function mergeUsage(a, b) {
 const JOBS = path.join(DATA, "jobs");
 for (const d of [WEEKS, BUILD, MCP_DIR, DEBUG, NOTES, LOGS, JOBS]) fs.mkdirSync(d, { recursive: true });
 
-const STATUS_FILE = path.join(ROOT, "weekly_status.md");
+const STATUS_EXAMPLE = path.join(UI_DIR, "..", "examples", "weekly_status.md");
 const INSTRUCTIONS_FILE = path.join(ROOT, "project_instructions.md");
 const LADDER_FILE = path.join(ROOT, "curriculum_ladder.md");
 // Students, curricula, progress, the corpus and status history live in DATA/hw.db (lib/store.mjs); the first
 // open migrates the v0 files. HW_STUDENT names the first student at migration; HW_CURRICULUM overrides the
-// sidebar title. weekly_status.md and curriculum_ladder.md at ROOT are exports of the active enrollment.
+// sidebar title. curriculum_ladder.md at ROOT is an export of the active enrollment. The student's weekly status
+// lives only in hw.db (export/upload it as status.md on the Progress map); a weekly_status.md at ROOT is not read.
 const STUDENT_ENV = (process.env.HW_STUDENT || "").trim();
 const CURRICULUM_ENV = (process.env.HW_CURRICULUM || "").trim();
 const C = () => ctx({ dir: DATA });
 // The two Wu DAGs ship with the code. With DATA elsewhere (hosted: /tmp), copy them in on every start.
 const BUNDLED_DATA = ["wu_dag.json", "wu_methods_dag.json"];
 if (path.resolve(DATA) !== path.join(UI_DIR, "data")) for (const f of BUNDLED_DATA) { const src = path.join(UI_DIR, "data", f); if (fs.existsSync(src)) fs.copyFileSync(src, path.join(DATA, f)); }
-// First run: copy the example workflow, ladder and status into the homework folder if they aren't there yet.
-for (const f of [INSTRUCTIONS_FILE, LADDER_FILE, STATUS_FILE]) {
+// First run: copy the example workflow and ladder into the homework folder if they aren't there yet.
+for (const f of [INSTRUCTIONS_FILE, LADDER_FILE]) {
   const ex = path.join(UI_DIR, "..", "examples", path.basename(f));
   if (!fs.existsSync(f) && fs.existsSync(ex)) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.copyFileSync(ex, f); console.log(`created ${f} from examples/`); }
 }
@@ -210,28 +203,22 @@ async function writeLikeOriginal(p, text) {
   await fsp.writeFile(p, orig.includes("\r\n") ? out.replace(/\n/g, "\r\n") : out);
 }
 
-// ---------- weekly status and lesson plan: hw.db, exported to the root files ----------
-// Editing weekly_status.md by hand still works: a file newer than the latest revision becomes a revision.
-// The root files belong to the active (working-on) enrollment only. Another enrollment's status and ladder are
-// read from and written to hw.db without touching them (a week finished after switching students).
+// ---------- weekly status and lesson plan: hw.db ----------
+// The status is the app's own record (status_revision): edited on Create Homework, updated by Save & finish,
+// exported or replaced by upload on the Progress map. Nothing outside hw.db is read or written for it.
 const isActive = (c) => c.enrollmentId === C().enrollmentId;
 const weekCtx = (week) => (week?.enrollmentId ? ctx({ dir: DATA, enrollment: week.enrollmentId }) : C());
 async function readStatus(c = C()) {
   const last = latestStatus(c);
-  if (!isActive(c)) return last?.text ?? "";
-  let file = null;
-  try { file = await read(STATUS_FILE); } catch {}
-  if (file != null && file !== last?.text && (!last || fs.statSync(STATUS_FILE).mtimeMs > Date.parse(last.at) + 1000)) {
-    saveStatus(c, file, { source: "file" });
-    return file;
-  }
-  if (last && file !== last.text) await writeLikeOriginal(STATUS_FILE, last.text);
-  return last?.text ?? file ?? "";
+  if (last) return last.text;
+  // A student with no status yet starts from the example template.
+  let text = `# Weekly status: ${c.studentName || "student"}\n\nTAUGHT: (none)\nCURRENT: (none)\nNEXT: (none)\n`;
+  try { text = await read(STATUS_EXAMPLE); } catch {}
+  saveStatus(c, text, { source: "teacher" });
+  return text;
 }
 async function writeStatus(text, { source = "teacher", assignmentId = null, c = C() } = {}) {
-  const id = saveStatus(c, text, { source, assignmentId });
-  if (isActive(c)) await writeLikeOriginal(STATUS_FILE, text);
-  return id;
+  return saveStatus(c, text, { source, assignmentId });
 }
 // The lesson plan the prompts use is the active enrollment's version. A hand edit of curriculum_ladder.md
 // (the file no longer matches what was last exported) goes into the curriculum's draft for review.
@@ -383,15 +370,16 @@ async function buildSystemPrompt(c = C()) {
     `<file name="curriculum_ladder.md">\n${ladder}\n</file>`,
     ...gold,
     "\n\n# How this app works (overrides the parts of the workflow it covers)",
-    "- You are running inside a local app, not a chat. The teacher's weekly_status.md is in the first user message, followed by the app's brief: decisions already made, standing rulings, a section plan and how well the corpus covers each section, and research notes for the sections it couldn't cover.",
+    "- You are running inside a local app, not a chat. The first user message carries the app's brief, which is this week's whole input: the inputs (date, topics, options, fact sheet), unit statuses and allowed units, review priority, bans, the teacher's standing conventions, recent sets, decisions already made, a section plan with corpus coverage, and research notes for sections the corpus couldn't cover. Wherever the workflow mentions weekly_status.md, read it as the brief. There is no status file to read or reconcile.",
     "- There is no opening question round in this app. Never reply with only questions, and never stop before the checkpoint. Whenever the workflow says to ask the teacher (missing fields, unit confirmations, definitions for a new unit, edge cases), make the most conservative reasonable choice, use it, and list it in the checkpoint: under **Assumptions** (one line each) for choices you made, and under **Needs your call** (at most 5) for the ones the teacher should rule on. For a new unit's definitions, use the standard precise definition in Wu's style, state it in the checkpoint, and avoid its edge cases. The checkpoint is the teacher's only chance to correct you, so make it complete.",
-    "- Treat the brief's decisions and standing rulings as the teacher's answers. Never ask about them again.",
+    "- Treat the brief's decisions and standing conventions as the teacher's answers. Never ask about them again. Assumptions you list in a checkpoint apply to this set only.",
     "- Tools: web search, web fetch, and the app's own tools `cas`, `corpus_search` and `corpus_add`. There is no bash tool. The app compiles your .tex with Tectonic and will send you any errors or overfull-box warnings. In the final step, write \"not compiled (the app will compile it)\".",
     "- Use `cas` while vetting candidates for the checkpoint, and in the final to verify every answer-key entry that isn't already verified: substitute solutions back, check for extraneous roots, confirm factorizations. Corpus problems marked `cas ✓` already have a CAS-checked answer: if you use one verbatim (same text, same answer), don't re-check it, just set casVerified true in the manifest. Adapted, web and new problems still need checking. Batch the problems into a few calls that print one line per problem. In the final reply say how many answers you checked with the CAS and how many came verified from the corpus.",
     "- Problem corpus: the teacher's cache of problems from past sets, earlier research and favorites. The first message includes the best matches for this week. Draw from the corpus first, and adapt rather than copy problems marked used (especially recent ones). Use `corpus_search` for more. Web search only for sections where the corpus and the research notes together have fewer than 3 suitable candidates, and keep it brief: a few targeted searches, not a second research pass. When code processes search or fetch results, print only the parts you need (a problem's text, a short excerpt), never whole result objects or page contents: everything printed stays in the conversation and is paid for on every later call. Whenever you find good problems on the web, call `corpus_add` with them, including ones you won't use this week. In the checkpoint, say which problems came from the corpus (by id) and which came from the web.",
-    "- In the final step put the complete .tex in exactly one ```latex fenced block, and the complete updated weekly_status.md in exactly one ```markdown fenced block. The app extracts both.",
-    "- After the .tex and status blocks, add one ```json fenced block: a problem manifest, an array with one object per \\item in the set, in the order they appear in the .tex: {\"part\": 1, \"n\": 3, \"answer\": \"...\", \"units\": [\"U14\"], \"source\": \"corpus:<id>\" or \"web:<url>\" or \"new\", \"casVerified\": true}. Don't repeat the problem text: the app reads it from the .tex. The app saves it to the corpus when the teacher saves the set.",
-    "- If the teacher asks for changes after the final, always reply with the complete revised .tex, weekly_status.md and manifest again.",
+    "- In the final step put the complete .tex in exactly one ```latex fenced block. Do not write a weekly_status.md: the app keeps the status and updates it itself.",
+    "- After the .tex, add one ```json fenced block: a problem manifest, an array with one object per \\item in the set, in the order they appear in the .tex: {\"part\": 1, \"n\": 3, \"answer\": \"...\", \"units\": [\"U14\"], \"source\": \"corpus:<id>\" or \"web:<url>\" or \"new\", \"casVerified\": true}. Don't repeat the problem text: the app reads it from the .tex. The app saves it to the corpus when the teacher saves the set.",
+    "- Then one more ```json fenced block, an object with your proposed changes to the status for next week: {\"history\": \"one line for Recent history: what this set covered and anything to follow up\", \"review\": [\"the full updated Review priority list, most important first\"], \"conventions\": [\"a new standing convention, only if the teacher stated a lasting rule this week\"]}. Omit review to keep the current list; conventions is usually empty. The app moves promoted units to CURRENT and clears the week's input itself.",
+    "- If the teacher asks for changes after the final, always reply with the complete revised .tex, the manifest and the status-update block again.",
   ].join("\n");
 }
 
@@ -683,16 +671,11 @@ async function turnSlice(id, lim = {}) {
     t.phase = "wrap";
   } finally { clearInterval(heartbeat); }
 
-  // 4. Wrap up: on approval the checkpoint's assumptions become standing rulings; the reply joins the week.
+  // 4. Wrap up: the reply joins the week.
   if (t.phase === "wrap") {
     const w = await loadWeek(id);
     if (week.started) w.started = true;
     const result = t.result || { ok: false, error: "no reply" };
-    if (t.kind === "approve") {
-      const cp = [...w.messages].reverse().find((m) => m.role === "assistant" && isCheckpointText(m.text));
-      const add = assumptionsOf(cp?.text || "").map((x) => ({ text: x, week: id }));
-      if (add.length) { try { saveRulings(DATA, add); } catch (e) { logEvent("stage", "rulings-error", { error: e.message }); } }
-    }
     if (result.text || result.ok) {
       w.messages.push({ role: "assistant", text: result.text, at: new Date().toISOString(), error: result.ok ? undefined : result.error, usage: t.usage || undefined, tools: t.tools, trace: live.trace, stage: t.stage, model: modelFor(t.stage, w), stages: t.stages, ...(t.preamble ? { preamble: t.preamble } : {}) });
     } else {
@@ -844,9 +827,9 @@ async function buildGuessPrompt() {
   for (const n of notes.filter((x) => TEXT_NOTE.test(x.name))) files.push(`<file name="notes/${n.name}">\n${await read(path.join(NOTES, n.name))}\n</file>`);
   const binary = notes.filter((x) => !TEXT_NOTE.test(x.name));
   return [
-    `You are estimating how far a student${STUDENT ? ` (${STUDENT})` : ""} has got through H. Wu's algebra, using two dependency graphs of the material and the evidence below: every homework set the student was given (with dates), the teacher's weekly_status.md, and any uploaded notes.`,
+    `You are estimating how far a student${STUDENT ? ` (${STUDENT})` : ""} has got through H. Wu's algebra, using two dependency graphs of the material and the evidence below: every homework set the student was given (with dates), the teacher's unit statuses, and any uploaded notes.`,
     "",
-    "First write your reasoning under a \"## Reasoning\" heading, for the teacher to read later: go through the material in order (a few lines per ladder unit or group of nodes), saying what the homework and notes show and why you chose each state. Call out anything uncertain or where you disagree with weekly_status.md. Keep it under about 700 words.",
+    "First write your reasoning under a \"## Reasoning\" heading, for the teacher to read later: go through the material in order (a few lines per ladder unit or group of nodes), saying what the homework and notes show and why you chose each state. Call out anything uncertain or where you disagree with the teacher's unit statuses. Keep it under about 700 words.",
     "Then give one ```json fenced block with this shape:",
     '{"nodes": {"e26": {"state": "done", "confidence": 0.9, "evidence": [{"file": "hw_9_11_2026.tex", "date": "2026-09-11", "quote": "short quote"}]}, "m:e46": {...}},',
     ' "ladderToWu": {"U05": ["e64", "m:e46"]},',
@@ -857,12 +840,12 @@ async function buildGuessPrompt() {
     "- \"assumed\" content nodes are background (number laws) and count as done once any algebra is done.",
     "- Word-problem method nodes are banned in these sets; mark them not-yet unless notes show otherwise.",
     "- ladderToWu: for every ladder unit id, the Wu node ids (both graphs) it covers.",
-    "- Treat weekly_status.md unit statuses as the teacher's view, but judge from the homework. Don't fill gaps by assumption.",
+    "- Treat the unit statuses as the teacher's view, but judge from the homework. Don't fill gaps by assumption.",
     binary.length ? `- Also use the uploaded note files attached after this text: ${binary.map((b) => b.name).join(", ")}` : "",
     "",
     "## Wu content DAG (arrow A -> B: A is used for B)", nodeLines(content, ""), "", edgeLines(content, ""),
     "", "## Wu methods DAG (arrow A -> B: A is used as a sub-step of B; 'rests on' = content node)", nodeLines(methods, "m:"), "", edgeLines(methods, "m:"),
-    "", "## Curriculum ladder", ladder, "", "## weekly_status.md", status, "", "## Evidence files", ...files,
+    "", "## Curriculum ladder", ladder, "", "## The teacher's unit statuses", statusDigest(status), "", "## Evidence files", ...files,
   ].join("\n");
 }
 
@@ -977,10 +960,19 @@ async function handle(req, res) {
   }
 
   if (m === "PUT" && p === "/api/status") {
-    const { text } = await body(req);
+    const { text, source } = await body(req);
     if (typeof text !== "string" || !text.trim()) return send(res, 400, { error: "empty status" });
-    await writeStatus(text, { source: "teacher" });
+    if (source === "upload") { const bad = checkStatusUpload(text); if (bad) return send(res, 400, { error: `Not uploaded: ${bad}.` }); }
+    await writeStatus(text.replace(/\r\n/g, "\n"), { source: source === "upload" ? "upload" : "teacher" });
+    if (source === "upload") logEvent("server", "status-upload", { chars: text.length });
     return send(res, 200, { ok: true });
+  }
+  if (m === "GET" && p === "/api/status/export") {
+    const c = C();
+    const text = await readStatus(c);
+    const who = (c.studentName || "student").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || "student";
+    res.writeHead(200, { "Content-Type": "text/markdown; charset=utf-8", "Content-Disposition": `attachment; filename="status_${who}_${new Date().toISOString().slice(0, 10)}.md"` });
+    return res.end(text);
   }
 
   if (m === "GET" && p.startsWith("/api/tex/")) {
@@ -1085,18 +1077,16 @@ async function handle(req, res) {
     return send(res, 200, { student: sid, enrollment: Prog.enroll(c.db, sid, cur, v.id) });
   }
   if (m === "PUT" && p === "/api/enrollment") {
-    // Switch the active student/course. The root weekly_status.md and curriculum_ladder.md follow it.
+    // Switch the active student/course. The root curriculum_ladder.md follows it.
     const { id } = await body(req);
     const c = C();
     if (!Prog.getEnrollment(c.db, Number(id))) return send(res, 404, { error: "no such enrollment" });
-    await readStatus(c); // keep any hand edit of the current file with the student it belongs to
     setActiveEnrollment(c.db, Number(id));
     setSetting(c.db, "ladder_export_hash", "");
     const n = C();
     // A student with no status yet starts from a blank one, never from the previous student's file.
     const text = latestStatus(n)?.text ?? `# Weekly status: ${n.studentName}\n\nNothing taught yet.\n`;
     if (!latestStatus(n)) saveStatus(n, text, { source: "teacher" });
-    await writeLikeOriginal(STATUS_FILE, text);
     await writeLikeOriginal(LADDER_FILE, Cur.ladderFor(n.db, n.versionId));
     setSetting(n.db, "ladder_export_hash", sha(Cur.ladderFor(n.db, n.versionId)));
     return send(res, 200, { ok: true });
@@ -1210,17 +1200,24 @@ async function handle(req, res) {
       return send(res, 200, { ok: true });
     }
     if (m === "POST" && action === "/finish") {
-      // One click: save the .tex into the project, (optionally) the new weekly_status.md, and the problems into the corpus.
-      const { name, tex, status, overwrite } = await body(req);
+      // One click: save the .tex into the project, (optionally) next week's status, and the problems into the corpus.
+      // The app applies the status changes itself: the week's promotions plus the final's status-update block.
+      const { name, tex, updateStatus, overwrite } = await body(req);
       if (!TEX_NAME.test(name || "")) return send(res, 400, { error: "Filename must look like hw_11_28_2026.tex" });
       const dest = path.join(ROOT, name);
       if (fs.existsSync(dest) && !overwrite) return send(res, 409, { error: `${name} already exists` });
       await fsp.writeFile(dest, tex);
       const week = await loadWeek(id);
-      if (status && status.trim()) await writeStatus(status.trimEnd() + "\n", { source: "claude", assignmentId: id, c: weekCtx(week) });
+      let statusUpdated = false;
+      if (updateStatus) {
+        const wc = weekCtx(week), base = await readStatus(wc);
+        const fin = [...week.messages].reverse().find((x) => x.role === "assistant" && /```(latex|tex)\n/.test(x.text || ""));
+        const next = applyWeekUpdate(base, weekUpdateInputs(week, fin, base));
+        if (next.trimEnd() !== base.trimEnd()) { await writeStatus(next.trimEnd() + "\n", { source: "claude", assignmentId: id, c: wc }); statusUpdated = true; }
+      }
       let corpus = null;
       try { corpus = saveManifest(week, name, tex); tagInBackground(corpus.toTag || [], name); delete corpus.toTag; } catch (e) { corpus = { error: e.message }; }
-      Object.assign(week, { done: true, savedAs: name, statusUpdated: !!(status && status.trim()), corpusSaved: corpus });
+      Object.assign(week, { done: true, savedAs: name, statusUpdated, corpusSaved: corpus });
       await saveWeek(week);
       return send(res, 200, { ok: true, corpus });
     }
@@ -1242,8 +1239,8 @@ async function handle(req, res) {
         for (const h of pre.hits) if (ids.length < 40 && !ids.includes(h.p.id)) ids.push(h.p.id);
         const hits = ids.map((i) => byId.get(i)).filter(Boolean).map((x) => ({ p: x, why: { recent: (x.usedOn || []).some((d) => Date.now() - Date.parse(d) < 42 * 864e5) } }));
         userMsg.preload = { count: hits.length, units: brief.allowedUnits, ids };
-        userMsg.brief = { decisions: brief.decisions, sections: brief.sections.map(({ corpusIds, ...x }) => x), needsResearch: brief.needsResearch };
-        prompt += `\n\n# Brief from the app (settled before you were called)\n${briefText(brief)}\n\n## Corpus problems for this week (${corpus.length} in the corpus; search for more with corpus_search)\n${formatHits(hits)}`;
+        userMsg.brief = { date: brief.date, promotions: brief.promotions, decisions: brief.decisions, sections: brief.sections.map(({ corpusIds, ...x }) => x), needsResearch: brief.needsResearch };
+        prompt += `\n\n# Brief from the app (this week's whole input, settled before you were called)\n${briefText(brief)}\n\n## Corpus problems for this week (${corpus.length} in the corpus; search for more with corpus_search)\n${formatHits(hits)}`;
       }
       if (DRY_STAGES) {
         const plan = planStages(userMsg.kind, week, brief || (await weekBrief(overrides || {}, wc)));

@@ -15,7 +15,7 @@ The page is split in two: the conversation with Claude on the left (every tool c
    - **Make a set on Uxx →** (or **Make a set →** next to any unit under **We moved on**) is the one-click path: it marks that unit current, sets the date a week after the last saved set, keeps the rest of last week's input, and has Claude write the finished set in one pass, with no questions and no outline. The reply opens with a **Judgment calls** list; correct any of them in one chat message, or go straight to step 3.
    - To steer the set instead, fill in the date and topics and click **Generate outline**.
    - **Options** is a dropdown: the number of sections, and checkboxes for an answer key, worked examples, a unit circle reference sheet, graph paper and the disclaimer. Rows with a › open a small menu of numbers on hover (or click): how many sections, how many worked examples.
-   - Everything autosaves to `weekly_status.md`. **view MD** shows the raw file.
+   - Everything autosaves to the student's status record in `ui/data/hw.db`. **Edit status (Markdown)** opens the whole record (unit statuses, review priority, standing conventions, history). Claude never sees this file: the app renders it into the week's brief, which is Claude's whole input.
 2. **Review the outline.**
    - If Claude asks questions, answer them or click **Use your defaults**.
    - When it sends the checkpoint, approve it or send changes.
@@ -23,11 +23,11 @@ The page is split in two: the conversation with Claude on the left (every tool c
    - The PDF compiles automatically, with checks for banned or gated words and for lines that run past the margin.
    - If something is flagged, one click asks Claude to fix it.
    - Changes to next week's status are shown as a list. **view MD** shows the diff.
-   - **Save & finish** writes the `.tex` into the project folder and updates `weekly_status.md`. The old status file is backed up to `ui/data/backups/`. The set's problems go into the corpus and are tagged by content and solution method in the background (`tag` lines in the log).
+   - **Save & finish** writes the `.tex` into the project folder and updates the status itself: units the week promoted become CURRENT, and Claude's proposed history line, review list and any new standing conventions (a small JSON block in the final) are applied. Every earlier version stays in the status history. The set's problems go into the corpus and are tagged by content and solution method in the background (`tag` lines in the log).
 
 Header buttons:
 - **$ badge**: what each turn cost on your API account, tokens, searches, tool calls, and an estimated research vs writing split. `HW_BUDGET_USD=2` caps each turn.
-- **Progress map**: Wu's school algebra as two DAGs (Content and Methods). **Guess progress** has Claude read every homework file and your uploaded notes and mark each block done / partly / not yet; click a block to see its evidence or override it. **Lesson plan › Edit units** adds, changes or removes units (a removed unit is retired or merged into another); edits go to the course's draft, which you publish on **Courses**.
+- **Progress map**: Wu's school algebra as two DAGs (Content and Methods). **Export status.md** / **Upload status.md** (Lesson plan) download the status record or replace it with an edited copy; the root `weekly_status.md` is no longer read or written. **Guess progress** has Claude read every homework file and your uploaded notes and mark each block done / partly / not yet; click a block to see its evidence or override it. **Lesson plan › Edit units** adds, changes or removes units (a removed unit is retired or merged into another); edits go to the course's draft, which you publish on **Courses**.
 - **Corpus**: every problem Claude can reuse (past homework, problems it saved from research). ★ to prefer, ✕ to never offer again.
 - **History**: a searchable list of sessions (one per homework, grouped by date). Each opens read-only in place: the **Conversation** (your inputs and Claude's steps, tool calls, replies and cost) and the **Homework** it produced (PDF / Source / Compile log). Older `.tex` files with no session are listed at the bottom; ← → between sessions.
 
@@ -41,12 +41,13 @@ Options: `HW_STUDENT=<name>` (shown in the UI and prompts; default generic), `HW
 
 | File | Owns |
 |---|---|
-| `server.mjs` | HTTP API, `weekly_status.md` read/write, the Claude runs (`runClaude`, `buildSystemPrompt`), compiles, save & finish (`/finish`, `saveManifest`) |
+| `server.mjs` | HTTP API, the status record (hw.db) read/write and export, the Claude runs (`runClaude`, `buildSystemPrompt`), compiles, save & finish (`/finish`, `saveManifest`) |
 | `lib/tagger.mjs` | tags problems with Wu content and methods nodes (one cheap Claude pass), used by Save & finish, seeding and `tag-corpus.mjs` |
 | `lib/corpus.mjs` | problem corpus: load/save, search, `splitTex`, `attachTex` (manifest → problem LaTeX) |
 | `mcp/hw-tools.mjs` | the MCP tools Claude calls: `cas`, `corpus_search`, `corpus_add` |
 | `public/state.js` | app state, phases (`phaseOf`), `send`, polling, `currentFinal`, status autosave |
-| `public/lib.js` | shared helpers: `S` (server state), weekly_status parsing/writing, `lintTex`, `mathify`, `nextSetDate` |
+| `public/statusmd.js` | the status record as Markdown: applying a finished week (`applyWeekUpdate`), reading the final's status-update block, checking uploads |
+| `public/lib.js` | shared helpers: `S` (server state), status parsing/writing, `lintTex`, `mathify`, `nextSetDate` |
 | `public/work.js` | right pane: units widget and **Make a set** (`quickSet`), setup form, outline view, final checks and save bar |
 | `public/chat.js` | left pane: conversation, tool chips, composer |
 | `public/topics.js` | topic chips |
