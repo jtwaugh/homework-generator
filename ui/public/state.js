@@ -129,6 +129,7 @@ export async function flushStatus(backup = false) {
 // ---------- talking to Claude ----------
 
 let pollTimer = null, tickTimer = null;
+let sending = null; // id of the week whose POST /message is still open: until it answers, the server may not know the turn is running yet
 
 export async function send(kind, text, extra = {}) {
   const week = app.week;
@@ -137,11 +138,12 @@ export async function send(kind, text, extra = {}) {
   week.running = true;
   week.sendError = null;
   week.live = { text: "", tools: [], startedAt: Date.now() };
+  sending = week.id;
   render();
   fetch(`/api/weeks/${week.id}/message`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, kind, ...extra }) })
     .then(async (r) => { if (!r.ok) throw new Error((await r.json()).error); const rd = r.body.getReader(); while (!(await rd.read()).done); })
     .catch((e) => { if (app.week?.id === week.id) app.week.sendError = e.message; })
-    .finally(() => poll());
+    .finally(() => { sending = null; poll(); });
   startPolling();
 }
 export const stop = () => app.week && api(`/api/weeks/${app.week.id}/stop`, { method: "POST" });
@@ -157,10 +159,12 @@ async function poll() {
   const was = app.week.running, sendError = app.week.sendError, id = app.week.id;
   const w = await api(`/api/weeks/${id}`).catch(() => null);
   if (!w || app.week?.id !== id) return;
+  if (!w.running && sending === id) Object.assign(w, { running: true, live: app.week.live, messages: app.week.messages }); // the turn hasn't been registered yet
   app.week = w;
   if (sendError && !w.running) w.sendError = sendError;
+  if (w.running && !pollTimer) startPolling();
   if (!w.running) {
-    clearInterval(pollTimer); clearInterval(tickTimer);
+    clearInterval(pollTimer); clearInterval(tickTimer); pollTimer = tickTimer = null;
     if (was) { await refresh(false); if (document.hidden) app.finishedWhileHidden = true; }
   }
   render();
