@@ -1188,6 +1188,8 @@ export async function app(req, res) {
   const u = req.url.split("?")[0];
   const dynamic = !u.startsWith("/") || u.startsWith("/api/") || u.startsWith("/build/") || u === "/";
   if (dynamic) { try { await mirror.pull(); } catch (e) { logEvent("mirror", "pull-error", { error: e.message }); } }
+  const dbStamp = () => { try { const s = fs.statSync(path.join(DATA, "hw.db")); return `${s.size}:${s.mtimeMs}`; } catch { return null; } };
+  const dbBefore = mirror.enabled ? dbStamp() : null;
   try {
     try { if (await login.gate(req, res)) return; } catch (e) { if (!res.headersSent) send(res, 500, { error: e.message }); return; }
     // Static files and the log endpoints themselves would drown everything else out.
@@ -1196,7 +1198,9 @@ export async function app(req, res) {
     catch (e) { logEvent("server", "error", { path: u, error: e.stack || e.message }); if (!res.headersSent) send(res, 500, { error: e.message }); else res.end(); }
   } finally {
     // Writes (including a login, which the gate answers itself) go to durable storage before the instance can sleep.
-    if (req.method !== "GET" && mirror.enabled) { try { await mirror.push(); } catch (e) { logEvent("mirror", "push-error", { error: e.message }); } }
+    // A GET can write hw.db too: the first one migrates the v0 files, and reads of the root status/ladder files
+    // record hand edits. Push those as well, or they would stay on this instance.
+    if (mirror.enabled && (req.method !== "GET" || dbStamp() !== dbBefore)) { try { await mirror.push(); } catch (e) { logEvent("mirror", "push-error", { error: e.message }); } }
   }
 }
 
