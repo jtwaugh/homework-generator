@@ -102,12 +102,15 @@ try {
   await step("shows the methods board", "ui_eval", { js: "__hw.summary().dag.board" }, /methods/);
   await step("Lesson plan sub-item", "ui_click", sel("[data-dag=plan]"), /GET \/api\/dag status=200/);
   await step("lists the U units", "ui_eval", { js: "[...document.querySelectorAll('#p-dag .plan-unit')].map((x) => x.dataset.unit).join(' ')" }, /U01 .*U24/);
-  await step("Inference history sub-item", "ui_click", sel("[data-dag=runs]"), /GET \/api\/dag status=200/);
-  await step("lists runs", "ui_eval", { js: "document.querySelector('#p-dag .dag-runs') ? 'runs view' : 'missing'" }, /runs view/);
   await step("Content sub-item", "ui_click", sel("[data-dag=content]"), /GET \/api\/dag status=200/);
   await step("select a block", "ui_click", sel("#p-dag g.node[data-id=e28]"), /dag-select board=content id=e28/);
   await step("mark it done", "ui_click", sel("#p-dag [data-set=done]"), /PUT \/api\/dag status=200/);
-  await step("Corpus tab", "ui_click", sel(".nav-item[data-page=corpus]"), /ui: page from=dag to=corpus/, /GET \/api\/corpus status=200/);
+  await step("History tab", "ui_click", sel(".nav-item[data-page=history]"), /ui: page from=dag to=history/);
+  await step("Inference sub-item", "ui_click", sel("[data-hist=inference]"), /GET \/api\/dag status=200/);
+  await step("lists runs", "ui_eval", { js: "document.querySelector('#p-history .inf-runs') && document.querySelector('#p-history .h-sessions').hidden ? 'runs view' : 'missing'" }, /runs view/);
+  await step("Sessions sub-item", "ui_click", sel("[data-hist=sessions]"), /click/);
+  await step("sessions shown", "ui_eval", { js: "document.querySelector('#p-history .h-inf').hidden && !document.querySelector('#p-history .h-sessions').hidden ? 'sessions' : 'wrong'" }, /sessions/);
+  await step("Corpus tab", "ui_click", sel(".nav-item[data-page=corpus]"), /ui: page from=history to=corpus/, /GET \/api\/corpus status=200/);
   await step("★ a problem", "ui_click", sel("#p-corpus .cp .star"), /data-set=favorite/, /PATCH \/api\/corpus\/\S+ status=200/);
   await step("back to Create Homework", "ui_click", sel(".nav-item[data-page=create]"), /ui: page from=corpus to=create/);
   await step("Create Homework again: fresh setup", "ui_click", sel(".nav-item[data-page=create]"), /page-reselect page=create/, /GET \/api\/state status=200/);

@@ -1,11 +1,10 @@
 // Wu DAG progress map: the content board and the methods board (snapshots of the whiteboards), coloured by
 // how far the student has got. States come from Claude's guess (from homework + uploaded notes) unless the teacher
 // overrides a node ("set by you"). Methods ids are namespaced "m:eNN" everywhere outside their own file.
-// The sidebar sub-items pick the mode: the content board, the methods board, or the inference history
-// (every guess run with its chain of thought, tool calls and cost). Per-node evidence lives only there.
+// The sidebar sub-items pick the mode: the content board, the methods board, or the lesson plan.
+// Every guess run (chain of thought, tool calls, cost, per-node evidence) is under History › Inference.
 // Pure helpers (edgePath, computeStates, ladderHints, statusText) are exported for ui/scripts/test.mjs.
-import { $, $$, esc, api, S, parseUnitStatuses, log, md } from "./lib.js";
-import { fmtUSD } from "./cost.js";
+import { $, $$, esc, api, S, parseUnitStatuses, log } from "./lib.js";
 
 export const LOW_CONFIDENCE = 0.6;
 const BOARD_LABEL = { content: "Content", methods: "Methods" };
@@ -146,9 +145,9 @@ export function ladderHints(statusMd, ladderToWu, guess, overrides) {
 
 // ---------- view ----------
 
-const D = { data: null, mode: "content", sel: null, view: null, poll: null, side: "info", dragging: null, run: null, runs: {} };
+const D = { data: null, mode: "content", sel: null, view: null, poll: null, side: "info", dragging: null };
 Object.defineProperty(D, "board", { get: () => (D.mode === "methods" ? "methods" : "content"), enumerable: true });
-const MODE_LABEL = { content: "Content", methods: "Methods", plan: "Lesson plan", runs: "Inference history" };
+const MODE_LABEL = { content: "Content", methods: "Methods", plan: "Lesson plan" };
 const STATUS_LABEL = { TAUGHT: "Taught", CURRENT: "Current", NEXT: "Next", FUTURE: "Future" };
 
 function bbox(dag) {
@@ -231,84 +230,6 @@ function notesPanel() {
   </div>`;
 }
 
-// ---------- inference history ----------
-
-const fmtDur = (ms) => (ms == null ? "" : ms < 60000 ? `${Math.round(ms / 1000)}s` : `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`);
-const kb = (c) => (c == null ? "" : c < 1024 ? `${c} chars` : `${Math.round(c / 1024)}K chars`);
-
-function runsListHtml() {
-  const runs = D.data.runs || [], job = D.data.job;
-  const total = runs.reduce((a, r) => a + (r.costUSD || 0), 0);
-  const live = job?.running ? `<li data-run="live" class="${D.run === "live" ? "on" : ""}"><span><span class="spin"></span> Running now</span><small>${esc(D.data.guessModel || "")} · ${fmtDur(job.elapsed)}</small></li>` : "";
-  const rows = runs.map((r) => `<li data-run="${esc(r.id)}" class="${D.run === r.id ? "on" : ""}${r.ok ? "" : " failed"}">
-    <span>${esc(new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))}${r.id === D.data.guess?.runId ? ' <span class="cur-tag">current</span>' : ""}</span>
-    <small>${esc(r.model || "")} · ${r.ok ? fmtUSD(r.costUSD) : "failed"}${r.ms ? " · " + fmtDur(r.ms) : ""}</small></li>`).join("");
-  return `<h3>Guess runs</h3><p class="muted small">${runs.length} run${runs.length === 1 ? "" : "s"} · ${fmtUSD(total)} in all</p>
-    <ul class="h-weeks">${live}${rows || (live ? "" : '<li class="muted">No guesses yet</li>')}</ul>`;
-}
-
-function logHtml(entries, live = false) {
-  if (!entries?.length) return `<p class="muted small">${live ? '<span class="spin"></span> Waiting for Claude…' : "No log was kept for this run (it predates inference history)."}</p>`;
-  return `<ol class="cot">${entries.map((e) => {
-    if (e.t === "tool") return `<li class="cot-tool"><b>${esc(e.name)}</b> <code>${esc(e.input || "")}</code> <span class="muted">${e.ok === false ? "failed" : kb(e.chars)}${e.ms != null ? " · " + fmtDur(e.ms) : ""}</span></li>`;
-    // The guess reply is reasoning prose, then the ```json answer: show the prose, fold the JSON away.
-    const cut = e.t === "text" ? e.text.search(/```json/) : -1;
-    const prose = (cut >= 0 ? e.text.slice(0, cut) : e.text).trim(), json = cut >= 0 ? e.text.slice(cut) : "";
-    const head = e.t === "thinking" ? "Thinking" : "Reasoning";
-    const long = !json && prose.length > 2500;
-    const body = prose ? `<div class="md">${md(prose)}</div>` : "";
-    const raw = json ? `<details class="cot-json"><summary>Raw answer <span class="muted">(JSON, ${kb(json.length)})</span></summary><pre>${esc(json.replace(/^```json\s*|```\s*$/g, ""))}</pre></details>` : "";
-    return `<li class="cot-${e.t}">${long ? `<details><summary>${head} <span class="muted">(${kb(e.text.length)})</span></summary>${body}</details>` : `${body ? `<div class="cot-h">${head}</div>${body}` : ""}${raw}`}</li>`;
-  }).join("")}</ol>`;
-}
-
-function costHtml(u) {
-  if (!u) return "";
-  const models = Object.entries(u.models || {});
-  return `<table class="cost-t"><tr><th>Model</th><th>In</th><th>Out</th><th>Cache read</th><th>Cache write</th><th>Cost</th></tr>
-    ${models.map(([m, x]) => `<tr><td>${esc(m)}</td><td>${x.in}</td><td>${x.out}</td><td>${x.cacheRead}</td><td>${x.cacheWrite}</td><td>${fmtUSD(x.costUSD)}</td></tr>`).join("")}
-    <tr class="tot"><td>Total</td><td colspan="4">${u.numTurns || 0} turn${u.numTurns === 1 ? "" : "s"} · ${fmtDur(u.durationMs)}</td><td>${fmtUSD(u.costUSD)}</td></tr></table>`;
-}
-
-function nodesTableHtml(run) {
-  const nodes = Object.entries(run.nodes || {});
-  if (!nodes.length) return "";
-  const title = (k) => (k.startsWith("m:") ? D.data.methods : D.data.content)?.nodes.find((x) => x.id === k.replace(/^m:/, ""))?.title || "";
-  return `<details class="run-nodes"><summary>Per-node guesses (${nodes.length})</summary><table class="nodes-t"><tr><th>Node</th><th>State</th><th>Sure</th><th>Evidence</th></tr>
-    ${nodes.map(([k, g]) => `<tr><td><button class="link" data-goto-key="${esc(k)}">${esc(k)}</button> ${esc(title(k))}</td><td class="d-${esc(g.state || "")}">${esc(g.state || "")}</td><td>${g.confidence != null ? Math.round(g.confidence * 100) + "%" : ""}</td>
-      <td>${(g.evidence || []).map((e) => `<div><b>${esc(e.file || "")}</b>${e.quote ? ` <q>${esc(e.quote)}</q>` : ""}</div>`).join("")}</td></tr>`).join("")}</table></details>`;
-}
-
-function runDetailHtml() {
-  const job = D.data.job;
-  if (D.run === "live") {
-    if (!job?.running) return '<p class="muted">The run finished. Pick it on the left.</p>';
-    return `<div class="row"><h2>Running now</h2><span class="muted small">${esc(D.data.guessModel || "")} · ${fmtDur(job.elapsed)}</span><span class="spacer"></span><button class="secondary" data-act="stop-guess">Stop</button></div>
-      <h3>Chain of thought</h3>${logHtml(job.log, true)}`;
-  }
-  const r = D.runs[D.run];
-  if (!D.run) return `<div class="h-empty muted">${(D.data.runs || []).length ? "Pick a run on the left." : "No guesses yet. Press <b>Guess progress</b>."}</div>`;
-  if (!r) return '<p class="muted"><span class="spin"></span> Loading…</p>';
-  if (r.error && !r.log) return `<div class="err">${esc(r.error)}</div>`;
-  const hints = r.ok ? ladderHints(S.status, r.ladderToWu, { nodes: r.nodes }, D.data.overrides) : [];
-  return `<div class="row"><h2>${esc(new Date(r.at).toLocaleString())}</h2><span class="muted small">${esc(r.model || "")} · ${r.files ?? "?"} files read</span></div>
-    ${r.ok ? "" : `<div class="err">Failed: ${esc(r.error || "")}</div>`}
-    ${r.summary ? `<h3>Summary</h3><p>${esc(r.summary)}</p>` : ""}
-    <h3>Cost</h3>${costHtml(r.usage) || '<p class="muted small">No usage recorded.</p>'}
-    ${r.ok ? `<h3>Against weekly_status</h3>${hints.length ? `<ul class="hints">${hints.map((h) => `<li class="h-${h.kind}">${esc(h.text)} <span class="nls">${h.ids.map((k) => `<button class="link" data-goto-key="${esc(k)}">${esc(k)}</button>`).join(" ")}</span></li>`).join("")}</ul>` : '<p class="muted small">No disagreements between the unit statuses and this guess.</p>'}` : ""}
-    <h3>Chain of thought</h3>${logHtml(r.log)}
-    ${nodesTableHtml(r)}`;
-}
-
-async function pickRun(id) {
-  D.run = id;
-  drawAll();
-  if (id && id !== "live" && !D.runs[id]) {
-    try { D.runs[id] = await api(`/api/dag/runs/${encodeURIComponent(id)}`); } catch (e) { D.runs[id] = { error: e.message }; }
-    if (D.run === id) drawAll();
-  }
-}
-
 function planHtml() {
   const groups = lessonPlan(S.ladder, S.status);
   if (!groups.length) return '<p class="muted plan-empty">No U units found in curriculum_ladder.md.</p>';
@@ -327,10 +248,6 @@ function planHtml() {
     </section>`).join("")}</div>`;
 }
 
-function runsHtml() {
-  return `<div class="h-wrap dag-runs"><aside class="h-list">${runsListHtml()}</aside><div class="h-main run-main">${runDetailHtml()}</div></div>`;
-}
-
 // ---------- page ----------
 
 function headHtml() {
@@ -341,13 +258,13 @@ function headHtml() {
       <span class="dag-count"><b>${n("TAUGHT")} of ${us.length} taught</b> · ${n("CURRENT")} current${n("NEXT") ? ` · ${n("NEXT")} next` : ""}</span>
       <span class="spacer"></span><span class="muted small">From curriculum_ladder.md and weekly_status.md · change statuses on Create Homework</span>`;
   }
-  const count = D.mode === "runs" ? "" : (() => { const c = counts(curDag(), statesNow()); return `<span class="dag-count"><b>${c.done} of ${c.total} done</b>${c.partial ? ` · ${c.partial} partly` : ""} · ${c.ready} ready</span>`; })();
+  const c = counts(curDag(), statesNow()), count = `<span class="dag-count"><b>${c.done} of ${c.total} done</b>${c.partial ? ` · ${c.partial} partly` : ""} · ${c.ready} ready</span>`;
   return `<h2>Progress map <span class="muted">· ${esc(MODE_LABEL[D.mode])}</span></h2>
     ${count}
     <span class="spacer"></span>
     ${running ? `<span class="muted small"><span class="spin"></span> Claude is reading the homework and notes… ${Math.round((job.elapsed || 0) / 1000)}s${job.tools?.length ? ` · read ${job.tools.length} file${job.tools.length > 1 ? "s" : ""}` : ""}</span><button class="secondary" data-act="stop-guess">Stop</button>`
       : `${job?.error ? `<span class="bad-text small" title="${esc(job.error)}">Last guess failed</span>` : ""}<button class="primary" data-act="guess" title="One ${esc(D.data.guessModel || "")} run over every homework file and your notes, for both boards">${D.data.guess ? "Guess again" : "Guess progress"}</button>`}
-    ${D.mode === "runs" ? "" : '<button class="ghost" data-act="fit" title="Fit to screen">⤢</button>'}`;
+    <button class="ghost" data-act="fit" title="Fit to screen">⤢</button>`;
 }
 
 function syncSidebar() {
@@ -360,12 +277,6 @@ function drawAll() {
   if (D.mode === "plan") { d.innerHTML = `<div class="dag-head row">${headHtml()}</div>${planHtml()}`; return; }
   if (!D.data) { d.innerHTML = `<p class="muted">Loading…</p>`; return; }
   if (!curDag()) { d.innerHTML = `<div class="row dag-head"><h2>Progress map</h2></div><p class="err">ui/data/wu_dag.json is missing.</p>`; return; }
-  if (D.mode === "runs") {
-    const keep = $(".run-main", d)?.scrollTop || 0;
-    d.innerHTML = `<div class="dag-head row">${headHtml()}</div>${runsHtml()}`;
-    const m = $(".run-main", d); if (m) m.scrollTop = keep;
-    return;
-  }
   D.view ||= bbox(curDag());
   d.innerHTML = `<div class="dag-head row">${headHtml()}</div>
     <div class="dag-main"><div class="dag-canvas">${svgHtml()}</div>
@@ -377,22 +288,28 @@ function drawSvgOnly() { const c = $("#p-dag .dag-canvas"); if (c) c.innerHTML =
 
 async function load() {
   D.data = await api("/api/dag");
-  if (D.mode === "runs" && !D.run) return pickRun(D.data.job?.running ? "live" : D.data.runs?.[0]?.id || null).then(startPoll);
   drawAll();
   startPoll();
 }
 function startPoll() {
   clearInterval(D.poll);
   if (D.data.job?.running) D.poll = setInterval(async () => {
-    const was = D.data.job?.running;
     D.data = await api("/api/dag");
-    if (!D.data.job?.running) { clearInterval(D.poll); if (was && D.run === "live") return pickRun(D.data.runs?.[0]?.id || null); }
+    if (!D.data.job?.running) clearInterval(D.poll);
     if (!$("#p-dag").hidden) drawAll();
   }, 2000);
 }
 
+// Show one block ("eNN" or "m:eNN") on its board, selected: used by links here and from History › Inference.
+export function focusNode(k) {
+  const mode = k.startsWith("m:") ? "methods" : "content";
+  if (mode !== D.board || D.mode === "plan") D.view = null;
+  D.mode = mode; D.sel = k.replace(/^m:/, ""); D.side = "info";
+  log("dag-mode", { mode });
+}
+
 export async function openDag(btn) {
-  if (btn?.dataset.dag && btn.dataset.dag !== D.mode) { const wasBoard = D.board; D.mode = btn.dataset.dag; if (D.board !== wasBoard) { D.sel = null; D.view = null; } if (D.mode === "runs") D.run = null; }
+  if (btn?.dataset.dag && btn.dataset.dag !== D.mode) { const wasBoard = D.board; D.mode = btn.dataset.dag; if (D.board !== wasBoard) { D.sel = null; D.view = null; } }
   if (!D.data) drawAll();
   await load();
 }
@@ -420,11 +337,10 @@ export function initDag() {
     const sd = t.closest("[data-side]"); if (sd) { D.side = sd.dataset.side; return drawAll(); }
     const a = t.closest("[data-act]");
     if (a?.dataset.act === "fit") { D.view = bbox(curDag()); return drawSvgOnly(); }
-    if (a?.dataset.act === "guess") { try { await api("/api/dag/guess", { method: "POST" }); } catch (err) { alert(err.message); } if (D.mode === "runs") D.run = "live"; return load(); }
+    if (a?.dataset.act === "guess") { try { await api("/api/dag/guess", { method: "POST" }); } catch (err) { alert(err.message); } return load(); }
     if (a?.dataset.act === "stop-guess") { await api("/api/dag/guess/stop", { method: "POST" }); return setTimeout(load, 500); }
-    const rn = t.closest("[data-run]"); if (rn) return pickRun(rn.dataset.run);
     const s = t.closest("[data-set]"); if (s && D.sel) return setNode(keyOf(D.board, D.sel), s.dataset.set);
-    const gk = t.closest("[data-goto-key]"); if (gk) { const k = gk.dataset.gotoKey; const mode = k.startsWith("m:") ? "methods" : "content"; if (mode !== D.board || D.mode === "runs") D.view = null; D.mode = mode; D.sel = k.replace(/^m:/, ""); D.side = "info"; log("dag-mode", { mode }); return drawAll(); }
+    const gk = t.closest("[data-goto-key]"); if (gk) { focusNode(gk.dataset.gotoKey); return drawAll(); }
     const dn = t.closest("[data-del-note]"); if (dn) { if (!confirm(`Delete ${dn.dataset.delNote}?`)) return; const r = await api(`/api/notes/${encodeURIComponent(dn.dataset.delNote)}`, { method: "DELETE" }); D.data.notes = r.notes; return drawAll(); }
   });
   d.addEventListener("change", (e) => { if (e.target.matches("#dag-drop input")) upload([...e.target.files]); });

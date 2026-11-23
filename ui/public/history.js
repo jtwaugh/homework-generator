@@ -1,16 +1,19 @@
-// History page: a list of sessions on the left (one per generated homework, newest first, grouped by date
+// History › Sessions: a list of sessions on the left (one per generated homework, newest first, grouped by date
 // like the Claude app), and the selected session on the right, read-only: the Conversation (the teacher's
 // inputs and all of Claude's work: steps, tool calls, replies, cost) and the Homework it produced
 // (PDF | Source | Compile log). Old .tex files with no session in the app are listed at the bottom.
 // Compiles are cached by content hash on the server, so flipping between sessions is quick after the first time.
+// History › Inference (every progress-map guess run) is inference.js; the sidebar sub-items pick which shows.
 import { $, $$, esc, api, S, extractBlock } from "./lib.js";
 import { app, splitMessages, hasTex, openWeek } from "./state.js";
 import { fmtUSD, openCost } from "./cost.js";
 import { transcriptHtml } from "./chat.js";
 import { isShown, showPage } from "./pages.js";
+import { openInference } from "./inference.js";
 
 // sel: "w:<week id>" or "f:<file name>". view: "chat" | "hw". tab: the Homework sub-tab.
-const H = { sel: null, view: "chat", tab: "pdf", q: "", week: null, weekErr: null, tex: null, texFrom: "", result: null, loading: false, filesOpen: false };
+// sub: the sub-view, "sessions" | "inference".
+const H = { sub: "sessions", sel: null, view: "chat", tab: "pdf", q: "", week: null, weekErr: null, tex: null, texFrom: "", result: null, loading: false, filesOpen: false };
 
 const savedNames = () => new Set(S.weeks.map((w) => w.savedAs).filter(Boolean));
 const looseFiles = () => [...S.texFiles].reverse().filter((n) => !savedNames().has(n));
@@ -145,7 +148,12 @@ async function select(key) {
   if (H.sel === key) drawView();
 }
 
-export function openHistory() {
+export function openHistory(btn) {
+  if (btn?.dataset.hist) H.sub = btn.dataset.hist;
+  for (const b of $$("[data-hist]")) b.classList.toggle("on", b.dataset.hist === H.sub);
+  $("#p-history .h-sessions").hidden = H.sub !== "sessions";
+  $("#p-history .h-inf").hidden = H.sub !== "inference";
+  if (H.sub === "inference") return openInference();
   const keys = order();
   if (!H.sel || (!keys.includes(H.sel) && !H.sel.startsWith("f:"))) { if (keys.length) return select(keys[0]); H.sel = null; return draw(); }
   select(H.sel); // refetch: the session may have moved on since
@@ -153,7 +161,7 @@ export function openHistory() {
 
 {
   const d = $("#p-history");
-  d.addEventListener("click", (e) => {
+  $(".h-sessions", d).addEventListener("click", (e) => {
     const li = e.target.closest("li[data-key]");
     if (li) return select(li.dataset.key);
     const v = e.target.closest("[data-view]");
@@ -166,7 +174,7 @@ export function openHistory() {
   d.addEventListener("toggle", (e) => { if (e.target.classList?.contains("s-files")) H.filesOpen = e.target.open; }, true);
   d.addEventListener("input", (e) => { if (e.target.matches(".s-search input")) { H.q = e.target.value; drawList(); } });
   document.addEventListener("keydown", (e) => {
-    if (!isShown("history") || document.querySelector("dialog[open]")) return;
+    if (!isShown("history") || H.sub !== "sessions" || document.querySelector("dialog[open]")) return;
     if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
     if (e.target.closest?.("input, textarea, select")) return;
     const list = order(); if (!list.length) return;

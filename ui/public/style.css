@@ -230,6 +230,8 @@ body { display: grid; grid-template-columns: 208px 1fr; overflow: hidden; }
 #p-corpus { overflow: auto; padding: 18px 28px; }
 #p-dag, #p-history { overflow: hidden; }
 #p-history .h-wrap { flex: 1; min-height: 0; }
+#p-history .h-wrap[hidden], #p-history .h-inf[hidden] { display: none; }
+#p-history .h-inf { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .badge-btn { font: 600 12.5px var(--mono); padding: 4px 10px; border-radius: 999px; background: #f0efe9; border-color: transparent; color: var(--ink); }
 .split { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(340px, 40%) 1fr; }
 .chat { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: #fbfaf7; }
@@ -498,10 +500,14 @@ body { display: grid; grid-template-columns: 208px 1fr; overflow: hidden; }
 .brief ul { margin: 4px 0 0 18px; padding: 0; }
 .u-now > .muted.small, .u-now > button.link { white-space: nowrap; }
 
-/* progress map: node panel note + inference history */
+/* progress map: node panel note */
 .np-note { margin: 4px 0 8px; }
-.dag-runs { flex: 1; min-height: 0; height: auto; }
-.dag-runs .h-list li.failed small { color: var(--warn); }
+
+/* history › inference: progress-guess runs */
+.inf-runs { flex: 1; min-height: 0; height: auto; }
+.inf-head { align-items: center; }
+.inf-head h3 { margin: 0; }
+.inf-runs .h-list li.failed small { color: var(--warn); }
 .cur-tag { font: 600 10.5px var(--mono); color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 6px; margin-left: 4px; }
 .run-main { overflow: auto; font-size: 13.5px; display: block; }
 .run-main h2 { font-size: 16px; }

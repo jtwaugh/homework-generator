@@ -1,7 +1,8 @@
 // Sidebar tabs: one <section class="page" id="p-NAME"> per tab, one [data-page=NAME] button each.
 // showPage hides the others, marks the button, remembers the tab for this browser tab, and runs the
 // page's on-show hook (registered by main.js so this module imports nothing from the views).
-// A sub-item ([data-page=NAME][data-dag=…]) is passed to the hook so the page can pick its sub-view.
+// A sub-item ([data-page=NAME][data-dag=…] / [data-hist=…]) is passed to the hook so the page can pick its
+// sub-view; a tab's sub-items (.nav-sub[data-sub-of=NAME]) show only while that tab is.
 // Clicking the tab that is already shown runs its on-reselect hook instead (Create Homework: fresh week).
 import { $$, log } from "./lib.js";
 
@@ -22,8 +23,7 @@ export function showPage(name, btn = null) {
     b.classList.toggle("on", on);
     if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
   }
-  const sub = document.getElementById("dag-sub");
-  if (sub) sub.hidden = name !== "dag";
+  for (const s of $$(".nav-sub[data-sub-of]")) s.hidden = s.dataset.subOf !== name;
   pages.current = name;
   try { sessionStorage.setItem(KEY, name); } catch {}
   if (from && from !== name) log("page", { from, to: name });

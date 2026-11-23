@@ -12,14 +12,17 @@
     <h1 id="curriculum">Wu Algebra</h1>
     <button class="nav-item" data-page="create" title="Create Homework"><span class="ni" aria-hidden="true">✎</span><span class="nl-text">Create Homework</span></button>
     <button class="nav-item" data-page="dag" title="Progress Map"><span class="ni" aria-hidden="true">◇</span><span class="nl-text">Progress Map</span></button>
-    <div class="nav-sub" id="dag-sub" hidden>
+    <div class="nav-sub" data-sub-of="dag" hidden>
       <button class="nav-subitem" data-page="dag" data-dag="content">Content</button>
       <button class="nav-subitem" data-page="dag" data-dag="methods">Methods</button>
       <button class="nav-subitem" data-page="dag" data-dag="plan">Lesson plan</button>
-      <button class="nav-subitem" data-page="dag" data-dag="runs">Inference history</button>
     </div>
     <button class="nav-item" data-page="corpus" title="Corpus"><span class="ni" aria-hidden="true">▤</span><span class="nl-text">Corpus</span></button>
     <button class="nav-item" data-page="history" title="History"><span class="ni" aria-hidden="true">↺</span><span class="nl-text">History</span></button>
+    <div class="nav-sub" data-sub-of="history" hidden>
+      <button class="nav-subitem" data-page="history" data-hist="sessions">Sessions</button>
+      <button class="nav-subitem" data-page="history" data-hist="inference">Inference</button>
+    </div>
     <span class="spacer"></span>
     <button id="cost-badge" class="badge-btn" data-open="cost" hidden></button>
     <button class="ghost" id="logout" hidden>Log out</button>
@@ -149,10 +152,11 @@
   <section id="p-dag" class="page" hidden></section>
   <section id="p-corpus" class="page" hidden></section>
   <section id="p-history" class="page" hidden>
-    <div class="h-wrap">
+    <div class="h-wrap h-sessions">
       <aside class="h-list" aria-label="Sessions"></aside>
       <div class="h-main"><div class="h-view"></div></div>
     </div>
+    <div class="h-inf" hidden></div>
   </section>
   </main>
 

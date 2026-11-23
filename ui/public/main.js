@@ -5,7 +5,8 @@ import { app, render, refresh, phaseOf, currentFinal, compiled, problemsOf, casC
 import { weekCost, monthCost, openCost } from "./cost.js";
 import "./chat.js";
 import { unitsModel, unitsUI, topics, loadTopicSources } from "./work.js";
-import { openHistory } from "./history.js";
+import { openHistory, historyState } from "./history.js";
+import { inferenceState } from "./inference.js";
 import { openDag, initDag, dagState } from "./dag.js";
 import { openCorpus, corpusState } from "./corpus.js";
 import { initUiLog, flushPending } from "./uilog.js";
@@ -49,7 +50,8 @@ window.__hw = {
       cas: { available: !!S.cas, calls: cas.length, failed: cas.filter((x) => x.ok === false).length },
       corpusSize: S.corpusSize, tectonic: S.tectonic, model: S.model,
       dialogs: [...document.querySelectorAll("dialog[open]")].map((d) => d.id),
-      dag: !$("#p-dag").hidden ? { mode: dagState.mode, board: dagState.board, run: dagState.run, runs: dagState.data?.runs?.length ?? null, selected: dagState.sel, side: dagState.side, view: dagState.view && Object.values(dagState.view).map(Math.round).join(" "), notes: dagState.data?.notes?.length ?? null, guessRunning: !!dagState.data?.job?.running } : null,
+      history: !$("#p-history").hidden ? { sub: historyState.sub, sel: historyState.sel, run: inferenceState.run, runs: inferenceState.data?.runs?.length ?? null } : null,
+      dag: !$("#p-dag").hidden ? { mode: dagState.mode, board: dagState.board, selected: dagState.sel, side: dagState.side, view: dagState.view && Object.values(dagState.view).map(Math.round).join(" "), notes: dagState.data?.notes?.length ?? null, guessRunning: !!dagState.data?.job?.running } : null,
       corpus: !$("#p-corpus").hidden ? { q: corpusState.q, unit: corpusState.unit, status: corpusState.status, source: corpusState.source, shown: document.querySelectorAll("#p-corpus .cp").length } : null,
     };
   },
