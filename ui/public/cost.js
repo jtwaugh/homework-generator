@@ -64,7 +64,7 @@ export function costFooter(m) {
   if (!u) return "";
   const tools = m.tools || [];
   const searches = u.webSearches || tools.filter((t) => t.name === "WebSearch").length;
-  const cas = tools.filter((t) => /cas$/.test(t.name)).length;
+  const cas = tools.filter((t) => /(cas|check_answers)$/.test(t.name)).length;
   const bits = [fmtUSD(turnCost(m)), fmtDur(u.durationMs), searches ? `${searches} search${searches > 1 ? "es" : ""}` : "", cas ? `CAS×${cas}` : "", stagesLine(m)].filter(Boolean);
   return `<button class="cost-foot link" data-open="cost" title="API-equivalent cost of this turn. Click for the cost panel">${bits.join(" · ")}</button>`;
 }

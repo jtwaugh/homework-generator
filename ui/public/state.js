@@ -100,7 +100,7 @@ export function problemsOf(tex, c, statusMd) {
 }
 
 // CAS calls since the outline was approved (the answer-key checks).
-export const isCas = (t) => /(^|__)cas$/.test(t.name || "");
+export const isCas = (t) => /(^|__)(cas|check_answers)$/.test(t.name || "");
 export function casCalls(week = app.week) {
   const { final } = splitMessages(week);
   const done = final.flatMap((m) => (m.tools || []).filter(isCas));

@@ -25,9 +25,9 @@ let pass = 0, fail = 0;
 const test = async (name, fn) => { try { await fn(); pass++; console.log("  ✓", name); } catch (e) { fail++; console.log("  ✗", name, "\n    ", e.message); } };
 
 try {
-  await test("initialize; tools are cas, corpus_search, corpus_add", async () => {
+  await test("initialize; tools are cas, check_answers, corpus_search, corpus_add", async () => {
     assert.equal((await rpc("initialize", { protocolVersion: "2025-06-18" })).result.serverInfo.name, "hw");
-    assert.deepEqual((await rpc("tools/list", {})).result.tools.map((t) => t.name).sort(), ["cas", "corpus_add", "corpus_search"]);
+    assert.deepEqual((await rpc("tools/list", {})).result.tools.map((t) => t.name).sort(), ["cas", "check_answers", "corpus_add", "corpus_search"]);
   });
   await test("corpus_search returns hits for U01", async () => { const r = await call("corpus_search", { units: ["U01"], limit: 5 }); assert.ok(!r.isError); assert.match(r.content[0].text, /U01/); assert.match(r.content[0].text, /pf1c50000001|pf1c50000002/); });
   await test("corpus_add saves then dedupes", async () => {
@@ -40,6 +40,27 @@ try {
     const r = await call("cas", { code: "import sympy as sp\nx=sp.symbols('x')\nprint(sp.solve(x**2-5*x+6, x))" });
     if (hasPy) { assert.ok(!r.isError, r.content[0].text); assert.match(r.content[0].text, /\[2, 3\]/); }
     else assert.ok(r.isError);
+  });
+  await test(`check_answers ${hasPy ? "reports only the wrong and uncheckable items" : "reports unavailable (no venv)"}`, async () => {
+    const r = await call("check_answers", { problems: [
+      { id: "P1.1", expr: "x^2 - 5x + 6 = 0", claimed: "x = 2, x = 3" },
+      { id: "P1.2", expr: "sqrt(x+3) = x - 3", claimed: "x = 1, x = 6" }, // x = 1 is extraneous
+      { id: "P1.3", expr: "1 < 2x + 1 <= 7", claimed: "(0, 3]" },
+      { id: "P1.4", expr: "x + y = 3; x - y = 1", claimed: "(2, 1)" },
+      { id: "P1.5", kind: "equal", expr: "2x^2 - 8", claimed: "2(x^2 - 4)", form: "factored" }, // not completely factored
+      { id: "P1.6", expr: "\\frac{1}{x-2} = \\frac{x}{x-2} - 1", claimed: "no solution" },
+      { id: "P1.7", expr: "|x - 1| > 2", claimed: "x < -1 or x > 3" },
+      { id: "P1.8", expr: "x^2 + = 3", claimed: "1" },
+      { id: "Q", expr: "x^2 - 2x - 1 = 0" }, // no claim: returns the CAS's answer
+    ] });
+    const t = r.content[0].text;
+    if (!hasPy) return assert.match(t, /NOT CHECKED/);
+    assert.match(t, /^5 ok, 2 wrong, 1 not checked/);
+    assert.match(t, /P1\.2 WRONG: .*x=1 doesn't satisfy/);
+    assert.match(t, /P1\.5 WRONG: not completely factored/);
+    assert.match(t, /P1\.8 NOT CHECKED/);
+    assert.match(t, /Q: x: \{1 [+-] sqrt\(2\), 1 [+-] sqrt\(2\)\}/);
+    assert.doesNotMatch(t, /P1\.1|P1\.3|P1\.4|P1\.6|P1\.7/, "passing items cost no lines");
   });
 } finally {
   srv.stdin.end(); srv.kill();

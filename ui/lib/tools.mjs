@@ -1,5 +1,6 @@
 // The app's own tools, shared by the agent loop (in process) and the MCP server (ui/mcp/hw-tools.mjs):
 //   cas(code)                      Python + sympy in a sandbox (no network, writes only to a temp dir, 20 s)
+//   check_answers({problems:[...]}) rote answer checks: fixed sympy code over {id, kind, expr, claimed} (lib/check.mjs)
 //   corpus_search({units,query})   search the problem corpus
 //   corpus_add({problems:[...]})   cache good problems found during research
 // CAS runs locally from ui/data/venv, or, when HW_CAS_URL is set (hosted), via the Python function at that URL.
@@ -9,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { DATA, loadCorpus, searchCorpus, formatHits, addProblems } from "./corpus.mjs";
+import { checkAnswers, CHECK_ITEM_SCHEMA } from "./check.mjs";
 
 const PY = path.join(DATA, "venv", "bin", "python");
 export const CAS_TIMEOUT = 20000;
@@ -16,8 +18,13 @@ export const CAS_TIMEOUT = 20000;
 export const TOOLS = [
   {
     name: "cas",
-    description: "Run a short Python program and return its stdout/stderr. Already imported, so you never need import lines: sympy as sp plus everything from sympy (symbols, solve, Eq, Rational, sqrt, simplify, factor, expand, ...), math, itertools, functools, collections, fractions.Fraction, and the symbols x y z t a b c k m n (real). Your own imports and symbol definitions still work and override these. Use it to verify answer keys: substitute each solution back, check for extraneous roots, confirm factorizations and simplifications. Batch many checks into one call and print one line per problem, e.g. 'P1.3 ok x=2'. No network or file access; 20 second limit.",
+    description: "Run a short Python program and return its stdout/stderr. Already imported, so you never need import lines: sympy as sp plus everything from sympy (symbols, solve, Eq, Rational, sqrt, simplify, factor, expand, ...), math, itertools, functools, collections, fractions.Fraction, and the symbols x y z t a b c k m n (real). Your own imports and symbol definitions still work and override these. For checking answer keys use check_answers instead; use cas only for what it can't express (randomized sets, searching for numbers that give integer roots, word problems that need setting up). Print only what's wrong plus one count line (e.g. 'checked 14, 0 wrong'), never a line per passing item: everything printed is paid for on every later call. No network or file access; 20 second limit.",
     inputSchema: { type: "object", properties: { code: { type: "string", description: "Python source; print() what you want to see." } }, required: ["code"] },
+  },
+  {
+    name: "check_answers",
+    description: "Check answer keys with sympy, no code needed: list each problem as {id, kind, expr, claimed}. solve: equations (extraneous roots and excluded values handled), inequalities, compound inequalities, absolute value, literal equations (give vars), systems (';' between equations). equal: simplify/factor/expand/evaluate answers (form: 'factored' also requires complete factoring). Returns one count line plus a line only for each wrong or uncheckable item. Leave claimed out to get the CAS's answer instead. Put every problem in one call.",
+    inputSchema: { type: "object", properties: { problems: { type: "array", items: CHECK_ITEM_SCHEMA } }, required: ["problems"] },
   },
   {
     name: "corpus_search",
@@ -134,6 +141,11 @@ export async function callTool(name, args = {}, { weekId = "", signal } = {}) {
   if (name === "cas") {
     if (typeof args.code !== "string" || !args.code.trim()) return { ok: false, text: "code is required" };
     return runCas(args.code, { signal });
+  }
+  if (name === "check_answers") {
+    if (!Array.isArray(args.problems) || !args.problems.length) return { ok: false, text: "problems must be a non-empty array" };
+    const r = await checkAnswers(args.problems, runCas, { signal });
+    return { ...r, checked: r.results.length, wrong: r.results.filter((x) => x.status === "wrong").length };
   }
   if (name === "corpus_search") {
     const hits = searchCorpus(loadCorpus(), { units: args.units, query: args.query, wuNodes: args.wuNodes, similarTo: args.similarTo, limit: Math.min(30, args.limit || 10) });

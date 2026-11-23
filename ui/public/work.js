@@ -426,7 +426,19 @@ $("#start-over").onclick = async () => {
 
 // ======================= final =======================
 
+// The app's own sympy check of the final's checks block (on its reply, or a check-only reply after it).
+function appCheckRow(f) {
+  const { final } = splitMessages();
+  const ck = final.slice(final.indexOf(f.msg)).filter((m) => m.role === "assistant" && m.checks).at(-1)?.checks;
+  if (!ck) return "";
+  const bad = ck.wrong.length, un = ck.unchecked.length;
+  const what = bad ? `${bad} still wrong: ${esc(ck.wrong.join(", "))}` : `${ck.ok.length} of ${ck.total} answers ok`;
+  return `<li class="${bad ? "bad" : un ? "warn" : "ok"}">App checked the answer key with sympy: ${what}${un ? `, ${un} not checkable (${esc(ck.unchecked.join(", "))})` : ""}<details><summary class="muted">details</summary><pre>${esc(ck.text || "")}</pre></details></li>`;
+}
+
 function casRow(f) {
+  const checked = appCheckRow(f);
+  if (checked) return checked;
   const calls = casCalls();
   const verified = (f.manifest || []).filter((p) => p.casVerified).length;
   if (calls.length) {
@@ -444,7 +456,8 @@ function renderFinal(phase) {
   const f = currentFinal();
   const running = phase === "final-running";
   const lastUser = [...final].reverse().find((m) => m.role === "user");
-  const needsReply = !running && lastA && !hasTex(lastA);
+  // A check-only reply (the verify button) has no text left once the app takes its checks block.
+  const needsReply = !running && lastA && !hasTex(lastA) && !(lastA.checks && !(lastA.text || "").trim());
   const what = { fix: "fixing the problems", "revise-final": "making your changes", chat: "making your changes", reply: "working on your reply" }[lastUser?.kind] || "writing the final homework";
   $(".v-note", el).innerHTML = running ? `<span class="spin"></span> Claude is ${what}. Follow along in the chat.` : needsReply ? "Claude replied without a new .tex. Answer it in the chat." : "";
   $(".final-msg", el).hidden = !(needsReply || lastA?.error);
@@ -505,7 +518,7 @@ function renderFinal(phase) {
   $(".checks", el).addEventListener("click", (e) => {
     const b = e.target.closest("[data-act]"); if (!b) return;
     if (b.dataset.act === "cas-log") openCasLog();
-    if (b.dataset.act === "cas-verify") send("fix", "Before I save: use the cas tool to verify every answer-key entry in the current .tex (substitute each solution back, check for extraneous roots), batching problems into a few calls. Fix any wrong answers, then send the complete .tex, the problem manifest (with casVerified set) and the status-update block again.");
+    if (b.dataset.act === "cas-verify") send("fix", "Before I save: reply with only the ```json checks block for every answer-key entry in the current .tex (ids P<part>.<n>), and nothing else. The app checks it and tells you if anything is wrong.");
   });
   const save = async () => {
     const f = currentFinal(); const name = $(".fname", el).value.trim();

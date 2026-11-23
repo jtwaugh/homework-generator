@@ -9,7 +9,8 @@ import { searchCorpus, splitTex, problemId, addProblems, attachTex, shapeSim, co
 import { buildBrief, briefText } from "../lib/preflight.mjs";
 import { decideAuth } from "../lib/auth.mjs";
 import { hashPassword, verifyPassword, validHash, rateLimiter, parseCookies } from "../lib/login.mjs";
-import { stageFor, modelFor, STAGES } from "../server.mjs";
+import { stageFor, modelFor, STAGES, appChecks } from "../server.mjs";
+import { checksFrom, stripChecks, formatChecks, normChecks } from "../lib/check.mjs";
 import { applyWeekUpdate, statusUpdateFrom, weekUpdateInputs, checkStatusUpload, promoteUnits } from "../public/statusmd.js";
 import { parseTopics, serializeTopics, historyTopics } from "../public/topics.js";
 import { computeStates, statusText, lessonPlan, planGraph, curvePath } from "../public/dag.js";
@@ -479,6 +480,29 @@ test("hw.db: usedOn and recency are per student", () => {
   assert.deepEqual(loadCorpusDb(c2)[0].usedOn, []);
   const rank = (c) => searchCorpus(loadCorpusDb(c), { units: ["U01"], limit: 5 })[0];
   assert.ok(rank(c1).score < rank(c2).score, "recently used for student 1 ranks lower for student 1 only");
+});
+
+test("answer checks: the reply's checks block is found, stripped for the teacher, and left apart from the other blocks", () => {
+  const block = (o) => "```json\n" + JSON.stringify(o, null, 1) + "\n```";
+  const text = ["Checkpoint.", block([{ part: 1, n: 1, answer: "2" }]), block({ history: "h" }), block({ checks: [{ id: "P1.1", expr: "x=2", claimed: "2" }] })].join("\n\n");
+  assert.deepEqual(checksFrom(text), [{ id: "P1.1", expr: "x=2", claimed: "2" }]);
+  assert.equal(checksFrom("no blocks"), null);
+  const shown = stripChecks(text);
+  assert.doesNotMatch(shown, /checks/);
+  assert.match(shown, /"part": 1/); assert.equal(statusUpdateFrom(shown).history, "h");
+  assert.deepEqual(normChecks([{ id: 3, expr: "x", vars: ["x", "y"], claimed: "" }, "junk"]), [{ id: "3", kind: "solve", expr: "x", vars: "x, y", claimed: null, form: "" }]);
+});
+test("answer checks: one count line, then only the items that need attention", () => {
+  assert.equal(formatChecks([{ id: "a", status: "ok" }, { id: "b", status: "ok" }]), "all 2 ok");
+  assert.equal(formatChecks([{ id: "a", status: "ok" }, { id: "b", status: "wrong", msg: "m" }, { id: "c", status: "error", msg: "e" }, { id: "d", status: "info", msg: "x: {1}" }]),
+    "1 ok, 1 wrong, 1 not checked\nd: x: {1}\nb WRONG: m\nc NOT CHECKED: e");
+});
+test("answer checks: the app's latest verdict per id, from the last .tex reply on", () => {
+  const A = (text, checks) => ({ role: "assistant", text, checks });
+  const week = { messages: [A("```latex\nold\n```", { ok: ["P9.9"], wrong: [], unchecked: [] }), { role: "user", text: "fix" },
+    A("```latex\nnew\n```", { ok: ["P1.1"], wrong: ["P1.2"], unchecked: ["P1.3"] }), { role: "user", text: "verify" }, A("", { ok: ["P1.2"], wrong: [], unchecked: [] })] };
+  const ck = appChecks(week);
+  assert.deepEqual([...ck.ok].sort(), ["P1.1", "P1.2"]); assert.deepEqual([...ck.wrong], []); assert.deepEqual([...ck.unchecked], ["P1.3"]);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

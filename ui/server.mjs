@@ -22,6 +22,7 @@ import { applyWeekUpdate, weekUpdateInputs, checkStatusUpload } from "./public/s
 import { claudeAuth } from "./lib/auth.mjs";
 import { runAgent, makeClient, addUserTurn } from "./lib/agent.mjs";
 import { agentTools, casRemote } from "./lib/tools.mjs";
+import { checksFrom, stripChecks } from "./lib/check.mjs";
 import { createMirror, storeFromEnv } from "./lib/mirror.mjs";
 import { createLogin, validHash } from "./lib/login.mjs";
 
@@ -48,13 +49,13 @@ const GOLD_COUNT = Math.max(1, Number(process.env.HW_GOLD_FILES) || 3);
 const BUDGET = process.env.HW_BUDGET_USD ? String(Number(process.env.HW_BUDGET_USD)) : null;
 // Every turn of a week's conversation declares the same tools (replayed thinking is tied to the tool list);
 // each stage's `allowed` list decides which of our tools it may actually run.
-const WEEK_TOOLS = ["cas", "corpus_search", "corpus_add"];
+const WEEK_TOOLS = ["cas", "check_answers", "corpus_search", "corpus_add"];
 const WEEK_SERVER = ["WebSearch", "WebFetch"];
 // Web limits per API call in the week's conversation. The research stage (Sonnet) does the broad searching; the
 // outline only fills a gap. Part of the tool definitions, so they stay the same for every turn of a week.
 const WEEK_WEB = { maxSearches: 3, maxFetches: 3 };
 const allowedOf = (st) => st.allowed.split(",").filter(Boolean).map((n) => n.replace(/^mcp__hw__/, ""));
-const ALLOWED_TOOLS = "WebSearch,WebFetch,mcp__hw__cas,mcp__hw__corpus_search,mcp__hw__corpus_add";
+const ALLOWED_TOOLS = "WebSearch,WebFetch,mcp__hw__cas,mcp__hw__check_answers,mcp__hw__corpus_search,mcp__hw__corpus_add";
 
 // ---------- stage routing: the cheapest model that does each part well ----------
 // Taste-critical work (choosing and vetting problems, the checkpoint) stays on the main model. Research, writing
@@ -64,8 +65,8 @@ const NEXT_TIER = { [MODELS.haiku]: MODELS.sonnet, [MODELS.sonnet]: MODELS.opus 
 export const STAGES = {
   research: { model: process.env.HW_RESEARCH_MODEL || MODELS.sonnet, tools: "WebSearch,WebFetch", allowed: "WebSearch,WebFetch,mcp__hw__corpus_search", effort: "medium", why: "web research for sections the corpus can't fill" },
   outline: { model: null, tools: "WebSearch,WebFetch", allowed: ALLOWED_TOOLS, why: "choose, adapt and vet problems; write the checkpoint" },
-  final: { model: process.env.HW_WRITE_MODEL || MODELS.sonnet, tools: "", allowed: "mcp__hw__cas,mcp__hw__corpus_search", effort: "medium", why: "write the approved outline out as .tex + status + manifest" },
-  fix: { model: process.env.HW_FIX_MODEL || MODELS.haiku, tools: "", allowed: "mcp__hw__cas", effort: "low", why: "compile/lint fixes" },
+  final: { model: process.env.HW_WRITE_MODEL || MODELS.sonnet, tools: "", allowed: "mcp__hw__cas,mcp__hw__check_answers,mcp__hw__corpus_search", effort: "medium", why: "write the approved outline out as .tex + status + manifest" },
+  fix: { model: process.env.HW_FIX_MODEL || MODELS.haiku, tools: "", allowed: "mcp__hw__cas,mcp__hw__check_answers", effort: "low", why: "compile/lint fixes" },
 };
 const DRY_STAGES = process.env.HW_DRY_STAGES === "1";
 // HW_STAGES_OFF=research turns the extra stages off (e.g. to compare cost).
@@ -373,13 +374,13 @@ async function buildSystemPrompt(c = C()) {
     "- You are running inside a local app, not a chat. The first user message carries the app's brief, which is this week's whole input: the inputs (date, topics, options, fact sheet), unit statuses and allowed units, review priority, bans, the teacher's standing conventions, recent sets, decisions already made, a section plan with corpus coverage, and research notes for sections the corpus couldn't cover. Wherever the workflow mentions weekly_status.md, read it as the brief. There is no status file to read or reconcile.",
     "- There is no opening question round in this app. Never reply with only questions, and never stop before the checkpoint. Whenever the workflow says to ask the teacher (missing fields, unit confirmations, definitions for a new unit, edge cases), make the most conservative reasonable choice, use it, and list it in the checkpoint: under **Assumptions** (one line each) for choices you made, and under **Needs your call** (at most 5) for the ones the teacher should rule on. For a new unit's definitions, use the standard precise definition in Wu's style, state it in the checkpoint, and avoid its edge cases. The checkpoint is the teacher's only chance to correct you, so make it complete.",
     "- Treat the brief's decisions and standing conventions as the teacher's answers. Never ask about them again. Assumptions you list in a checkpoint apply to this set only.",
-    "- Tools: web search, web fetch, and the app's own tools `cas`, `corpus_search` and `corpus_add`. There is no bash tool. The app compiles your .tex with Tectonic and will send you any errors or overfull-box warnings. In the final step, write \"not compiled (the app will compile it)\".",
-    "- Use `cas` while vetting candidates for the checkpoint, and in the final to verify every answer-key entry that isn't already verified: substitute solutions back, check for extraneous roots, confirm factorizations. Corpus problems marked `cas ✓` already have a CAS-checked answer: if you use one verbatim (same text, same answer), don't re-check it, just set casVerified true in the manifest. Adapted, web and new problems still need checking. Batch the problems into a few calls that print one line per problem. In the final reply say how many answers you checked with the CAS and how many came verified from the corpus.",
+    "- Tools: web search, web fetch, and the app's own tools `cas`, `check_answers`, `corpus_search` and `corpus_add`. There is no bash tool. The app compiles your .tex with Tectonic and will send you any errors or overfull-box warnings. In the final step, write \"not compiled (the app will compile it)\".",
+    "- Answer checks: the app checks answer keys itself, with no model involved. End every reply that states answers (the checkpoint, and every reply with a .tex) with one ```json fenced block {\"checks\": [...]}: one item per problem whose answer can be checked mechanically, in the shape `check_answers` takes ({\"id\", \"kind\", \"expr\", \"vars\", \"claimed\", \"form\"}). In a reply with a .tex, use ids P<part>.<n> to match the manifest. After your reply the app runs the block through sympy and sends you only what failed. This replaces the workflow's verification steps (working every candidate by hand, substituting back, using Python): work each answer out once and don't re-check it, by hand or with a tool. If you need an answer you don't know yet, get it from `check_answers` with claimed left out, with every such problem in one call. Use `cas` only for what check_answers can't express (randomized sets, searching for numbers that give integer roots), and print only failures and a count. Leave out of the block corpus problems marked `cas ✓` that you use verbatim (same text, same answer), and problems with no mechanical answer (explanations, proofs, graphs). The teacher doesn't see the block.",
     "- Problem corpus: the teacher's cache of problems from past sets, earlier research and favorites. The first message includes the best matches for this week. Draw from the corpus first, and adapt rather than copy problems marked used (especially recent ones). Use `corpus_search` for more. Web search only for sections where the corpus and the research notes together have fewer than 3 suitable candidates, and keep it brief: a few targeted searches, not a second research pass. When code processes search or fetch results, print only the parts you need (a problem's text, a short excerpt), never whole result objects or page contents: everything printed stays in the conversation and is paid for on every later call. Whenever you find good problems on the web, call `corpus_add` with them, including ones you won't use this week. In the checkpoint, say which problems came from the corpus (by id) and which came from the web.",
     "- In the final step put the complete .tex in exactly one ```latex fenced block. Do not write a weekly_status.md: the app keeps the status and updates it itself.",
-    "- After the .tex, add one ```json fenced block: a problem manifest, an array with one object per \\item in the set, in the order they appear in the .tex: {\"part\": 1, \"n\": 3, \"answer\": \"...\", \"units\": [\"U14\"], \"source\": \"corpus:<id>\" or \"web:<url>\" or \"new\", \"casVerified\": true}. Don't repeat the problem text: the app reads it from the .tex. The app saves it to the corpus when the teacher saves the set.",
+    "- After the .tex, add one ```json fenced block: a problem manifest, an array with one object per \\item in the set, in the order they appear in the .tex: {\"part\": 1, \"n\": 3, \"answer\": \"...\", \"units\": [\"U14\"], \"source\": \"corpus:<id>\" or \"web:<url>\" or \"new\", \"casVerified\": true}. casVerified is true for a `cas ✓` corpus problem used verbatim and for every problem in your checks block (the app clears it for any that fail). Don't repeat the problem text: the app reads it from the .tex. The app saves it to the corpus when the teacher saves the set.",
     "- Then one more ```json fenced block, an object with your proposed changes to the status for next week: {\"history\": \"one line for Recent history: what this set covered and anything to follow up\", \"review\": [\"the full updated Review priority list, most important first\"], \"conventions\": [\"a new standing convention, only if the teacher stated a lasting rule this week\"]}. Omit review to keep the current list; conventions is usually empty. The app moves promoted units to CURRENT and clears the week's input itself.",
-    "- If the teacher asks for changes after the final, always reply with the complete revised .tex, the manifest and the status-update block again.",
+    "- If the teacher asks for changes after the final, always reply with the complete revised .tex, the manifest, the status-update block and the checks block again.",
   ].join("\n");
 }
 
@@ -572,6 +573,8 @@ const SLICE_SOFT = Number(process.env.HW_SLICE_SOFT_MS) || 150000;
 const SLICE_HARD = Number(process.env.HW_SLICE_HARD_MS) || 240000;
 const MAX_SLICES = 40;
 const sinks = new Map(); // weekId -> fn(event) streaming a local turn's events to its request
+// Sent back once when the app's own answer check (the reply's checks block, run through sympy) finds wrong answers.
+const recheckPrompt = (text, stage) => `The app checked the answers in your checks block with sympy. These are wrong:\n${text}\n\nFix each wrong answer (or change the problem), then send ${stage === "outline" ? "the complete checkpoint again" : "the complete corrected .tex, the problem manifest and the status-update block again"}, with the checks block. If the CAS is the one that's wrong (the problem means something it can't see), keep your answer and say why in one line.`;
 const NUDGE = "Nobody can answer questions in this app. For every question above, take the most conservative reasonable default yourself, list it under **Assumptions** (or **Needs your call** if the teacher must rule), and send the full checkpoint now.";
 
 // One slice of a turn's work. Returns {done}. Never throws: a failure ends the turn with that error.
@@ -629,8 +632,11 @@ async function turnSlice(id, lim = {}) {
         t.research = null; t.phase = "main";
       }
     }
-    // 2. The routed turn in the week's session (resumed if a slice paused it), then 3. the auto-continue.
-    for (const ph of ["main", "auto"]) {
+    // 2. The routed turn in the week's session (resumed if a slice paused it), then 3. the auto-continue, and
+    // (after a failed answer check, step 4) the one recheck turn.
+    // A reply with a checks block goes to the app's answer check before it joins the week.
+    const after = (r) => (r?.ok && !stopped.has(id) && checksFrom(r.text)?.length ? "check" : "wrap");
+    for (const ph of ["main", "auto", "recheck"]) {
       if (t.phase !== ph || (ran && lim.deadline && Date.now() > lim.deadline)) continue;
       if (left(cur.usage) <= 0) {
         // Out of budget before this phase starts: keep what the turn has so far.
@@ -639,18 +645,19 @@ async function turnSlice(id, lim = {}) {
         t.phase = "wrap"; break;
       }
       const model = modelFor(t.stage, week);
-      let prompt = t.resume ? null : ph === "main" ? t.prompt : NUDGE;
+      const runStage = ph === "auto" ? "outline" : t.stage;
+      let prompt = t.resume ? null : ph === "main" ? t.prompt : ph === "auto" ? NUDGE : t.recheckPrompt;
       if (!t.resume) {
-        if (ph === "auto") emit({ type: "text", text: "\n\n---\n\n" });
+        if (ph !== "main") emit({ type: "text", text: "\n\n---\n\n" });
         say(t.stage, model);
       }
-      const r = await runClaude(week, prompt, t.sys, emit, ph === "main" ? t.stage : "outline", { ...lim, budgetUSD: left(cur.usage) });
+      const r = await runClaude(week, prompt, t.sys, emit, runStage, { ...lim, budgetUSD: left(cur.usage) });
       addPart(r);
       if (cur.text || r.ok) { if (!week.started) { week.started = true; await saveWeek(week); } }
       if (r.paused && !stopped.has(id)) { t.resume = true; break; }
       t.resume = false;
       const res = { ok: !!r.ok, error: r.paused ? "stopped" : r.error, text: cur.text };
-      account(ph === "main" ? t.stage : "outline", model, cur.usage, cur.tools, ph === "auto" ? { auto: true } : {});
+      account(runStage, model, cur.usage, cur.tools, ph === "auto" ? { auto: true } : ph === "recheck" ? { recheck: true } : {});
       t.cur = null;
       if (ph === "main") {
         t.result = res;
@@ -658,12 +665,31 @@ async function turnSlice(id, lim = {}) {
         if (res.ok && t.stage === "outline" && !hasBlock(res.text) && !isCheckpointText(res.text) && !stopped.has(id)) {
           logEvent("stage", "auto-continue", { week: id });
           t.preamble = res.text; t.phase = "auto";
-        } else t.phase = "wrap";
+        } else t.phase = after(res);
       } else {
         if (res.text || res.ok) t.result = { ...res, text: res.text || t.result.text };
-        t.phase = "wrap";
+        t.phase = after(t.result);
       }
       break;
+    }
+    // 4. The app's answer check: the reply's checks block through sympy, no model. Wrong answers go back once.
+    if (t.phase === "check") {
+      const list = checksFrom(t.result.text);
+      const t0 = Date.now();
+      const r = await agentTools(id, { names: ["check_answers"] })[0].run({ problems: list });
+      const results = r.results || [];
+      const by = (st) => results.filter((x) => x.status === st).map((x) => x.id);
+      t.checks = { total: results.length, ok: by("ok"), wrong: by("wrong"), unchecked: by("error"), text: r.text, at: new Date().toISOString() };
+      const tool = { id: `app-check-${t.tools.length}`, name: "check_answers", by: "app", input: { problems: list.length }, ok: !!r.ok, ms: Date.now() - t0, chars: r.text.length, preview: r.text };
+      emit({ type: "tool", tool }); emit({ type: "tool_result", tool });
+      account("check", "sympy", null, [tool], { checked: results.length, wrong: t.checks.wrong.length });
+      logEvent("stage", "app-check", { week: id, total: results.length, wrong: t.checks.wrong.length, unchecked: t.checks.unchecked.length });
+      const wrong = results.filter((x) => x.status === "wrong");
+      if (wrong.length && !t.rechecked && left() > 0 && !stopped.has(id)) {
+        t.rechecked = true;
+        t.recheckPrompt = recheckPrompt(wrong.map((x) => `${x.id}: ${x.msg}`).join("\n"), t.stage);
+        t.phase = "recheck";
+      } else t.phase = "wrap";
     }
   } catch (e) {
     logEvent("server", "turn-error", { week: id, phase: t.phase, error: e.stack || e.message });
@@ -677,7 +703,8 @@ async function turnSlice(id, lim = {}) {
     if (week.started) w.started = true;
     const result = t.result || { ok: false, error: "no reply" };
     if (result.text || result.ok) {
-      w.messages.push({ role: "assistant", text: result.text, at: new Date().toISOString(), error: result.ok ? undefined : result.error, usage: t.usage || undefined, tools: t.tools, trace: live.trace, stage: t.stage, model: modelFor(t.stage, w), stages: t.stages, ...(t.preamble ? { preamble: t.preamble } : {}) });
+      // The checks block is for the app: the teacher sees its verdict (checks) instead.
+      w.messages.push({ role: "assistant", text: stripChecks(result.text), at: new Date().toISOString(), error: result.ok ? undefined : result.error, usage: t.usage || undefined, tools: t.tools, trace: live.trace, stage: t.stage, model: modelFor(t.stage, w), stages: t.stages, ...(t.preamble ? { preamble: stripChecks(t.preamble) } : {}), ...(t.checks ? { checks: t.checks } : {}) });
     } else {
       if (w.messages.at(-1)?.role === "user") w.messages.pop(); // nothing happened; let the teacher retry
       w.lastError = result.error;
@@ -751,13 +778,30 @@ export function manifestFrom(week) {
   }
   return [];
 }
+// The app's answer-check verdicts for the latest .tex: from its reply and any check-only replies after it.
+export function appChecks(week) {
+  const i = week.messages.findLastIndex((m) => m.role === "assistant" && /```(latex|tex)\n/.test(m.text));
+  const out = { ok: new Set(), wrong: new Set(), unchecked: new Set() };
+  if (i < 0) return out;
+  for (const m of week.messages.slice(i)) {
+    if (m.role !== "assistant" || !m.checks) continue;
+    for (const [k, ids] of Object.entries({ ok: m.checks.ok, wrong: m.checks.wrong, unchecked: m.checks.unchecked }))
+      for (const x of ids || []) { for (const s of Object.values(out)) s.delete(x); out[k].add(x); }
+  }
+  return out;
+}
 function saveManifest(week, name, tex) {
   const list = attachTex(manifestFrom(week), tex);
   if (!list.length) return { added: 0, merged: 0, total: 0 };
   const date = dateFromName(name) || new Date().toISOString().slice(0, 10);
   const items = loadCorpus();
   // Cached verification: a problem used verbatim, with the same answer, keeps the corpus copy's CAS check.
+  // The app's own check of the final's checks block: passing answers are verified, failing ones are not.
+  const ck = appChecks(week);
   for (const p of list) {
+    const key = `P${p.part}.${p.n}`;
+    if (ck.wrong.has(key) || ck.unchecked.has(key)) p.casVerified = false;
+    else if (ck.ok.has(key)) p.casVerified = true;
     const pid = problemId(p.tex), have = items.find((x) => x.id === pid);
     if (have?.casVerified && sameAnswer(have.answer, p.answer)) p.casVerified = true;
   }
