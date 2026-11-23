@@ -16,8 +16,8 @@ git clone git@github.com:jtwaugh/homework-generator.git
 cd homework-generator
 ```
 
-There is no build step. `npm install` fetches the three dependencies (the Anthropic SDK, plus Vercel's Blob and
-functions SDKs, which only load when hosted); the front end is plain ES modules.
+There is no build step. `npm install` fetches the dependencies (the Anthropic SDK, plus the S3 client for R2 and
+Vercel's Blob and functions SDKs, which only load when hosted); the front end is plain ES modules.
 
 ## Run it locally
 
@@ -128,21 +128,27 @@ runs Python on the server.
 The repo deploys to Vercel as it is (`vercel.json`): the Node app runs as one function (`api/index.mjs`), the sympy
 tool as a Python function (`api/cas.py`, with no network and a clean environment), and the build step bundles a
 static Linux Tectonic. A function's disk is temporary, so the homework files and `ui/data` live in a private
-[Vercel Blob](https://vercel.com/docs/vercel-blob) store, mirrored to `/tmp` on each instance (`ui/lib/mirror.mjs`):
+[Cloudflare R2](https://developers.cloudflare.com/r2/) bucket (or, if no `R2_*` variables are set, a
+[Vercel Blob](https://vercel.com/docs/vercel-blob) store), mirrored to `/tmp` on each instance (`ui/lib/mirror.mjs`):
 changes are pulled before each request and pushed after each write. Running jobs, their live progress and Stop
 requests go through the same store, so they work across instances. Preview deployments use their own copy of the
 data (`hw-preview/`), so testing never touches production.
 
 ```
-vercel link --project homework                                       # once; then create a private Blob store
-                                                                     # (dashboard: Storage > Blob) connected to it
+vercel link --project homework                                       # once; then create an R2 bucket and an
+                                                                     # R2 API token (Object Read & Write, that bucket)
+for v in R2_ACCOUNT_ID R2_BUCKET R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do vercel env add $v production --sensitive; done
 vercel env add ANTHROPIC_API_KEY production --sensitive              # and HW_PASSWORD_HASH, HW_BUDGET_USD, HW_STUDENT
 openssl rand -hex 32 | vercel env add HW_INTERNAL_TOKEN production --sensitive   # app -> cas function
-vercel env pull --environment=development .env.blob                  # copy your local data into Blob, once:
-node --env-file=.env.blob deploy/vercel/migrate-data.mjs --yes      #   refuses if the store already has data
+node --env-file=.env.r2 deploy/vercel/migrate-data.mjs --yes        # copy local data in, once (.env.r2 holds
+                                                                     #   the R2_* values); refuses if not empty
 vercel deploy --prod
 vercel domains add homework.example.com homework
 ```
+
+Moving from Vercel Blob to R2: `deploy/vercel/copy-blob-to-r2.mjs` copies every blob across with the same keys
+(see its header). The free tiers differ a lot for this app, which lists the store on every request: Blob's Hobby plan
+allows about 2,000 list/put operations a month, R2's about a million.
 
 Hobby plans cap a request at 300 s (`maxDuration` in `vercel.json`; Pro allows 800). A turn still running at that
 point is cut off and can be retried. Logins on Vercel are always treated as behind a proxy (`HW_TRUST_PROXY` is

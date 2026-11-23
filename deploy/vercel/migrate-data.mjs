@@ -1,11 +1,11 @@
-// One-off: copy this machine's homework files and app data into the Vercel Blob store the hosted app mirrors.
-//   vercel env pull --environment=development <file>   (gives BLOB_READ_WRITE_TOKEN)
+// One-off: copy this machine's homework files and app data into the store the hosted app mirrors
+// (R2 when R2_* is set in <file>, else Vercel Blob via BLOB_READ_WRITE_TOKEN from `vercel env pull`).
 //   node --env-file=<file> deploy/vercel/migrate-data.mjs [--prefix hw] [--yes]
 // Without --yes it only lists what it would upload. It refuses if the prefix already holds data.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { blobStore, createMirror } from "../../ui/lib/mirror.mjs";
+import { storeFromEnv, createMirror } from "../../ui/lib/mirror.mjs";
 
 const REPO = path.resolve(import.meta.dirname, "../..");
 const args = process.argv.slice(2);
@@ -38,7 +38,8 @@ const bytes = files.reduce((a, f) => a + fs.statSync(f).size, 0);
 console.log(`${files.length} files, ${(bytes / 1024).toFixed(0)} KB -> ${base}/`);
 for (const f of files) console.log("  " + path.relative(stage, f));
 
-const store = blobStore();
+const store = storeFromEnv();
+if (!store) { console.error("No store configured (set R2_* or BLOB_READ_WRITE_TOKEN)."); process.exit(1); }
 const existing = await store.list(`${base}/`);
 if (existing.length) { console.error(`${base}/ already holds ${existing.length} blobs; not overwriting.`); process.exit(1); }
 if (!go) { console.log("Dry run. Add --yes to upload."); process.exit(0); }

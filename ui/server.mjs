@@ -21,7 +21,7 @@ import { buildBrief, briefText, saveRulings, loadRulings } from "./lib/preflight
 import { claudeAuth } from "./lib/auth.mjs";
 import { runAgent, makeClient, addUserTurn } from "./lib/agent.mjs";
 import { agentTools, casRemote } from "./lib/tools.mjs";
-import { createMirror, blobStore, blobConfigured } from "./lib/mirror.mjs";
+import { createMirror, storeFromEnv } from "./lib/mirror.mjs";
 import { createLogin, validHash } from "./lib/login.mjs";
 
 const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -148,12 +148,12 @@ const read = async (p) => (await fsp.readFile(p, "utf8")).replace(/\r\n/g, "\n")
 const readJson = async (p, dflt) => { try { return JSON.parse(await fsp.readFile(p, "utf8")); } catch { return dflt; } };
 
 // ---------- hosting: durable storage and background work ----------
-// When hosted on Vercel (a Blob store connected), ROOT and DATA are /tmp folders mirrored to Blob
+// When hosted on Vercel (an R2 bucket or Blob store configured), ROOT and DATA are /tmp folders mirrored to it
 // (lib/mirror.mjs): pulled before each API request, pushed after writes and after background work.
 // Caches, builds and logs stay local to the instance.
 export const mirror = createMirror({
   roots: { root: ROOT, data: DATA },
-  store: process.env.VERCEL && blobConfigured() ? blobStore() : null,
+  store: process.env.VERCEL ? storeFromEnv() : null,
   // Production and preview deployments share a store; previews keep their own copy so testing can't touch it.
   base: process.env.HW_BLOB_PREFIX || (process.env.VERCEL_ENV && process.env.VERCEL_ENV !== "production" ? `hw-${process.env.VERCEL_ENV}` : "hw"),
   skip: (rel, pre) => pre === "data" && (/^(build|logs|debug|mcp|venv|claude-cwd)\//.test(rel) || /^hw\.db-(wal|shm|journal)$/.test(rel) || BUNDLED_DATA.includes(rel)),

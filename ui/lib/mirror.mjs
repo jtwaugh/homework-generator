@@ -1,4 +1,4 @@
-// Write-through mirror between local folders and Vercel Blob, for hosting on Vercel.
+// Write-through mirror between local folders and a durable object store (Cloudflare R2 or Vercel Blob), for hosting on Vercel.
 //
 // The app reads and writes plain files (sync and async fs, as it always has). When hosted, those folders live
 // in the function's /tmp, which is per-instance and disappears; this mirror makes Blob the durable copy:
@@ -6,7 +6,7 @@
 //           files whose blob was deleted elsewhere.
 //   push()  after a write: upload local files that changed (by size + mtime), delete blobs whose file is gone.
 //   putNow(file) / fetchNow(file): one file, right away (live progress and stop flags across instances).
-// Locally (no Blob store configured) every method is a no-op and the folders are the only copy.
+// Locally (no store configured) every method is a no-op and the folders are the only copy.
 //
 // `store` is injectable for tests: { list(prefix) -> [{pathname, etag}], get(pathname) -> Buffer|null,
 // put(pathname, buf), del(pathnames[]) }.
@@ -50,7 +50,67 @@ export function blobStore() {
   };
 }
 
-export const blobConfigured = (env = process.env) => !!(env.BLOB_READ_WRITE_TOKEN || env.BLOB_STORE_ID);
+// Cloudflare R2 through its S3 API: same interface as blobStore(). R2 is strongly consistent, so no cache knobs.
+const R2_VARS = ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"];
+export function r2Store(env = process.env) {
+  const Bucket = env.R2_BUCKET;
+  const lib = import("@aws-sdk/client-s3");
+  let client;
+  const s3 = async () => {
+    const m = await lib;
+    client ??= new m.S3Client({
+      region: "auto",
+      endpoint: `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+      credentials: { accessKeyId: env.R2_ACCESS_KEY_ID, secretAccessKey: env.R2_SECRET_ACCESS_KEY },
+      // Only send/check checksums where S3 requires them (DeleteObjects); keeps R2 off the newer default checksum path.
+      requestChecksumCalculation: "WHEN_REQUIRED",
+      responseChecksumValidation: "WHEN_REQUIRED",
+    });
+    return { m, c: client };
+  };
+  return {
+    async list(prefix) {
+      const { m, c } = await s3();
+      const out = [];
+      let ContinuationToken;
+      do {
+        const r = await c.send(new m.ListObjectsV2Command({ Bucket, Prefix: prefix, ContinuationToken }));
+        for (const o of r.Contents || []) out.push({ pathname: o.Key, etag: o.ETag });
+        ContinuationToken = r.IsTruncated ? r.NextContinuationToken : undefined;
+      } while (ContinuationToken);
+      return out;
+    },
+    async get(pathname) {
+      const { m, c } = await s3();
+      try {
+        const r = await c.send(new m.GetObjectCommand({ Bucket, Key: pathname }));
+        return { buf: Buffer.from(await r.Body.transformToByteArray()), etag: r.ETag };
+      } catch (e) {
+        if (e.name === "NoSuchKey" || e.$metadata?.httpStatusCode === 404) return null;
+        throw e;
+      }
+    },
+    async put(pathname, buf) {
+      const { m, c } = await s3();
+      const r = await c.send(new m.PutObjectCommand({ Bucket, Key: pathname, Body: buf, ContentType: "application/octet-stream" }));
+      return r.ETag;
+    },
+    async del(pathnames) {
+      if (!pathnames.length) return;
+      const { m, c } = await s3();
+      for (let i = 0; i < pathnames.length; i += 1000) {
+        const r = await c.send(new m.DeleteObjectsCommand({ Bucket, Delete: { Objects: pathnames.slice(i, i + 1000).map((Key) => ({ Key })), Quiet: true } }));
+        if (r.Errors?.length) throw new Error(`R2 delete failed: ${r.Errors.map((x) => `${x.Key}: ${x.Code}`).join(", ")}`);
+      }
+    },
+  };
+}
+
+export const r2Configured = (env = process.env) => R2_VARS.every((k) => env[k]);
+export const vercelBlobConfigured = (env = process.env) => !!(env.BLOB_READ_WRITE_TOKEN || env.BLOB_STORE_ID);
+export const blobConfigured = (env = process.env) => r2Configured(env) || vercelBlobConfigured(env);
+// The durable store to mirror to: R2 when its variables are set, else Vercel Blob, else none.
+export const storeFromEnv = (env = process.env) => (r2Configured(env) ? r2Store(env) : vercelBlobConfigured(env) ? blobStore() : null);
 
 // roots: { prefix: localDir }, e.g. { root: "/tmp/hw/root", data: "/tmp/hw/data" }.
 // skip(relPath) -> true for files that stay local (caches, logs, builds).
