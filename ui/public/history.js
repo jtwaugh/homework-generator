@@ -1,8 +1,9 @@
-// History modal: weeks in the app, then every homework .tex (newest first), each viewable as PDF | Source | Compile log.
+// History page: weeks in the app, then every homework .tex (newest first), each viewable as PDF | Source | Compile log.
 // Compiles are cached by content hash on the server, so flipping between files is instant after the first time.
 import { $, $$, esc, api, S } from "./lib.js";
 import { app, openWeek } from "./state.js";
 import { fmtUSD } from "./cost.js";
+import { showPage, isShown } from "./pages.js";
 
 const H = { file: null, tab: "pdf", text: "", result: null, loading: false };
 const files = () => [...S.texFiles].reverse();
@@ -27,7 +28,7 @@ function viewHtml() {
 }
 
 function draw() {
-  const d = $("#history-dlg");
+  const d = $("#p-history");
   $(".h-list", d).innerHTML = listHtml();
   $(".h-view", d).innerHTML = viewHtml();
   $(".h-files li.on", d)?.scrollIntoView({ block: "nearest" });
@@ -47,25 +48,23 @@ async function show(name) {
 }
 
 export function openHistory() {
-  const d = $("#history-dlg");
   if (!H.file && files().length) show(files()[0]); else draw();
-  if (!d.open) d.showModal();
 }
 
 {
-  const d = $("#history-dlg");
+  const d = $("#p-history");
   d.addEventListener("click", async (e) => {
-    if (e.target === d) return d.close(); // backdrop
     const w = e.target.closest("li[data-id]");
-    if (w) { d.close(); location.hash = ""; return openWeek(w.dataset.id); }
+    if (w) { location.hash = ""; showPage("create"); return openWeek(w.dataset.id); }
     const f = e.target.closest("li[data-name]");
     if (f) return show(f.dataset.name);
     const t = e.target.closest("[data-tab]");
     if (t) { H.tab = t.dataset.tab; draw(); }
   });
-  d.addEventListener("keydown", (e) => {
+  document.addEventListener("keydown", (e) => {
+    if (!isShown("history") || document.querySelector("dialog[open]")) return;
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight" && e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-    if (e.target.closest("input, textarea")) return;
+    if (e.target.closest?.("input, textarea, select")) return;
     const list = files(); if (!list.length) return;
     e.preventDefault();
     const i = Math.max(0, list.indexOf(H.file));

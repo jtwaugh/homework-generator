@@ -60,15 +60,15 @@ try {
   await tool("ui_eval", { js: "window.confirm = () => true; window.alert = (m) => console.error('alert: ' + m); return 'dialogs stubbed'" });
 
   console.log("Check and save (a week waiting in Final)");
-  await step("open History", "ui_click", sel("[data-open=history]"), /dialog-open id=history-dlg/);
-  await step("open the week", "ui_click", sel('#history-dlg li[data-id="TEST-final"]'), /GET \/api\/weeks\/TEST-final status=200/, /dialog-close id=history-dlg/);
+  await step("open History", "ui_click", sel("[data-page=history]"), /ui: page from=create to=history/);
+  await step("open the week", "ui_click", sel('#p-history li[data-id="TEST-final"]'), /GET \/api\/weeks\/TEST-final status=200/, /ui: page from=history to=create/);
   await step("PDF compiles", "ui_wait", { until: "__hw.summary().final?.compile === 'ok'", timeoutMs: 180000 }, /true after/);
   await step("Save & finish", "ui_click", sel("#v-final .savebar .main"), /POST \/api\/weeks\/TEST-final\/finish status=200/, /phase from=final to=done/);
 
   console.log("Review the outline");
-  await step("open the week", "ui_click", sel("[data-open=history]"), /dialog-open/);
-  await step("list loads", "ui_wait", { until: "!!document.querySelector('#history-dlg li[data-id=\"TEST-outline\"]')", timeoutMs: 10000 }, /true after/);
-  await step("pick it", "ui_click", sel('#history-dlg li[data-id="TEST-outline"]'), /GET \/api\/weeks\/TEST-outline/);
+  await step("open the week", "ui_click", sel("[data-page=history]"), /ui: page from=\w+ to=history/);
+  await step("list loads", "ui_wait", { until: "!!document.querySelector('#p-history li[data-id=\"TEST-outline\"]')", timeoutMs: 10000 }, /true after/);
+  await step("pick it", "ui_click", sel('#p-history li[data-id="TEST-outline"]'), /GET \/api\/weeks\/TEST-outline/);
   await step("Start over", "ui_click", sel("#start-over"), /DELETE \/api\/weeks\/TEST-outline status=200/, /phase from=outline to=setup/);
 
   console.log("Set up the week");
@@ -81,14 +81,13 @@ try {
   await step("Generate is offered", "ui_eval", { js: "document.querySelector('#generate').disabled ? 'disabled' : 'enabled'" }, /enabled/);
   await step("Quick set is offered", "ui_eval", { js: "document.querySelector('#quick-set')?.textContent" }, /Quick set/);
 
-  console.log("Header dialogs");
-  await step("Progress map opens", "ui_click", sel("[data-open=dag]"), /dialog-open id=dag-dlg/, /GET \/api\/dag status=200/);
-  await step("select a block", "ui_click", sel("#dag-dlg g.node[data-id=e28]"), /dag-select board=content id=e28/);
-  await step("mark it done", "ui_click", sel("#dag-dlg [data-set=done]"), /PUT \/api\/dag status=200/);
-  await step("Esc closes", "ui_key", { key: "Escape" }, /dialog-close id=dag-dlg/);
-  await step("Corpus opens", "ui_click", sel("[data-open=corpus]"), /dialog-open id=corpus-dlg/, /GET \/api\/corpus status=200/);
-  await step("★ a problem", "ui_click", sel("#corpus-dlg .cp .star"), /data-set=favorite/, /PATCH \/api\/corpus\/\S+ status=200/);
-  await step("Esc closes", "ui_key", { key: "Escape" }, /dialog-close id=corpus-dlg/);
+  console.log("Sidebar tabs");
+  await step("Progress Map tab", "ui_click", sel("[data-page=dag]"), /ui: page from=\w+ to=dag/, /GET \/api\/dag status=200/);
+  await step("select a block", "ui_click", sel("#p-dag g.node[data-id=e28]"), /dag-select board=content id=e28/);
+  await step("mark it done", "ui_click", sel("#p-dag [data-set=done]"), /PUT \/api\/dag status=200/);
+  await step("Corpus tab", "ui_click", sel("[data-page=corpus]"), /ui: page from=dag to=corpus/, /GET \/api\/corpus status=200/);
+  await step("★ a problem", "ui_click", sel("#p-corpus .cp .star"), /data-set=favorite/, /PATCH \/api\/corpus\/\S+ status=200/);
+  await step("back to Create Homework", "ui_click", sel("[data-page=create]"), /ui: page from=corpus to=create/);
   await step("Cost opens", "ui_click", sel("[data-open=cost]"), /dialog-open id=cost-dlg/);
   await step("✕ closes", "ui_click", sel("#cost-dlg form button"), /dialog-close id=cost-dlg/);
 

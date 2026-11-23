@@ -15,7 +15,7 @@ export function describe(el) {
 }
 
 // The element a click "means": the nearest control rather than the span/svg path inside it.
-const target = (e) => e.target.closest?.("button,a,summary,label,input,select,textarea,[data-act],[data-open],[data-set],[data-id],[data-key],[data-tab],li,.tchip,.node") || e.target;
+const target = (e) => e.target.closest?.("button,a,summary,label,input,select,textarea,[data-act],[data-open],[data-page],[data-set],[data-id],[data-key],[data-tab],li,.tchip,.node") || e.target;
 const val = (el) => (el.type === "checkbox" || el.type === "radio" ? el.checked : el.type === "password" ? "•••" : String(el.value ?? "")).toString().slice(0, 120);
 
 // debounced events (typing, zoom) waiting for their pause; flushPending() emits them now

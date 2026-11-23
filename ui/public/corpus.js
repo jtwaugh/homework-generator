@@ -39,14 +39,14 @@ function cardHtml(p) {
 }
 
 function draw() {
-  const d = $("#corpus-dlg");
+  const d = $("#p-corpus");
   if (!C.items) { d.innerHTML = `<p class="muted">Loading…</p>`; return; }
   const hits = C.items.filter(matches);
   const counts = {}; for (const p of C.items) counts[p.status || "candidate"] = (counts[p.status || "candidate"] || 0) + 1;
   const units = [...new Set(C.items.flatMap((p) => p.units || []))].sort();
   const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(label)}</option>`;
   const focused = document.activeElement?.id === "corpus-q";
-  d.innerHTML = `<div class="row"><h2>Problem corpus</h2><span class="muted">${C.items.length} problems · ${counts.favorite || 0} favorite · ${counts.used || 0} used · ${counts.rejected || 0} rejected</span><span class="spacer"></span><form method="dialog"><button class="ghost">✕</button></form></div>
+  d.innerHTML = `<div class="row"><h2>Problem corpus</h2><span class="muted">${C.items.length} problems · ${counts.favorite || 0} favorite · ${counts.used || 0} used · ${counts.rejected || 0} rejected</span></div>
     <p class="hint">Claude starts each week from the best matches here and saves the problems it writes back at the end. ★ moves a problem up the list; ✕ keeps it out.</p>
     <div class="row corpus-filters">
       <input id="corpus-q" type="search" placeholder="Search text, answers, tags…" value="${esc(C.q)}" />
@@ -61,15 +61,13 @@ function draw() {
 }
 
 export async function openCorpus() {
-  const d = $("#corpus-dlg");
-  if (!d.open) d.showModal();
   draw();
   C.items = (await api("/api/corpus")).items.sort((a, b) => String(b.addedAt || "").localeCompare(String(a.addedAt || "")));
   draw();
 }
 
 {
-  const d = $("#corpus-dlg");
+  const d = $("#p-corpus");
   let t = null;
   d.addEventListener("input", (e) => { if (e.target.id === "corpus-q") { C.q = e.target.value; C.limit = 80; clearTimeout(t); t = setTimeout(draw, 150); } });
   d.addEventListener("change", (e) => { const f = e.target.dataset.f; if (f) { C[f] = e.target.value; C.limit = 80; draw(); } });

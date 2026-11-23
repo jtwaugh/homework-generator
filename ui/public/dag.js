@@ -205,14 +205,13 @@ function headHtml() {
     <span class="spacer"></span>
     ${running ? `<span class="muted small"><span class="spin"></span> Claude is reading the homework and notes… ${Math.round((job.elapsed || 0) / 1000)}s${job.tools?.length ? ` · read ${job.tools.length} file${job.tools.length > 1 ? "s" : ""}` : ""}</span><button class="secondary" data-act="stop-guess">Stop</button>`
       : `${job?.error ? `<span class="bad-text small" title="${esc(job.error)}">Last guess failed</span>` : ""}<button class="primary" data-act="guess" title="One ${esc(D.data.guessModel || "")} run over every homework file and your notes, for both boards">${D.data.guess ? "Guess again" : "Guess progress"}</button>`}
-    <button class="ghost" data-act="fit" title="Fit to screen">⤢</button>
-    <form method="dialog"><button class="ghost">✕</button></form>`;
+    <button class="ghost" data-act="fit" title="Fit to screen">⤢</button>`;
 }
 
 function drawAll() {
-  const d = $("#dag-dlg");
+  const d = $("#p-dag");
   if (!D.data) { d.innerHTML = `<p class="muted">Loading…</p>`; return; }
-  if (!curDag()) { d.innerHTML = `<div class="row"><h2>Progress map</h2><span class="spacer"></span><form method="dialog"><button class="ghost">✕</button></form></div><p class="err">ui/data/wu_dag.json is missing.</p>`; return; }
+  if (!curDag()) { d.innerHTML = `<div class="row dag-head"><h2>Progress map</h2></div><p class="err">ui/data/wu_dag.json is missing.</p>`; return; }
   D.view ||= bbox(curDag());
   d.innerHTML = `<div class="dag-head row">${headHtml()}</div>
     <div class="dag-main"><div class="dag-canvas">${svgHtml()}</div>
@@ -220,7 +219,7 @@ function drawAll() {
       <div class="side-body">${D.side === "info" ? (D.sel ? nodePanel(D.sel) : '<p class="muted">Click a block to see its evidence and set its state.</p>') : D.side === "notes" ? notesPanel() : hintsPanel()}</div></aside></div>
     ${legendHtml()}`;
 }
-function drawSvgOnly() { const c = $("#dag-dlg .dag-canvas"); if (c) c.innerHTML = svgHtml(); }
+function drawSvgOnly() { const c = $("#p-dag .dag-canvas"); if (c) c.innerHTML = svgHtml(); }
 
 async function load() {
   D.data = await api("/api/dag");
@@ -230,13 +229,11 @@ async function load() {
     const was = D.data.job?.running;
     D.data = await api("/api/dag");
     if (!D.data.job?.running) { clearInterval(D.poll); if (was) D.side = "hints"; }
-    if ($("#dag-dlg").open) drawAll();
+    if (!$("#p-dag").hidden) drawAll();
   }, 2000);
 }
 
 export async function openDag() {
-  const d = $("#dag-dlg");
-  if (!d.open) d.showModal();
   if (!D.data) drawAll();
   await load();
 }
@@ -258,7 +255,7 @@ async function upload(files) {
 }
 
 export function initDag() {
-  const d = $("#dag-dlg");
+  const d = $("#p-dag");
   d.addEventListener("click", async (e) => {
     const t = e.target;
     const b = t.closest("[data-board]"); if (b) { D.board = b.dataset.board; D.sel = null; D.view = null; return drawAll(); }

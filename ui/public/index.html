@@ -8,18 +8,24 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <header>
+  <nav class="sidebar" aria-label="Main">
     <h1>Homework</h1>
+    <button class="nav-item" data-page="create" title="Create Homework"><span class="ni" aria-hidden="true">✎</span><span class="nl-text">Create Homework</span></button>
+    <button class="nav-item" data-page="dag" title="Progress Map"><span class="ni" aria-hidden="true">◇</span><span class="nl-text">Progress Map</span></button>
+    <button class="nav-item" data-page="corpus" title="Corpus"><span class="ni" aria-hidden="true">▤</span><span class="nl-text">Corpus</span></button>
+    <button class="nav-item" data-page="history" title="History"><span class="ni" aria-hidden="true">↺</span><span class="nl-text">History</span></button>
+    <span class="spacer"></span>
+    <button id="cost-badge" class="badge-btn" data-open="cost" hidden></button>
+    <button class="ghost" id="logout" hidden>Log out</button>
+  </nav>
+
+  <main class="pages">
+  <section id="p-create" class="page" hidden>
+  <div class="topbar">
     <span id="week-name" class="muted"></span>
     <ol id="strip" class="strip"></ol>
     <div id="next" class="next"></div>
-    <span class="spacer"></span>
-    <button id="cost-badge" class="badge-btn" data-open="cost" hidden></button>
-    <button class="ghost" data-open="dag">Progress map</button>
-    <button class="ghost" data-open="corpus">Corpus</button>
-    <button class="ghost" data-open="history">History</button>
-    <button class="ghost" id="logout" hidden>Log out</button>
-  </header>
+  </div>
 
   <div class="split">
     <!-- LEFT: conversation -->
@@ -132,20 +138,23 @@
       </div>
     </section>
   </div>
+  </section>
 
-  <dialog id="cost-dlg" class="dlg"></dialog>
-  <dialog id="cas-dlg" class="dlg wide"></dialog>
-  <dialog id="corpus-dlg" class="dlg wide"></dialog>
-  <dialog id="dag-dlg" class="dlg full"></dialog>
-  <dialog id="history-dlg" class="dlg full">
+  <section id="p-dag" class="page" hidden></section>
+  <section id="p-corpus" class="page" hidden></section>
+  <section id="p-history" class="page" hidden>
     <div class="h-wrap">
       <aside class="h-list"></aside>
       <div class="h-main">
-        <div class="row"><h2>History</h2><span class="muted small">← → between files · Esc closes</span><span class="spacer"></span><form method="dialog"><button class="ghost">✕</button></form></div>
+        <div class="row"><h2>History</h2><span class="muted small">← → between files</span></div>
         <div class="h-view"></div>
       </div>
     </div>
-  </dialog>
+  </section>
+  </main>
+
+  <dialog id="cost-dlg" class="dlg"></dialog>
+  <dialog id="cas-dlg" class="dlg wide"></dialog>
 
   <script type="module" src="/main.js"></script>
 </body>
