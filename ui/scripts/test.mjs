@@ -237,12 +237,12 @@ test("preflight: answer key, worked examples and unit circle sheet reach the bri
   assert.equal(auto.workedExamples, "auto");
   assert.match(briefText(auto), /Worked examples: yes \(you choose how many\)/);
 });
-test("routing: checkpoint on the main model, final on Sonnet, fixes on Haiku then up a tier", () => {
+test("routing: checkpoint and final on the week's model, fixes on Haiku then up a tier", () => {
   const w = { model: "claude-opus-5-5", messages: [] };
   assert.equal(stageFor("start", w), "outline");
   assert.equal(modelFor("outline", w), "claude-opus-5-5");
   assert.equal(stageFor("approve", w), "final");
-  assert.equal(modelFor("final", w), STAGES.final.model);
+  assert.equal(modelFor("final", w), STAGES.final.model || "claude-opus-5-5");
   assert.equal(modelFor("fix", { messages: [{ role: "user", kind: "fix" }] }), STAGES.fix.model);
   assert.notEqual(modelFor("fix", { messages: [{ role: "user", kind: "fix" }, { role: "user", kind: "fix" }] }), STAGES.fix.model);
   assert.equal(stageFor("chat", { messages: [{ role: "assistant", text: "```latex\n\\begin{document}\n```" }] }), "final");

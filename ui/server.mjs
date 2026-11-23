@@ -60,12 +60,15 @@ const ALLOWED_TOOLS = "WebSearch,WebFetch,mcp__hw__cas,mcp__hw__check_answers,mc
 // ---------- stage routing: the cheapest model that does each part well ----------
 // Taste-critical work (choosing and vetting problems, the checkpoint) stays on the main model. Research, writing
 // out an approved outline, answer checking and compile fixes go to cheaper models, escalating one tier on failure.
+// The final stays on the week's model: it follows the checkpoint within minutes, so it reads the outline's prompt
+// cache (caches are per model), and that saves more than a cheaper model's lower output price. No effort of its own:
+// the outline sends none, and a different effort would miss the cache too (Opus defaults to medium).
 const MODELS = { opus: DEFAULT_MODEL, sonnet: process.env.HW_SONNET_MODEL || "claude-sonnet-5-5", haiku: process.env.HW_HAIKU_MODEL || "claude-haiku-5-5" };
 const NEXT_TIER = { [MODELS.haiku]: MODELS.sonnet, [MODELS.sonnet]: MODELS.opus };
 export const STAGES = {
   research: { model: process.env.HW_RESEARCH_MODEL || MODELS.sonnet, tools: "WebSearch,WebFetch", allowed: "WebSearch,WebFetch,mcp__hw__corpus_search", effort: "medium", why: "web research for sections the corpus can't fill" },
   outline: { model: null, tools: "WebSearch,WebFetch", allowed: ALLOWED_TOOLS, why: "choose, adapt and vet problems; write the checkpoint" },
-  final: { model: process.env.HW_WRITE_MODEL || MODELS.sonnet, tools: "", allowed: "mcp__hw__cas,mcp__hw__check_answers,mcp__hw__corpus_search", effort: "medium", why: "write the approved outline out as .tex + status + manifest" },
+  final: { model: process.env.HW_WRITE_MODEL || null, tools: "", allowed: "mcp__hw__cas,mcp__hw__check_answers,mcp__hw__corpus_search", why: "write the approved outline out as .tex + status + manifest" },
   fix: { model: process.env.HW_FIX_MODEL || MODELS.haiku, tools: "", allowed: "mcp__hw__cas,mcp__hw__check_answers", effort: "low", why: "compile/lint fixes" },
 };
 const DRY_STAGES = process.env.HW_DRY_STAGES === "1";
