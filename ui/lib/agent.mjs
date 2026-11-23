@@ -1,7 +1,7 @@
 // The agent loop: one Claude conversation over the Messages API (streaming), with server tools (web search/fetch)
 // and our own in-process tools (cas, corpus_search, corpus_add, ...). It replaces `claude -p` and keeps the result
 // and event shapes the server already used:
-//   result  {ok, error?, text, usage, structured, tools, stopReason}
+//   result  {ok, error?, paused?, text, usage, structured, tools, stopReason}
 //   events  {type:"text"|"thinking", text} · {type:"tool", tool:{id,name,input,at,textIndex}}
 //           · {type:"tool_result", tool:{id,name,input,at,textIndex,ms,chars,ok,preview}}
 // `messages` is the conversation so far; it is extended in place (assistant turns keep their thinking blocks
@@ -44,10 +44,12 @@ export function addUsage(u, model, usage = {}) {
 const SERVER_NAME = { web_search: "WebSearch", web_fetch: "WebFetch" };
 const RESULT_TYPES = new Set(["web_search_tool_result", "web_fetch_tool_result"]);
 
-export function serverTools(names = [], { maxSearches = 8 } = {}) {
+// maxFetchTokens caps a fetched page's text in context (PDFs and other binary content aren't capped). Without it
+// one page can add 100k+ tokens that every later call re-reads. Limits are per API call.
+export function serverTools(names = [], { maxSearches = 8, maxFetches = 10, maxFetchTokens = 8000 } = {}) {
   const out = [];
   if (names.includes("WebSearch")) out.push({ type: "web_search_20260209", name: "web_search", max_uses: maxSearches });
-  if (names.includes("WebFetch")) out.push({ type: "web_fetch_20260209", name: "web_fetch", max_uses: 10 });
+  if (names.includes("WebFetch")) out.push({ type: "web_fetch_20260209", name: "web_fetch", max_uses: maxFetches, max_content_tokens: maxFetchTokens });
   return out;
 }
 
@@ -101,17 +103,23 @@ const isAbort = (e, signal) => signal?.aborted || e instanceof Anthropic.APIUser
  * @param {Array} o.messages     conversation; the new user prompt must already be the last entry
  * @param {Array} [o.tools]      custom tools: {name, description, input_schema, run(input) → {ok, text}}
  * @param {string[]} [o.server]  "WebSearch", "WebFetch"
+ * @param {object} [o.webLimits] serverTools limits: {maxSearches, maxFetches, maxFetchTokens}
  * @param {string} [o.effort]    low | medium | high | xhigh | max
  * @param {object} [o.schema]    JSON schema: the final reply is JSON, parsed into result.structured
  * @param {number} [o.budgetUSD] stop once this conversation run has cost more
+ * @param {string} [o.budgetLabel] how the stop message names the budget (default "$<budgetUSD>")
  * @param {string[]} [o.allow]  custom tools this call may run (others are declared but refused): keeps the tool
  *                              list identical across a conversation's stages, as replayed thinking requires
  * @param {boolean} [o.binding]  multi-turn conversation: drop (not reject) replayed thinking the API can't verify
  * @param {AbortSignal} [o.signal]
+ * @param {number} [o.deadline]  ms timestamp: start no new model call after it; return {paused: true} instead
+ * @param {number} [o.hardDeadline] ms timestamp: abort a model call still streaming then (its partial reply is
+ *                              dropped) and return {paused: true}. Either way `messages` stays a valid history:
+ *                              calling runAgent again with it (no new user turn) picks up where this one stopped.
  */
 export async function runAgent({
-  client, model, system, messages, tools = [], server = [], effort, schema, budgetUSD = Infinity, signal,
-  allow = null, binding = false,
+  client, model, system, messages, tools = [], server = [], webLimits = {}, effort, schema, budgetUSD = Infinity, budgetLabel, signal,
+  allow = null, binding = false, deadline = Infinity, hardDeadline = Infinity,
   onEvent = () => {}, log = () => {}, maxTurns = 60, maxTokens = 64000, fallbacks = process.env.HW_FALLBACKS !== "0",
 }) {
   model = MODELS[model] || model; // "opus" / "sonnet" / "haiku" (as stored on older weeks) -> API model id
@@ -121,7 +129,7 @@ export async function runAgent({
   let text = "", lastText = "", stopReason = null;
   const byName = new Map(tools.map((t) => [t.name, t]));
   const apiTools = [
-    ...serverTools(server),
+    ...serverTools(server, webLimits),
     ...tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema, eager_input_streaming: true })),
   ];
   // Server-side refusal fallbacks exist for Opus and Sonnet, not Haiku.
@@ -141,7 +149,18 @@ export async function runAgent({
     ...(betas.length ? { betas } : {}),
     ...(useFallbacks ? { fallbacks: "default" } : {}),
   };
+  // The hard deadline aborts through its own controller, so a pause is told apart from the teacher's Stop.
+  const hard = new AbortController();
+  const hardTimer = Number.isFinite(hardDeadline) ? setTimeout(() => hard.abort(), Math.max(0, hardDeadline - Date.now())) : null;
+  const sig = !hardTimer ? signal : signal ? AbortSignal.any([signal, hard.signal]) : hard.signal;
+  const paused = () => {
+    clearTimeout(hardTimer);
+    usage.durationMs = Date.now() - started;
+    log("paused", { model, costUSD: usage.costUSD, turns: usage.numTurns });
+    return { ok: false, paused: true, error: "paused at the time limit", text, usage, structured: null, stopReason, tools: calls.map(({ at, ...t }) => t) };
+  };
   const finish = (ok, error) => {
+    clearTimeout(hardTimer);
     usage.durationMs = Date.now() - started;
     let structured = null;
     if (ok && schema) {
@@ -155,13 +174,15 @@ export async function runAgent({
   log("start", { model, effort, tools: apiTools.map((t) => t.name), messages: messages.length });
   for (let turn = 0; turn < maxTurns; turn++) {
     if (signal?.aborted) return finish(false, "stopped");
+    // The soft deadline only stops later calls, so every slice makes progress even if it started late.
+    if ((turn > 0 && Date.now() > deadline) || hard.signal.aborted) return paused();
     let msg;
     for (let attempt = 0; ; attempt++) {
       const pending = new Map(); // block index → {kind, id, name, json, at, textIndex}
       const textBefore = text;
       try {
         const api = params.betas ? client.beta.messages : client.messages;
-        const stream = api.stream(params, { signal });
+        const stream = api.stream(params, { signal: sig });
         for await (const ev of stream) {
           if (ev.type === "content_block_start") {
             const b = ev.content_block;
@@ -186,10 +207,12 @@ export async function runAgent({
         msg = await stream.finalMessage();
         break;
       } catch (e) {
-        if (isAbort(e, signal)) return finish(false, "stopped");
+        if (signal?.aborted) return finish(false, "stopped");
         // Drop what this failed attempt emitted from the record, then retry transient failures twice.
         text = textBefore;
         for (const p of pending.values()) { const i = calls.findIndex((c) => c.id === p.id); if (i >= 0) calls.splice(i, 1); }
+        if (hard.signal.aborted) return paused(); // the half-streamed reply is gone; the history ends where it did
+        if (isAbort(e, signal)) return finish(false, "stopped");
         // A model that doesn't take the binding control: drop it rather than fail the turn.
         if (e.status === 400 && params.thinking.block_binding && /block_binding|thinking-binding/.test(e.message)) {
           delete params.thinking.block_binding;
@@ -222,7 +245,7 @@ export async function runAgent({
       // Keep the history valid for the next turn: every tool_use needs a tool_result.
       const open = msg.content.filter((b) => b.type === "tool_use");
       if (open.length) messages.push({ role: "user", content: open.map((b) => ({ type: "tool_result", tool_use_id: b.id, content: "not run: budget reached", is_error: true })) });
-      return finish(false, `Stopped: this turn reached the $${budgetUSD} budget.`);
+      return finish(false, `Stopped: this turn reached the ${budgetLabel || `$${budgetUSD}`} budget.`);
     }
     if (stopReason === "end_turn" || stopReason === "stop_sequence") return finish(true);
     if (stopReason === "refusal") return finish(false, "Claude declined this request.");
@@ -246,8 +269,9 @@ export async function runAgent({
       else if (allow && !allow.includes(b.name)) r = { ok: false, text: `${b.name} is not available at this step` };
       else if (bad) r = { ok: false, text: `invalid input: ${bad}` };
       else if (signal?.aborted) r = { ok: false, text: "stopped by the teacher" };
+      else if (hard.signal.aborted) r = { ok: false, text: "not run: the server's time limit came first; run it again" };
       else {
-        try { r = await def.run(b.input, { signal }); } catch (e) { r = { ok: false, text: "tool error: " + e.message }; }
+        try { r = await def.run(b.input, { signal: sig }); } catch (e) { r = { ok: false, text: "tool error: " + e.message }; }
       }
       const out = String(r.text ?? "");
       Object.assign(tool, { ms: Date.now() - t0, chars: out.length, ok: !!r.ok, preview: clip(out, 4000) });

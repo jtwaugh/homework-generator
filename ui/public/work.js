@@ -273,7 +273,7 @@ function renderSetup() {
   const checks = setupChecks();
   $("#setup-check").innerHTML = checks.map((c) => `<span class="${c.ok ? "ok" : "todo"}">${c.ok ? "✓" : "○"} ${c.label}</span>`).join("");
   const ready = checks.every((c) => c.ok);
-  for (const b of [$("#generate"), $("#quick-set")]) { b.disabled = false; b.classList.toggle("not-ready", !ready); }
+  for (const b of [$("#generate"), $("#quick-set")]) { b.disabled = starting; b.classList.toggle("not-ready", !ready); }
   $("#generate").title = ready ? `Claude researches${S.corpusSize ? ` (starting from the ${S.corpusSize}-problem corpus)` : ""}, then shows you an outline to approve` : `Add ${setupMissing().join(" and ")} first`;
 }
 
@@ -287,14 +287,44 @@ function guardSetup() {
   return false;
 }
 
-async function startWeek(instructions) {
-  $("#generate").disabled = $("#quick-set").disabled = true;
-  await flushStatus(true);
-  const date = parseWeekInput(S.savedStatus)["Date (for title)"];
-  app.week = await api("/api/weeks", { method: "POST", body: { title: `HW ${date}` } });
-  history.replaceState(null, "", location.pathname);
-  send("start", "Here is this week's weekly_status.md:\n\n```markdown\n" + S.savedStatus.trim() + "\n```\n\n" +
-    "Everything for this week is in its \"This week's input\" section. " + instructions, { overrides: Object.fromEntries([...briefOff].map((k) => [k, false])) });
+// starting: a create is in flight, so the start buttons stay disabled through re-renders (no double sessions).
+let starting = false;
+async function startWeek(instructions, { replace = false } = {}) {
+  if (starting) return;
+  starting = true; $("#dup-week").hidden = true; render();
+  try {
+    await flushStatus(true);
+    const date = parseWeekInput(S.savedStatus)["Date (for title)"];
+    try {
+      app.week = await api("/api/weeks", { method: "POST", body: { title: `HW ${date}`, replace } });
+    } catch (e) {
+      if (e.status === 409) return showDupWeek(e, instructions);
+      throw e;
+    }
+    history.replaceState(null, "", location.pathname);
+    send("start", "Here is this week's weekly_status.md:\n\n```markdown\n" + S.savedStatus.trim() + "\n```\n\n" +
+      "Everything for this week is in its \"This week's input\" section. " + instructions, { overrides: Object.fromEntries([...briefOff].map((k) => [k, false])) });
+  } finally { starting = false; render(); }
+}
+
+// This date already has an unfinished week: go back to it, or throw it away and start fresh.
+function showDupWeek(e, instructions) {
+  const el = $("#dup-week"), list = e.data?.existing || [];
+  const w = list[0];
+  const busy = list.some((x) => x.running);
+  log("dup-week", { ids: list.map((x) => x.id), running: busy });
+  if (!w) { el.innerHTML = `<span>${esc(e.message)}</span>`; el.hidden = false; return; }
+  const when = new Date(w.createdAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const more = list.length > 1 ? ` (and ${list.length - 1} more ${list.length > 2 ? "copies" : "copy"})` : "";
+  el.innerHTML = `<span><b>${esc(w.title)}</b> is already in progress: started ${esc(when)}, ${w.turns} message${w.turns === 1 ? "" : "s"}${busy ? ", Claude is working on it now" : ""}${more}.</span>
+    <span class="spacer"></span>
+    <button class="primary" data-dup="resume">Resume it</button>
+    <button class="secondary" data-dup="replace" ${busy ? 'disabled title="Claude is still working on it. Resume it and stop it first"' : `title="Delete ${list.length > 1 ? "them" : "it"} and start this week again"`}>Replace it</button>
+    <button class="link" data-dup="cancel">Cancel</button>`;
+  el.hidden = false;
+  el.querySelector("[data-dup=resume]").onclick = () => { el.hidden = true; log("dup-week-resume", { id: w.id }); openWeek(w.id); };
+  el.querySelector("[data-dup=replace]").onclick = () => { log("dup-week-replace", { ids: list.map((x) => x.id) }); startWeek(instructions, { replace: true }); };
+  el.querySelector("[data-dup=cancel]").onclick = () => { el.hidden = true; };
 }
 
 // ---- brief: what the app settled before calling Claude (promotions, section coverage, which stages run) ----
@@ -354,10 +384,13 @@ function renderOutline(phase) {
   const { outline } = splitMessages();
   const lastA = lastAssistant(outline);
   const running = phase === "outline-running";
-  const asking = lastA && !isCheckpoint(lastA.text);
+  // A turn that ended on an error (budget, stop, crash) before the checkpoint isn't asking anything.
+  const halted = !running && lastA && lastA.error && !isCheckpoint(lastA.text);
+  const asking = lastA && !halted && !isCheckpoint(lastA.text);
   const err = !running && (lastA?.error || app.week.sendError);
-  $(".v-title", el).textContent = !lastA ? "Outline" : asking ? "Claude has questions" : "Outline checkpoint";
+  $(".v-title", el).textContent = !lastA ? "Outline" : halted ? "Claude stopped before the checkpoint" : asking ? "Claude has questions" : "Outline checkpoint";
   $(".v-note", el).innerHTML = running ? `<span class="spin"></span> Claude is ${lastA ? "revising the outline" : "researching and writing the outline"}. Follow along in the chat.`
+    : halted ? "Continue picks up where it stopped (re-reading the conversation so far costs extra), or Start over to set the week up again."
     : asking ? "Answer in the chat on the left, or let Claude use its stated defaults."
     : lastA ? "Read it over. Type any changes in the chat, or approve to write the final." : "";
   $(".latest", el).innerHTML = (err ? `<div class="err">Something went wrong: ${esc(err)}</div>` : "") + (lastA ? md(lastA.text) : running ? "" : `<p class="muted">Claude didn't reply.</p>`);
@@ -366,6 +399,7 @@ function renderOutline(phase) {
   const main = $(".main", el), alt = $(".alt", el);
   main.hidden = alt.hidden = running;
   if (!lastA) { main.textContent = "Try again"; main.dataset.act = "retry"; alt.hidden = true; }
+  else if (halted) { main.textContent = "Continue →"; main.dataset.act = "continue"; alt.hidden = true; }
   else if (asking) { main.textContent = "Use your defaults →"; main.dataset.act = "defaults"; alt.hidden = true; }
   else {
     const t = composerText();
@@ -379,6 +413,7 @@ $("#v-outline .main").onclick = () => {
   const { outline } = splitMessages();
   if (act === "retry") { const s = outline.find((m) => m.kind === "start"); app.week.messages = []; return send("start", s.text); }
   const t = composerText(); clearComposer();
+  if (act === "continue") return send("revise", (t ? t + "\n\n" : "") + "Continue where you left off: finish the outline and send the checkpoint. Keep any further web research brief.");
   if (act === "defaults") return send("revise", (t ? t + "\n\nFor anything I didn't answer, use" : "Use") + " your stated default choices. Now do the research and send the checkpoint.");
   send("approve", "Approved" + (t ? ", with these edits:\n" + t : ".") + "\nWrite the final .tex, the complete updated weekly_status.md, and the problem manifest.");
 };

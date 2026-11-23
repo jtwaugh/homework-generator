@@ -106,8 +106,8 @@ function threadHtml() {
   week.messages.forEach((m, i) => {
     if (i === outline.length && i > 0) out.push(`<div class="phase-sep"><span>Final</span></div>`);
     if (m.role === "user") out.push(`<div class="msg user k-${esc(kindOf(m))}">${userLabel(m)}</div>`);
-    else if (m === shownRight) out.push(`<div class="msg assistant">${stepsHtml(m, `m${i}`)}<div class="md">${md((m.text || "").split(/\n\s*\n/)[0].slice(0, 400))}</div><div class="block-stub">📋 ${isCheckpoint(m.text) ? "Outline checkpoint" : "Claude's questions"} <span class="muted">· shown on the right</span></div>${m.error ? `<div class="err">Stopped: ${esc(m.error)}</div>` : ""}${costFooter(m)}</div>`);
-    else out.push(`<div class="msg assistant">${stepsHtml(m, `m${i}`)}<div class="md">${assistantHtml(m.text)}</div>${m.error ? `<div class="err">Stopped: ${esc(m.error)}</div>` : ""}${costFooter(m)}</div>`);
+    else if (m === shownRight) out.push(`<div class="msg assistant">${stepsHtml(m, `m${i}`)}<div class="md">${md((m.text || "").split(/\n\s*\n/)[0].slice(0, 400))}</div><div class="block-stub">📋 ${isCheckpoint(m.text) ? "Outline checkpoint" : m.error ? "Stopped before the checkpoint" : "Claude's questions"} <span class="muted">· shown on the right</span></div>${m.error ? `<div class="err">${/^stopped/i.test(m.error) ? "" : "Stopped: "}${esc(m.error)}</div>` : ""}${costFooter(m)}</div>`);
+    else out.push(`<div class="msg assistant">${stepsHtml(m, `m${i}`)}<div class="md">${assistantHtml(m.text)}</div>${m.error ? `<div class="err">${/^stopped/i.test(m.error) ? "" : "Stopped: "}${esc(m.error)}</div>` : ""}${costFooter(m)}</div>`);
   });
   if (week.running) {
     const live = week.live || { text: "", tools: [] };
@@ -128,7 +128,7 @@ export function transcriptHtml(week) {
   week.messages.forEach((m, i) => {
     if (i === outline.length && i > 0) out.push(`<div class="phase-sep"><span>Final</span></div>`);
     if (m.role === "user") out.push(`<div class="msg user k-${esc(kindOf(m))}">${userLabel(m, true)}</div>`);
-    else out.push(`<div class="msg assistant">${stepsHtml(m, `h${i}`)}<div class="md">${assistantHtml(m.text, true)}</div>${m.error ? `<div class="err">Stopped: ${esc(m.error)}</div>` : ""}${costFooter(m)}</div>`);
+    else out.push(`<div class="msg assistant">${stepsHtml(m, `h${i}`)}<div class="md">${assistantHtml(m.text, true)}</div>${m.error ? `<div class="err">${/^stopped/i.test(m.error) ? "" : "Stopped: "}${esc(m.error)}</div>` : ""}${costFooter(m)}</div>`);
   });
   if (week.running) out.push(`<div class="msg assistant live"><div class="working-line"><span class="spin"></span>Claude is working on this one now</div></div>`);
   if (week.lastError && !week.running && !week.messages.some((m) => m.role === "assistant")) out.push(`<div class="err">Last attempt failed: ${esc(week.lastError)}</div>`);
@@ -145,7 +145,7 @@ function composerMode(phase) {
   if (phase.endsWith("running")) return { disabled: true, running: true, ph: "Claude is working…" };
   if (phase === "outline") {
     const lastA = [...splitMessages().outline].reverse().find((m) => m.role === "assistant");
-    if (lastA && !isCheckpoint(lastA.text)) return { kind: "revise", ph: "Answer Claude's questions  (⌘↩ to send)" };
+    if (lastA && !isCheckpoint(lastA.text)) return { kind: "revise", ph: lastA.error ? "Add instructions for Continue, or type a message  (⌘↩)" : "Answer Claude's questions  (⌘↩ to send)" };
     return { kind: "revise", ph: "Ask for changes to the outline, or Approve on the right  (⌘↩)" };
   }
   return { kind: "chat", ph: "Ask for changes; Claude resends the full .tex  (⌘↩)" };

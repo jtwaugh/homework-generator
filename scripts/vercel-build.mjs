@@ -1,5 +1,6 @@
-// Vercel build step: fetch the static Linux Tectonic into bin/ (bundled with the function) and make an empty
-// static output folder (the function serves every page itself, so nothing in the repo is exposed as a file).
+// Vercel build step: fetch the static Linux Tectonic into bin/ (bundled with the function), build the Workflow
+// bundles (workflows/ → .well-known/workflow/v1/, served by api/wf-flow.mjs) and make an empty static output
+// folder (the function serves every page itself, so nothing in the repo is exposed as a file).
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -21,3 +22,6 @@ console.log(execFileSync(path.join(bin, "tectonic"), ["--version"], { encoding: 
 const out = path.join(ROOT, "static-empty");
 fs.mkdirSync(out, { recursive: true });
 fs.writeFileSync(path.join(out, "robots.txt"), "User-agent: *\nDisallow: /\n");
+
+// Long chat turns run as Vercel Workflow runs (workflows/turn.mjs).
+execFileSync(path.join(ROOT, "node_modules", ".bin", "workflow"), ["build", "--target", "standalone"], { cwd: ROOT, stdio: "inherit" });

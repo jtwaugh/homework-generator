@@ -13,6 +13,7 @@
 !/package-lock.json
 !/requirements.txt
 !/vercel.json
+!/workflows/
 !/.vercelignore
 !/ui/
 /ui/data/*
@@ -26,3 +27,4 @@
 node_modules/
 /.vercel
 __pycache__/
+/.swc

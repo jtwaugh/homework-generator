@@ -3,7 +3,7 @@
 //   node ui/scripts/test-agent.mjs
 import assert from "node:assert/strict";
 import Anthropic from "@anthropic-ai/sdk";
-import { runAgent, costOf, addUserTurn, strictSchema, MODELS } from "../lib/agent.mjs";
+import { runAgent, costOf, addUserTurn, strictSchema, MODELS, serverTools } from "../lib/agent.mjs";
 
 let pass = 0, fail = 0;
 const test = async (name, fn) => {
@@ -47,7 +47,11 @@ function fakeClient(script) {
     return {
       async *[Symbol.asyncIterator]() {
         if (final instanceof Error) throw final;
-        for (const e of eventsOf(final)) { if (opts.signal?.aborted) throw new Anthropic.APIUserAbortError(); yield e; }
+        for (const e of eventsOf(final)) {
+          if (final.delayMs) await new Promise((r) => setTimeout(r, final.delayMs));
+          if (opts.signal?.aborted) throw new Anthropic.APIUserAbortError();
+          yield e;
+        }
       },
       finalMessage: async () => ({ model: params.model, ...final }),
     };
@@ -216,6 +220,19 @@ await test("budget: stops after the call that crosses it, and closes open tool c
   assert.equal(messages.at(-1).content[0].tool_use_id, "t", "history stays valid for the next turn");
 });
 
+await test("budget: a turn's remaining budget is named by its label", async () => {
+  const c = fakeClient([msg([use("t", "cas", { code: "1" })], "tool_use", U(1e6, 0))]);
+  const r = await runAgent({ client: c, model: MODELS.opus, messages: user("x"), budgetUSD: 0.3, budgetLabel: "$1", tools: [casTool(async () => ({ ok: true, text: "" }))] });
+  assert.equal(r.error, "Stopped: this turn reached the $1 budget.");
+});
+
+await test("serverTools: web_fetch text is capped; per-call limits pass through", async () => {
+  const [s, f] = serverTools(["WebSearch", "WebFetch"]);
+  assert.equal(f.max_content_tokens, 8000);
+  const [s2, f2] = serverTools(["WebSearch", "WebFetch"], { maxSearches: 3, maxFetches: 3 });
+  assert.deepEqual([s.max_uses, s2.max_uses, f2.max_uses, f2.max_content_tokens], [8, 3, 3, 8000]);
+});
+
 await test("refusal and max_tokens mid tool call are errors; max_tokens on text is ok", async () => {
   const c = fakeClient([msg([], "refusal"), msg([use("t", "cas", { code: "1" })], "max_tokens"), msg([txt("long…")], "max_tokens")]);
   assert.match((await runAgent({ client: c, model: MODELS.sonnet, messages: user("x") })).error, /declined/);
@@ -262,6 +279,42 @@ await test("binding: conversation turns ask for drop_block; a model that rejects
   assert.equal(r.ok, true);
   assert.equal(c2.calls[1].thinking.block_binding, undefined);
   assert.equal(c2.calls[1].betas, undefined);
+});
+
+await test("a soft deadline pauses between model calls with a valid history, and a rerun picks up", async () => {
+  const c = fakeClient([msg([use("t1", "cas", { code: "1" })], "tool_use"), msg([txt("done")])]);
+  const messages = user("x");
+  const r = await runAgent({ client: c, model: MODELS.haiku, messages, deadline: Date.now() + 30,
+    tools: [casTool(async () => { await new Promise((ok) => setTimeout(ok, 60)); return { ok: true, text: "1" }; })] });
+  assert.equal(r.paused, true);
+  assert.equal(r.ok, false);
+  assert.equal(c.calls.length, 1, "no model call after the deadline");
+  assert.equal(messages.at(-1).role, "user");
+  assert.equal(messages.at(-1).content[0].type, "tool_result", "the tool ran and its result is saved");
+  assert.ok(r.usage.costUSD > 0, "the first call's cost is reported");
+  const r2 = await runAgent({ client: c, model: MODELS.haiku, messages, tools: [casTool(async () => ({ ok: true, text: "1" }))] });
+  assert.equal(r2.ok, true);
+  assert.equal(r2.text, "done");
+  assert.equal(c.calls[1].messages.length, 3, "the rerun sent the saved history as is");
+});
+
+await test("a hard deadline aborts a call mid-stream and leaves the history as it was", async () => {
+  const c = fakeClient([{ ...msg([txt("slow"), txt("reply")]), delayMs: 40 }]);
+  const messages = user("x");
+  const events = [];
+  const r = await runAgent({ client: c, model: MODELS.haiku, messages, hardDeadline: Date.now() + 60, onEvent: (e) => events.push(e) });
+  assert.equal(r.paused, true);
+  assert.equal(r.text, "", "the half-streamed text is dropped");
+  assert.equal(messages.length, 1);
+});
+
+await test("Stop still reads as stopped, not paused, with a deadline set", async () => {
+  const ac = new AbortController();
+  const c = fakeClient([{ ...msg([txt("slow"), txt("reply")]), delayMs: 30 }]);
+  setTimeout(() => ac.abort(), 40);
+  const r = await runAgent({ client: c, model: MODELS.haiku, messages: user("x"), signal: ac.signal, hardDeadline: Date.now() + 5000 });
+  assert.equal(r.paused, undefined);
+  assert.equal(r.error, "stopped");
 });
 
 await test("addUserTurn merges into a dangling user turn (after a stopped run)", () => {

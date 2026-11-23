@@ -49,6 +49,9 @@ const BUDGET = process.env.HW_BUDGET_USD ? String(Number(process.env.HW_BUDGET_U
 // each stage's `allowed` list decides which of our tools it may actually run.
 const WEEK_TOOLS = ["cas", "corpus_search", "corpus_add"];
 const WEEK_SERVER = ["WebSearch", "WebFetch"];
+// Web limits per API call in the week's conversation. The research stage (Sonnet) does the broad searching; the
+// outline only fills a gap. Part of the tool definitions, so they stay the same for every turn of a week.
+const WEEK_WEB = { maxSearches: 3, maxFetches: 3 };
 const allowedOf = (st) => st.allowed.split(",").filter(Boolean).map((n) => n.replace(/^mcp__hw__/, ""));
 const ALLOWED_TOOLS = "WebSearch,WebFetch,mcp__hw__cas,mcp__hw__corpus_search,mcp__hw__corpus_add";
 
@@ -335,6 +338,17 @@ async function loadWeek(id) {
 async function saveWeek(w) {
   await fsp.writeFile(weekPath(w.id), JSON.stringify(w, null, 2));
 }
+const creating = new Set(); // week titles mid-create, so a double click can't make two
+async function createWeek(base, title, model) {
+  let id = base, n = 2;
+  while (fs.existsSync(weekPath(id))) id = `${base}-${n++}`;
+  const w = { id, title: title || id, createdAt: new Date().toISOString(), sessionId: randomUUID(), started: false, model: model || DEFAULT_MODEL, enrollmentId: C().enrollmentId, messages: [] };
+  await saveWeek(w);
+  return w;
+}
+async function deleteWeekFiles(id) {
+  for (const f of [weekPath(id), toolsPath(id), convoPath(id), turnPath(id), path.join(MCP_DIR, `${id}.json`)]) await fsp.rm(f, { force: true });
+}
 const weekCost = (w) => w.messages.reduce((s, m) => s + (m.usage?.costUSD || 0), 0);
 // enrollmentId: the student × course a week belongs to (stamped at creation; older weeks: their assignment's,
 // else the first enrollment, which is the one the v0 migration created).
@@ -371,7 +385,7 @@ async function buildSystemPrompt(c = C()) {
     "- Treat the brief's decisions and standing rulings as the teacher's answers. Never ask about them again.",
     "- Tools: web search, web fetch, and the app's own tools `cas`, `corpus_search` and `corpus_add`. There is no bash tool. The app compiles your .tex with Tectonic and will send you any errors or overfull-box warnings. In the final step, write \"not compiled (the app will compile it)\".",
     "- Use `cas` while vetting candidates for the checkpoint, and in the final to verify every answer-key entry that isn't already verified: substitute solutions back, check for extraneous roots, confirm factorizations. Corpus problems marked `cas ✓` already have a CAS-checked answer: if you use one verbatim (same text, same answer), don't re-check it, just set casVerified true in the manifest. Adapted, web and new problems still need checking. Batch the problems into a few calls that print one line per problem. In the final reply say how many answers you checked with the CAS and how many came verified from the corpus.",
-    "- Problem corpus: the teacher's cache of problems from past sets, earlier research and favorites. The first message includes the best matches for this week. Draw from the corpus first, and adapt rather than copy problems marked used (especially recent ones). Use `corpus_search` for more. Web search only for sections where the corpus has fewer than 3 suitable candidates. Whenever you find good problems on the web, call `corpus_add` with them, including ones you won't use this week. In the checkpoint, say which problems came from the corpus (by id) and which came from the web.",
+    "- Problem corpus: the teacher's cache of problems from past sets, earlier research and favorites. The first message includes the best matches for this week. Draw from the corpus first, and adapt rather than copy problems marked used (especially recent ones). Use `corpus_search` for more. Web search only for sections where the corpus and the research notes together have fewer than 3 suitable candidates, and keep it brief: a few targeted searches, not a second research pass. When code processes search or fetch results, print only the parts you need (a problem's text, a short excerpt), never whole result objects or page contents: everything printed stays in the conversation and is paid for on every later call. Whenever you find good problems on the web, call `corpus_add` with them, including ones you won't use this week. In the checkpoint, say which problems came from the corpus (by id) and which came from the web.",
     "- In the final step put the complete .tex in exactly one ```latex fenced block, and the complete updated weekly_status.md in exactly one ```markdown fenced block. The app extracts both.",
     "- After the .tex and status blocks, add one ```json fenced block: a problem manifest, an array with one object per \\item in the set, in the order they appear in the .tex: {\"part\": 1, \"n\": 3, \"answer\": \"...\", \"units\": [\"U14\"], \"source\": \"corpus:<id>\" or \"web:<url>\" or \"new\", \"casVerified\": true}. Don't repeat the problem text: the app reads it from the .tex. The app saves it to the corpus when the teacher saves the set.",
     "- If the teacher asks for changes after the final, always reply with the complete revised .tex, weekly_status.md and manifest again.",
@@ -390,7 +404,8 @@ let apiClient = null;
 const client = () => (apiClient ??= makeClient());
 
 // One agent run (lib/agent.mjs). Registered in `running` under `key` so Stop can abort it.
-async function callAgent({ key, weekId = "", model, system, messages, toolNames = [], allow = null, server = [], effort, schema, binding = false, onEvent = () => {} }) {
+// budgetUSD: what this call may still spend (a turn's stages share HW_BUDGET_USD); defaults to the whole budget.
+async function callAgent({ key, weekId = "", model, system, messages, toolNames = [], allow = null, server = [], webLimits, effort, schema, binding = false, onEvent = () => {}, deadline, hardDeadline, budgetUSD }) {
   const ac = new AbortController();
   running.set(key, ac);
   const t0 = Date.now();
@@ -400,8 +415,8 @@ async function callAgent({ key, weekId = "", model, system, messages, toolNames 
   }, 3000);
   try {
     const r = await runAgent({
-      client: client(), model, system, messages, tools: agentTools(weekId, { names: toolNames }), allow, server, effort, schema, binding,
-      budgetUSD: BUDGET ? Number(BUDGET) : Infinity, signal: ac.signal, onEvent,
+      client: client(), model, system, messages, tools: agentTools(weekId, { names: toolNames }), allow, server, webLimits, effort, schema, binding,
+      budgetUSD: budgetUSD ?? (BUDGET ? Number(BUDGET) : Infinity), budgetLabel: BUDGET ? `$${BUDGET}` : undefined, signal: ac.signal, onEvent, deadline, hardDeadline,
       log: (event, d) => logEvent("claude", event, { key, ...d }),
     });
     logEvent("claude", "exit", { key, ms: Date.now() - t0, chars: r.text.length, tools: r.tools.length, error: r.error ? short(r.error, 300) : undefined });
@@ -416,18 +431,19 @@ async function callAgent({ key, weekId = "", model, system, messages, toolNames 
 }
 
 // A turn in the week's conversation. The system prompt is fixed at the first turn and replayed unchanged.
-async function runClaude(week, prompt, systemPrompt, onEvent, stage = "outline") {
+// prompt null resumes a turn that paused at a deadline (lim): the saved conversation already ends where it stopped.
+async function runClaude(week, prompt, systemPrompt, onEvent, stage = "outline", lim = {}) {
   const st = STAGES[stage];
-  let convo = week.started ? await readJson(convoPath(week.id), null) : null;
+  let convo = week.started || prompt == null ? await readJson(convoPath(week.id), null) : null;
   if (!convo) convo = { system: systemPrompt || (await buildSystemPrompt()), messages: legacyHistory(week) };
   const before = convo.messages.length;
-  addUserTurn(convo.messages, prompt);
+  if (prompt != null) addUserTurn(convo.messages, prompt);
   const r = await callAgent({
     key: week.id, weekId: week.id, model: modelFor(stage, week), system: convo.system, messages: convo.messages,
-    toolNames: WEEK_TOOLS, allow: allowedOf(st), server: WEEK_SERVER, effort: st.effort, binding: true, onEvent,
+    toolNames: WEEK_TOOLS, allow: allowedOf(st), server: WEEK_SERVER, webLimits: WEEK_WEB, effort: st.effort, binding: true, onEvent, ...lim,
   });
   // Nothing came back: leave the conversation as it was so a retry starts clean.
-  if (!r.ok && !r.text) convo.messages.length = before;
+  if (!r.ok && !r.paused && !r.text && prompt != null) convo.messages.length = before;
   await fsp.writeFile(convoPath(week.id), JSON.stringify(convo));
   return r;
 }
@@ -505,12 +521,11 @@ const RESEARCH_SCHEMA = {
 
 // Research only the sections the corpus can't fill. Fresh session, cheaper model, structured output; the problems go
 // into the corpus as candidates and the outline stage gets them as notes. Escalates one tier if the output is unusable.
-async function runResearch(week, brief, onEvent) {
+async function researchPrompt(brief) {
   const secs = brief.sections.filter((s) => brief.needsResearch.includes(s.key));
-  if (!secs.length) return null;
   const instr = await read(INSTRUCTIONS_FILE);
   const rules = statusSection(instr, "## Hard gates") + "\n" + statusSection(instr, "## Vetting rubric for researched ideas") + "\n" + statusSection(instr, "## Variables") + "\n" + statusSection(instr, "**Research (every week).**".replace(/\*/g, ""));
-  const prompt = [
+  return [
     "You research problem ideas for a 5th grader's rigorous algebra homework (Wu style). Find good sources, open them, and write ORIGINAL problems based on their ideas. Do not ask questions; there is no one to answer them.",
     `Allowed units: ${brief.allowedUnits.join(", ")}. Everything else is off limits.`,
     "", "## Rules (from the teacher's instructions)", instr.includes("## Hard gates") ? rules : instr,
@@ -520,22 +535,28 @@ async function runResearch(week, brief, onEvent) {
     "Budget: about 3 searches per routine section, up to 6 for a rich one. Give 1.5x the needed count per section, each with its answer, its source URL and one line on the idea and what you changed. Mark fromSnippet if you could not open the page.",
     "Return only the structured result.",
   ].join("\n");
-  let model = STAGES.research.model;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const r = await callAgent({ key: week.id, weekId: week.id, model, messages: [{ role: "user", content: prompt }], toolNames: allowedOf(STAGES.research),
-      server: STAGES.research.tools.split(",").filter(Boolean), effort: STAGES.research.effort, schema: RESEARCH_SCHEMA, onEvent: (e) => e.type !== "text" && onEvent(e) });
-    const probs = r.structured?.problems;
-    if (r.ok && Array.isArray(probs) && (probs.length || r.structured.searchUnavailable)) {
-      const today = new Date().toISOString().slice(0, 10);
-      const saved = addProblems(loadCorpus(), probs.map((x) => ({ tex: x.tex, answer: x.answer, units: x.units, status: "candidate", tags: ["research"],
-        context: secs.find((s) => s.key === x.section)?.title || "", source: { kind: "web", url: x.url, note: x.idea, date: today, week: week.id, fromSnippet: !!x.fromSnippet } })));
-      logEvent("stage", "research-done", { week: week.id, model, problems: probs.length, added: saved.added.length });
-      return { model, usage: r.usage, tools: r.tools, result: r.structured, saved };
-    }
-    logEvent("stage", "research-retry", { week: week.id, model, error: r.error || "no structured problems" });
-    if (!NEXT_TIER[model]) return { model, usage: r.usage, tools: r.tools, error: r.error || "research returned nothing" };
-    model = NEXT_TIER[model];
+}
+// One slice of research. R = {model, attempt, messages, usage, tools} carries a paused run to the next slice.
+// Returns null while it isn't finished, else {model, usage, tools, result, saved} or {..., error}.
+async function researchSlice(week, brief, R, onEvent, lim) {
+  R.messages ||= [{ role: "user", content: await researchPrompt(brief) }];
+  const r = await callAgent({ key: week.id, weekId: week.id, model: R.model, messages: R.messages, toolNames: allowedOf(STAGES.research),
+    server: STAGES.research.tools.split(",").filter(Boolean), effort: STAGES.research.effort, schema: RESEARCH_SCHEMA, onEvent: (e) => e.type !== "text" && onEvent(e), ...lim });
+  R.usage = mergeUsage(R.usage, r.usage); R.tools = (R.tools || []).concat(r.tools || []);
+  if (r.paused) return null;
+  const probs = r.structured?.problems;
+  if (r.ok && Array.isArray(probs) && (probs.length || r.structured.searchUnavailable)) {
+    const secs = brief.sections.filter((s) => brief.needsResearch.includes(s.key));
+    const today = new Date().toISOString().slice(0, 10);
+    const saved = addProblems(loadCorpus(), probs.map((x) => ({ tex: x.tex, answer: x.answer, units: x.units, status: "candidate", tags: ["research"],
+      context: secs.find((s) => s.key === x.section)?.title || "", source: { kind: "web", url: x.url, note: x.idea, date: today, week: week.id, fromSnippet: !!x.fromSnippet } })));
+    logEvent("stage", "research-done", { week: week.id, model: R.model, problems: probs.length, added: saved.added.length });
+    return { model: R.model, usage: R.usage, tools: R.tools, result: r.structured, saved };
   }
+  logEvent("stage", "research-retry", { week: week.id, model: R.model, error: r.error || "no structured problems" });
+  if (R.attempt > 0 || !NEXT_TIER[R.model] || stopped.has(week.id)) return { model: R.model, usage: R.usage, tools: R.tools, error: r.error || "research returned nothing" };
+  Object.assign(R, { model: NEXT_TIER[R.model], attempt: R.attempt + 1, messages: null });
+  return null;
 }
 function researchNotes(res) {
   if (!res) return "";
@@ -545,6 +566,173 @@ function researchNotes(res) {
     (r.searchUnavailable ? "Web search was unavailable.\n" : "") +
     r.problems.map((x) => `- [${x.section}] ${x.tex.replace(/\s*\n\s*/g, " ")}${x.answer ? ` (answer: ${x.answer})` : ""} — ${x.url || "no url"}${x.fromSnippet ? " (from snippet)" : ""}${x.idea ? ` · ${x.idea}` : ""}`).join("\n") +
     (r.rejected?.length ? "\nRejected: " + r.rejected.map((x) => `${x.url}: ${x.reason}`).join("; ") : "");
+}
+
+// ---------- a week turn, run in slices ----------
+// A teacher message is a turn: research (start only) → the routed turn → auto-continue → wrap up. Its state is
+// data/jobs/<id>.turn.json, so a slice can stop at a deadline and any instance can pick it up. Locally the slices
+// run back to back inside the /message request. Hosted (Vercel Workflow, workflows/turn.mjs), each slice is a
+// workflow step on whichever instance the queue picks: it pulls the mirror, stops well inside the 300 s function
+// limit (runAgent's deadlines leave the conversation resumable) and pushes everything before returning.
+const turnPath = (id) => path.join(JOBS, `${id}.turn.json`);
+export const USE_WORKFLOW = !!process.env.VERCEL && mirror.enabled && process.env.HW_WORKFLOW !== "0";
+// No new model call after SOFT ms into a slice; a call still streaming at HARD is dropped and redone next slice.
+const SLICE_SOFT = Number(process.env.HW_SLICE_SOFT_MS) || 150000;
+const SLICE_HARD = Number(process.env.HW_SLICE_HARD_MS) || 240000;
+const MAX_SLICES = 40;
+const sinks = new Map(); // weekId -> fn(event) streaming a local turn's events to its request
+const NUDGE = "Nobody can answer questions in this app. For every question above, take the most conservative reasonable default yourself, list it under **Assumptions** (or **Needs your call** if the teacher must rule), and send the full checkpoint now.";
+
+// One slice of a turn's work. Returns {done}. Never throws: a failure ends the turn with that error.
+async function turnSlice(id, lim = {}) {
+  const t = await readJson(turnPath(id), null);
+  if (!t || t.phase === "done") return { done: true };
+  const week = await loadWeek(id);
+  const live = t.live;
+  progress.set(id, live);
+  const addTrace = (k, text) => { const last = live.trace.at(-1); if (last?.k === k) last.text += text; else live.trace.push({ k, text }); };
+  const share = (force) => shareJob(id, { running: true, live }, { force });
+  const heartbeat = setInterval(() => share(), 5000);
+  // trace: everything in the order it happened: {k:"stage"|"think"|"say"|"tool", ...}. Tools are referenced by id.
+  const emit = (e) => {
+    if (e.type === "text") { live.text += e.text; addTrace("say", e.text); }
+    if (e.type === "thinking") addTrace("think", e.text);
+    if (e.type === "stage") live.trace.push({ k: "stage", stage: e.stage, model: e.model, at: Date.now() - live.startedAt });
+    if (e.type === "tool") { live.tools.push({ id: e.tool.id, name: e.tool.name, input: e.tool.input, textAt: live.text.length }); live.trace.push({ k: "tool", id: e.tool.id }); }
+    if (e.type === "tool_result") { const x = live.tools.find((y) => y.id === e.tool.id); if (x) Object.assign(x, { ok: e.tool.ok, chars: e.tool.chars, ms: e.tool.ms }); }
+    share();
+    sinks.get(id)?.(e.tool ? { type: e.type, name: e.tool.name } : e);
+  };
+  const say = (st, model) => emit({ type: "stage", stage: st, model });
+  // This phase's running totals, across its slices.
+  const cur = (t.cur ||= { text: "", usage: null, tools: [] });
+  const addPart = (r) => {
+    if (r.text) cur.text = cur.text && !cur.text.endsWith("\n") && !r.text.startsWith("\n") ? cur.text + "\n\n" + r.text : cur.text + r.text;
+    cur.usage = mergeUsage(cur.usage, r.usage); cur.tools = cur.tools.concat(r.tools || []);
+  };
+  // HW_BUDGET_USD covers the whole turn (research + main + auto-continue, across slices), not each model run.
+  const left = (running) => (BUDGET ? Number(BUDGET) - (t.usage?.costUSD || 0) - (running?.costUSD || 0) : Infinity);
+  const overBudget = () => ({ ok: false, error: `Stopped: this turn reached the $${BUDGET} budget.` });
+  const account = (st, model, usage, tools, extra = {}) => {
+    t.stages.push({ stage: st, model, costUSD: usage?.costUSD || 0, ...extra });
+    t.usage = mergeUsage(t.usage, usage); t.tools = t.tools.concat(tools || []);
+  };
+  try {
+    if (mirror.enabled && (await mirror.fetchNow(jobFile(id, "stop")).catch(() => null))) stopped.add(id);
+    t.slices = (t.slices || 0) + 1;
+    if (t.slices > MAX_SLICES) { t.result = { ok: false, error: "this turn ran too long and was stopped", text: t.result?.text || cur.text }; t.phase = "wrap"; }
+    // Stop pressed between slices or stages: end here rather than start or resume another model run.
+    if (stopped.has(id) && t.phase !== "wrap") { t.result = { ok: false, error: "stopped", text: t.result?.text || cur.text }; t.phase = "wrap"; }
+
+    // Set once this slice has run a model call: only then may the soft deadline end the slice, so every slice
+    // makes progress even when it starts late (a slow mirror pull).
+    let ran = false;
+    // 1. Research (start only, and only for sections the corpus can't fill).
+    if (t.phase === "research") {
+      ran = true;
+      if (!t.research) { t.research = { model: STAGES.research.model, attempt: 0, messages: null }; say("research", t.research.model); }
+      const r = await researchSlice(week, t.brief, t.research, emit, { ...lim, budgetUSD: left(t.research.usage) });
+      if (r) {
+        account("research", r.model, r.usage, r.tools, { sections: t.brief.needsResearch, problems: r.result?.problems?.length || 0, error: r.error });
+        t.prompt += researchNotes(r);
+        t.research = null; t.phase = "main";
+      }
+    }
+    // 2. The routed turn in the week's session (resumed if a slice paused it), then 3. the auto-continue.
+    for (const ph of ["main", "auto"]) {
+      if (t.phase !== ph || (ran && lim.deadline && Date.now() > lim.deadline)) continue;
+      if (left(cur.usage) <= 0) {
+        // Out of budget before this phase starts: keep what the turn has so far.
+        if (ph === "main" || !t.result) t.result = { ...overBudget(), text: cur.text || t.result?.text || "" };
+        else t.result = { ...t.result, ok: false, error: overBudget().error };
+        t.phase = "wrap"; break;
+      }
+      const model = modelFor(t.stage, week);
+      let prompt = t.resume ? null : ph === "main" ? t.prompt : NUDGE;
+      if (!t.resume) {
+        if (ph === "auto") emit({ type: "text", text: "\n\n---\n\n" });
+        say(t.stage, model);
+      }
+      const r = await runClaude(week, prompt, t.sys, emit, ph === "main" ? t.stage : "outline", { ...lim, budgetUSD: left(cur.usage) });
+      addPart(r);
+      if (cur.text || r.ok) { if (!week.started) { week.started = true; await saveWeek(week); } }
+      if (r.paused && !stopped.has(id)) { t.resume = true; break; }
+      t.resume = false;
+      const res = { ok: !!r.ok, error: r.paused ? "stopped" : r.error, text: cur.text };
+      account(ph === "main" ? t.stage : "outline", model, cur.usage, cur.tools, ph === "auto" ? { auto: true } : {});
+      t.cur = null;
+      if (ph === "main") {
+        t.result = res;
+        // An outline turn must end at the checkpoint, never at a list of questions.
+        if (res.ok && t.stage === "outline" && !hasBlock(res.text) && !isCheckpointText(res.text) && !stopped.has(id)) {
+          logEvent("stage", "auto-continue", { week: id });
+          t.preamble = res.text; t.phase = "auto";
+        } else t.phase = "wrap";
+      } else {
+        if (res.text || res.ok) t.result = { ...res, text: res.text || t.result.text };
+        t.phase = "wrap";
+      }
+      break;
+    }
+  } catch (e) {
+    logEvent("server", "turn-error", { week: id, phase: t.phase, error: e.stack || e.message });
+    t.result = { ok: false, error: e.message, text: t.result?.text || t.cur?.text || "" };
+    t.phase = "wrap";
+  } finally { clearInterval(heartbeat); }
+
+  // 4. Wrap up: on approval the checkpoint's assumptions become standing rulings; the reply joins the week.
+  if (t.phase === "wrap") {
+    const w = await loadWeek(id);
+    if (week.started) w.started = true;
+    const result = t.result || { ok: false, error: "no reply" };
+    if (t.kind === "approve") {
+      const cp = [...w.messages].reverse().find((m) => m.role === "assistant" && isCheckpointText(m.text));
+      const add = assumptionsOf(cp?.text || "").map((x) => ({ text: x, week: id }));
+      if (add.length) { try { saveRulings(DATA, add); } catch (e) { logEvent("stage", "rulings-error", { error: e.message }); } }
+    }
+    if (result.text || result.ok) {
+      w.messages.push({ role: "assistant", text: result.text, at: new Date().toISOString(), error: result.ok ? undefined : result.error, usage: t.usage || undefined, tools: t.tools, trace: live.trace, stage: t.stage, model: modelFor(t.stage, w), stages: t.stages, ...(t.preamble ? { preamble: t.preamble } : {}) });
+    } else {
+      if (w.messages.at(-1)?.role === "user") w.messages.pop(); // nothing happened; let the teacher retry
+      w.lastError = result.error;
+    }
+    await saveWeek(w);
+    progress.delete(id);
+    stopped.delete(id);
+    await fsp.writeFile(turnPath(id), JSON.stringify({ phase: "done", endedAt: new Date().toISOString() }));
+    await shareJob(id, { running: false }, { force: true });
+    emit(result.ok ? { type: "done" } : { type: "error", error: result.error });
+    return { done: true };
+  }
+  await fsp.writeFile(turnPath(id), JSON.stringify(t));
+  await share(true);
+  return { done: false };
+}
+
+// Hosted: one workflow step. Pull, run a slice inside the function limit, push.
+export async function turnStep(id) {
+  const t0 = Date.now();
+  try { await mirror.pull(); } catch (e) { logEvent("mirror", "pull-error", { error: e.message }); }
+  const r = await turnSlice(id, { deadline: t0 + SLICE_SOFT, hardDeadline: t0 + SLICE_HARD });
+  logEvent("stage", "slice", { week: id, ms: Date.now() - t0, done: r.done });
+  await mirror.push();
+  return r;
+}
+
+// Starts a turn already written to its turn file: in-process locally, as a workflow run when hosted.
+async function startTurn(id) {
+  if (!USE_WORKFLOW) {
+    // HW_SLICE_LOCAL=1 slices a local turn the way hosting does (to test pause and resume without deploying).
+    const lim = () => (process.env.HW_SLICE_LOCAL === "1" ? { deadline: Date.now() + SLICE_SOFT, hardDeadline: Date.now() + SLICE_HARD } : {});
+    while (!(await turnSlice(id, lim())).done);
+    return null;
+  }
+  await mirror.push(); // the step may land on another instance: it must find the turn file and the week
+  const { start } = await import("workflow/api");
+  // The id the workflow build gives workflows/turn.mjs's weekTurn (see .well-known/workflow/v1/manifest.json).
+  const run = await start({ workflowId: "workflow//./workflows/turn//weekTurn" }, [id]);
+  logEvent("stage", "workflow-start", { week: id, runId: run.runId });
+  return run.runId;
 }
 
 // What each stage would do for a message, without running anything (logged; returned by HW_DRY_STAGES=1).
@@ -986,25 +1174,36 @@ async function handle(req, res) {
 
   // ---- weeks ----
   if (m === "POST" && p === "/api/weeks") {
-    const { title, model } = await body(req);
+    const { title, model, replace } = await body(req);
     const base = (title || "week").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "") || "week";
-    let id = base, n = 2;
-    while (fs.existsSync(weekPath(id))) id = `${base}-${n++}`;
-    const w = { id, title: title || id, createdAt: new Date().toISOString(), sessionId: randomUUID(), started: false, model: model || DEFAULT_MODEL, enrollmentId: C().enrollmentId, messages: [] };
-    await saveWeek(w);
-    return send(res, 200, w);
+    // One unfinished week per title: a second click (or a second tab) offers that week back instead of
+    // starting a parallel one. Finished weeks don't count, so a second set for the same date still works.
+    if (creating.has(base)) return send(res, 409, { error: "already being created", existing: [] });
+    creating.add(base);
+    try {
+      const same = new RegExp(`^${base}(-\\d+)?$`);
+      const open = [];
+      for (const w of await listWeeks()) {
+        if (!same.test(w.id) || w.done) continue;
+        open.push({ ...w, running: running.has(w.id) || !!(await remoteJob(w.id)) });
+      }
+      if (open.length && !replace) return send(res, 409, { error: `${title} is already in progress`, existing: open });
+      if (open.some((w) => w.running)) return send(res, 409, { error: `${title} is still running; stop it before replacing it`, existing: open });
+      for (const w of open) await deleteWeekFiles(w.id);
+      return send(res, 200, await createWeek(base, title, model));
+    } finally { creating.delete(base); }
   }
-
   const wm = p.match(/^\/api\/weeks\/([A-Za-z0-9_-]+)(\/message|\/stop|\/finish|\/tools)?$/);
   if (wm) {
     const [, id, action] = wm;
     if (m === "GET" && !action) {
-      const remote = running.has(id) ? null : await remoteJob(id);
-      return send(res, 200, { ...(await loadWeek(id)), running: running.has(id) || !!remote, live: progress.get(id) || remote?.live || null });
+      const here = running.has(id) || (!USE_WORKFLOW && progress.has(id));
+      const remote = here ? null : await remoteJob(id);
+      return send(res, 200, { ...(await loadWeek(id)), running: here || !!remote, live: (here && progress.get(id)) || remote?.live || null });
     }
     if (m === "GET" && action === "/tools") return send(res, 200, { calls: await readToolLog(id) });
     if (m === "DELETE" && !action) {
-      for (const f of [weekPath(id), toolsPath(id), convoPath(id), path.join(MCP_DIR, `${id}.json`)]) await fsp.rm(f, { force: true });
+      await deleteWeekFiles(id);
       return send(res, 200, { ok: true });
     }
     if (m === "POST" && action === "/finish") {
@@ -1024,7 +1223,7 @@ async function handle(req, res) {
     }
     if (m === "POST" && action === "/stop") { stopped.add(id); running.get(id)?.abort(); await requestStop(id); return send(res, 200, { ok: true }); }
     if (m === "POST" && action === "/message") {
-      if (running.has(id) || (await remoteJob(id))) return send(res, 409, { error: "Claude is already working on this week" });
+      if (running.has(id) || (!USE_WORKFLOW && progress.has(id)) || (await remoteJob(id))) return send(res, 409, { error: "Claude is already working on this week" });
       const { text, kind, overrides } = await body(req);
       const week = await loadWeek(id);
       const wc = weekCtx(week);
@@ -1052,73 +1251,31 @@ async function handle(req, res) {
       week.messages.push(userMsg);
       await saveWeek(week);
 
-      res.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" });
-      // trace: everything in the order it happened: {k:"stage"|"think"|"say"|"tool", ...}. Tools are referenced by id.
       const live = { text: "", tools: [], trace: [], startedAt: Date.now() };
-      const addTrace = (k, text) => { const last = live.trace.at(-1); if (last?.k === k) last.text += text; else live.trace.push({ k, text }); };
-      progress.set(id, live);
+      const needsResearch = !!brief?.needsResearch.length && !STAGES_OFF.has("research");
+      await fsp.writeFile(turnPath(id), JSON.stringify({ id, kind, stage, prompt, sys, brief: needsResearch ? brief : null, phase: needsResearch ? "research" : "main", live, stages: [], usage: null, tools: [] }));
+      stopped.delete(id);
       await clearStop(id);
-      const share = (force) => shareJob(id, { running: true, live }, { force });
-      share(true);
-      const heartbeat = setInterval(() => share(), 5000);
+      await shareJob(id, { running: true, live }, { force: true });
+
+      res.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" });
+      if (USE_WORKFLOW) {
+        // The run outlives this request; the page follows it by polling GET /api/weeks/:id as it does anyway.
+        try {
+          const runId = await startTurn(id);
+          res.write(JSON.stringify({ type: "started", runId }) + "\n");
+        } catch (e) {
+          logEvent("stage", "workflow-start-error", { week: id, error: e.message });
+          week.messages.pop(); week.lastError = e.message; await saveWeek(week);
+          await shareJob(id, { running: false }, { force: true });
+          res.write(JSON.stringify({ type: "error", error: "could not start the turn: " + e.message }) + "\n");
+        }
+        return res.end();
+      }
       let clientGone = false;
       res.on("close", () => (clientGone = true));
-      const emit = (e) => {
-        if (e.type === "text") { live.text += e.text; addTrace("say", e.text); }
-        if (e.type === "thinking") addTrace("think", e.text);
-        if (e.type === "stage") live.trace.push({ k: "stage", stage: e.stage, model: e.model, at: Date.now() - live.startedAt });
-        if (e.type === "tool") { live.tools.push({ id: e.tool.id, name: e.tool.name, input: e.tool.input, textAt: live.text.length }); live.trace.push({ k: "tool", id: e.tool.id }); }
-        if (e.type === "tool_result") { const t = live.tools.find((x) => x.id === e.tool.id); if (t) Object.assign(t, { ok: e.tool.ok, chars: e.tool.chars, ms: e.tool.ms }); }
-        share();
-        if (!clientGone) res.write(JSON.stringify(e.tool ? { type: e.type, name: e.tool.name } : e) + "\n");
-      };
-      stopped.delete(id);
-      const stages = []; // [{stage, model, costUSD, ...}] for this message, in order
-      let usage = null, tools = [];
-      const account = (st, model, r, extra = {}) => { stages.push({ stage: st, model, costUSD: r?.usage?.costUSD || 0, ...extra }); usage = mergeUsage(usage, r?.usage); tools = tools.concat(r?.tools || []); };
-      const say = (st, model) => emit({ type: "stage", stage: st, model });
-
-      // 1. Research (start only, and only for sections the corpus can't fill).
-      if (brief?.needsResearch.length && !STAGES_OFF.has("research")) {
-        say("research", STAGES.research.model);
-        const r = await runResearch(week, brief, emit);
-        account("research", r.model, r, { sections: brief.needsResearch, problems: r.result?.problems?.length || 0, error: r.error });
-        prompt += researchNotes(r);
-      }
-      // 2. The routed turn in the week's session.
-      let model = modelFor(stage, week);
-      say(stage, model);
-      let result = await runClaude(week, prompt, sys, emit, stage);
-      account(stage, model, result);
-      let preamble;
-      if (result.text || result.ok) week.started = true;
-      // 3. Safety net: an outline turn must end at the checkpoint, never at a list of questions.
-      if (result.ok && stage === "outline" && !hasBlock(result.text) && !isCheckpointText(result.text) && !stopped.has(id)) {
-        logEvent("stage", "auto-continue", { week: id });
-        preamble = result.text;
-        emit({ type: "text", text: "\n\n---\n\n" });
-        say("outline", model);
-        const r2 = await runClaude(week, "Nobody can answer questions in this app. For every question above, take the most conservative reasonable default yourself, list it under **Assumptions** (or **Needs your call** if the teacher must rule), and send the full checkpoint now.", null, emit, "outline");
-        account("outline", model, r2, { auto: true });
-        if (r2.text || r2.ok) result = { ...r2, text: r2.text || result.text };
-      }
-      // 4. On approval, the checkpoint's assumptions become standing rulings.
-      if (kind === "approve") {
-        const cp = [...week.messages].reverse().find((m) => m.role === "assistant" && isCheckpointText(m.text));
-        const add = assumptionsOf(cp?.text || "").map((t) => ({ text: t, week: id }));
-        if (add.length) { try { saveRulings(DATA, add); } catch (e) { logEvent("stage", "rulings-error", { error: e.message }); } }
-      }
-      if (result.text || result.ok) {
-        week.messages.push({ role: "assistant", text: result.text, at: new Date().toISOString(), error: result.ok ? undefined : result.error, usage: usage || undefined, tools, trace: live.trace, stage, model, stages, ...(preamble ? { preamble } : {}) });
-      } else {
-        week.messages.pop(); // nothing happened; let the teacher retry
-        week.lastError = result.error;
-      }
-      await saveWeek(week);
-      progress.delete(id);
-      clearInterval(heartbeat);
-      await shareJob(id, { running: false }, { force: true });
-      emit(result.ok ? { type: "done" } : { type: "error", error: result.error });
+      sinks.set(id, (e) => { if (!clientGone) res.write(JSON.stringify(e) + "\n"); });
+      try { await startTurn(id); } finally { sinks.delete(id); }
       return res.end();
     }
   }

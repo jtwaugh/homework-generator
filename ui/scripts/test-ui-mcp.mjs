@@ -101,6 +101,18 @@ try {
   await step("Generate is offered", "ui_eval", { js: "document.querySelector('#generate').disabled ? 'disabled' : 'enabled'" }, /enabled/);
   await step("Quick set is offered", "ui_eval", { js: "document.querySelector('#quick-set')?.textContent" }, /Quick set/);
 
+  console.log("A date already in progress");
+  const post = (body) => `return fetch('/api/weeks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(${JSON.stringify(body)}) }).then(async (r) => r.status + ' ' + JSON.stringify(await r.json()))`;
+  await step("an unfinished week for 12/05", "ui_eval", { js: post({ title: "HW 12/05/2026" }) }, /^200 .*"id":"HW-12-05-2026"/);
+  await step("a second create is refused", "ui_eval", { js: post({ title: "HW 12/05/2026" }) }, /^409 .*already in progress.*"id":"HW-12-05-2026"/);
+  await step("Generate offers it back instead", "ui_click", sel("#generate"), /POST \/api\/weeks status=409/, /dup-week/);
+  await step("prompt shows Resume and Replace", "ui_eval", { js: "const d = document.querySelector('#dup-week'); return (d.hidden ? 'hidden ' : 'shown ') + d.textContent" }, /^shown .*HW 12\/05\/2026.*already in progress.*Resume it.*Replace it/s);
+  await step("start buttons usable again", "ui_eval", { js: "document.querySelector('#generate').disabled ? 'disabled' : 'enabled'" }, /enabled/);
+  await step("Cancel hides it", "ui_eval", { js: "document.querySelector('#dup-week [data-dup=cancel]').click(); return document.querySelector('#dup-week').hidden" }, /true/);
+  await step("replace swaps it for a fresh week", "ui_eval", { js: post({ title: "HW 12/05/2026", replace: true }) }, /^200 .*"id":"HW-12-05-2026"/);
+  await step("only one week for that date", "ui_eval", { js: "return fetch('/api/state').then((r) => r.json()).then((s) => s.weeks.filter((w) => w.id.startsWith('HW-12-05-2026')).map((w) => w.id).join(','))" }, /^HW-12-05-2026$/m);
+  await step("clean up", "ui_eval", { js: "return fetch('/api/weeks/HW-12-05-2026', { method: 'DELETE' }).then((r) => r.status)" }, /200/);
+
   console.log("Sidebar tabs");
   await step("Students tab", "ui_click", sel(".nav-item[data-page=students]"), /ui: page from=\w+ to=students/);
   await step("Students list", "ui_wait", { until: "!!document.querySelector('#p-students .ptable tbody tr')", timeoutMs: 10000 }, /true after/);

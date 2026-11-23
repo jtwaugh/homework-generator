@@ -9,6 +9,7 @@
 !/package-lock.json
 !/requirements.txt
 !/vercel.json
+!/workflows
 /ui/data/*
 !/ui/data/wu_dag.json
 !/ui/data/wu_methods_dag.json

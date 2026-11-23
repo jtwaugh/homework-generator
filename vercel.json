@@ -4,14 +4,38 @@
   "buildCommand": "node scripts/vercel-build.mjs",
   "outputDirectory": "static-empty",
   "rewrites": [
-    { "source": "/api/cas", "destination": "/api/cas" },
-    { "source": "/(.*)", "destination": "/api/index?__p=/$1" }
+    {
+      "source": "/api/cas",
+      "destination": "/api/cas"
+    },
+    {
+      "source": "/.well-known/workflow/v1/flow",
+      "destination": "/api/wf-flow"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/api/index?__p=/$1"
+    }
   ],
   "functions": {
     "api/index.mjs": {
       "maxDuration": 300,
       "includeFiles": "{ui/**,examples/**,bin/tectonic}"
     },
-    "api/cas.py": { "maxDuration": 60 }
+    "api/cas.py": {
+      "maxDuration": 60
+    },
+    "api/wf-flow.mjs": {
+      "maxDuration": 300,
+      "includeFiles": "{ui/**,examples/**,bin/tectonic,.well-known/**}",
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "__wkf_workflow_*",
+          "retryAfterSeconds": 5,
+          "initialDelaySeconds": 0
+        }
+      ]
+    }
   }
 }

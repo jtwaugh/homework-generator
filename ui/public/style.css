@@ -537,6 +537,8 @@ body { display: grid; grid-template-columns: 208px 1fr; overflow: hidden; }
 /* setup: the app's brief (decisions made without asking, corpus coverage, stage plan) */
 .brief { display: grid; gap: 6px; margin: 10px 0; }
 .brief:empty { display: none; }
+.dup-week { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0; padding: 10px 12px; border: 1px solid #c90; background: #fff8e6; border-radius: 6px; }
+.dup-week[hidden] { display: none; }
 .brief .chip { display: inline-block; padding: 1px 8px; border-radius: 10px; border: 1px solid #ccc; background: #fafafa; font: inherit; margin: 2px 2px 2px 0; }
 .brief button.chip { cursor: pointer; }
 .brief .chip.off { text-decoration: line-through; opacity: .6; }
