@@ -28,7 +28,7 @@ Header buttons:
 - **$ badge**: what each turn cost (API-equivalent on a subscription; real charges when running on an API key), tokens, searches, tool calls, and an estimated research vs writing split. `HW_BUDGET_USD=2` caps each turn.
 - **Progress map**: Wu's school algebra as two DAGs (Content and Methods). **Guess progress** has Claude read every homework file and your uploaded notes and mark each block done / partly / not yet; click a block to see its evidence or override it.
 - **Corpus**: every problem Claude can reuse (past homework, problems it saved from research). ★ to prefer, ✕ to never offer again.
-- **History**: past weeks and every `.tex` in the folder, with PDF / Source / Compile log tabs; ← → between files.
+- **History**: a searchable list of sessions (one per homework, grouped by date). Each opens read-only in place: the **Conversation** (your inputs and Claude's steps, tool calls, replies and cost) and the **Homework** it produced (PDF / Source / Compile log). Older `.tex` files with no session are listed at the bottom; ← → between sessions.
 
 Claude has three local tools (`ui/mcp/hw-tools.mjs`): `cas` (sympy, to check answer keys), `corpus_search` and `corpus_add`. Install the CAS once: `uv venv ui/data/venv && uv pip install --python ui/data/venv sympy`.
 

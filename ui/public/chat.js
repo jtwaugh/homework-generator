@@ -67,21 +67,25 @@ function stepsHtml(m, prefix) {
 
 // Long fenced blocks (the .tex, weekly_status.md, the manifest) go to the work pane; show a stub here.
 const BLOCK_NAME = { latex: "LaTeX source", tex: "LaTeX source", markdown: "weekly_status.md", md: "weekly_status.md", json: "problem manifest" };
-function assistantHtml(text) {
+// archive: the History transcript, where there is no work pane, so each block folds open in place.
+function assistantHtml(text, archive = false) {
   const stubs = [];
   const src = (text || "").replace(/```([a-zA-Z]*)\n([\s\S]*?)\n```/g, (all, lang, body) => {
     const name = BLOCK_NAME[lang.toLowerCase()];
     if (!name || body.split("\n").length < 8) return all;
-    stubs.push(`<div class="block-stub">📄 ${name} · ${body.split("\n").length} lines <span class="muted">· shown on the right</span></div>`);
+    const n = body.split("\n").length;
+    stubs.push(archive
+      ? `<details class="block-stub"><summary>📄 ${name} · ${n} lines</summary><pre>${esc(body)}</pre></details>`
+      : `<div class="block-stub">📄 ${name} · ${n} lines <span class="muted">· shown on the right</span></div>`);
     return `\n@@STUB${stubs.length - 1}@@\n`;
   });
   return md(src).replace(/<p>@@STUB(\d+)@@<\/p>/g, (_, i) => stubs[+i]);
 }
 
-function userLabel(m) {
+function userLabel(m, archive = false) {
   const t = m.text || "";
   switch (kindOf(m)) {
-    case "start": return `📋 Sent this week's status${m.preload ? ` and ${m.preload.count} corpus matches (${esc(m.preload.units.join(", ") || "no units")})` : ""}`;
+    case "start": return `📋 Sent this week's status${m.preload ? ` and ${m.preload.count} corpus matches (${esc(m.preload.units.join(", ") || "no units")})` : ""}${archive ? `<details><summary class="muted small">what was sent</summary><pre>${esc(t)}</pre></details>` : ""}`;
     case "approve": { const e = t.match(/with these edits:\n([\s\S]*?)\nWrite the final/); return `✓ Approved the outline${e ? `, with edits:<div class="quote">${esc(e[1])}</div>` : ""}`; }
     case "fix": return `🔧 Sent the compile and check results for fixing<details><summary class="muted small">details</summary><pre>${esc(t)}</pre></details>`;
     default: return esc(t.replace(/\n\nSend the complete revised[\s\S]*$/, "").replace(/\n\n(For anything I didn't answer, use|Use) your stated default[\s\S]*$/, "\n\n(use your defaults for the rest)"));
@@ -113,6 +117,22 @@ function threadHtml() {
   }
   if (week.sendError && !week.running) out.push(`<div class="err">Couldn't send: ${esc(week.sendError)}</div>`);
   if (week.lastError && !week.running && !week.messages.some((m) => m.role === "assistant")) out.push(`<div class="err">Last attempt failed: ${esc(week.lastError)}</div>`);
+  return out.join("");
+}
+
+// Read-only transcript of any week, for the History tab: the teacher's inputs and everything Claude did.
+export function transcriptHtml(week) {
+  if (!week.messages.length) return `<p class="muted">Nothing was sent to Claude in this session.</p>`;
+  const { outline } = splitMessages(week);
+  const out = [];
+  week.messages.forEach((m, i) => {
+    if (i === outline.length && i > 0) out.push(`<div class="phase-sep"><span>Final</span></div>`);
+    if (m.role === "user") out.push(`<div class="msg user k-${esc(kindOf(m))}">${userLabel(m, true)}</div>`);
+    else out.push(`<div class="msg assistant">${stepsHtml(m, `h${i}`)}<div class="md">${assistantHtml(m.text, true)}</div>${m.error ? `<div class="err">Stopped: ${esc(m.error)}</div>` : ""}${costFooter(m)}</div>`);
+  });
+  if (week.running) out.push(`<div class="msg assistant live"><div class="working-line"><span class="spin"></span>Claude is working on this one now</div></div>`);
+  if (week.lastError && !week.running && !week.messages.some((m) => m.role === "assistant")) out.push(`<div class="err">Last attempt failed: ${esc(week.lastError)}</div>`);
+  if (week.done) out.push(`<div class="phase-sep"><span>Saved${week.savedAs ? " as " + esc(week.savedAs) : ""}</span></div>`);
   return out.join("");
 }
 

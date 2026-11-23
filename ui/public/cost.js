@@ -71,8 +71,9 @@ export function costFooter(m) {
 
 const KIND = { start: "Outline", revise: "Revision", approve: "Final", fix: "Fix", "revise-final": "Changes", reply: "Reply", chat: "Chat" };
 
-function panelHtml() {
-  const week = app.week;
+// The panel shows the open week, or (from History) whichever session it was opened for.
+let dlgWeek = null;
+function panelHtml(week = dlgWeek || app.week) {
   const msgs = week?.messages || [];
   const rows = [];
   msgs.forEach((m, i) => {
@@ -89,13 +90,13 @@ function panelHtml() {
       <td class="num">${u.webSearches || count(/^WebSearch$/)}</td><td class="num">${count(/^WebFetch$/)}</td><td class="num">${count(/corpus/)}</td><td class="num">${count(/cas$/)}</td>
       <td class="num">${fmtDur(u.durationMs)}</td><td class="num">${m.usage ? fmtUSD(researchEstimate(m, week.model)) : "—"}</td><td class="num"><b>${fmtUSD(turnCost(m))}</b></td></tr>`);
   });
-  const wc = weekCost(), mc = monthCost();
+  const wc = weekCost(week), mc = monthCost();
   const split = wc.total ? Math.round((wc.research / wc.total) * 100) : 0;
   return `
     <div class="row"><h2>Cost</h2><span class="spacer"></span><form method="dialog"><button class="ghost">✕</button></form></div>
     <p class="hint">${S.auth?.mode === "api-key" ? "You're using an API key (no Claude subscription found), so these are real charges to your API account, as reported by the Claude CLI." : "You're on a Claude subscription, so these are API-equivalent figures from the Claude CLI, not charges."} Research is an estimate (web searches at $0.01, the page-fetch summarizer, and research results read as input).${S.budget ? ` Each turn stops at $${S.budget} (HW_BUDGET_USD).` : ""}</p>
     <div class="cost-cards">
-      <div class="card"><div class="k">This week</div><div class="big">${fmtUSD(wc.total)}</div><div class="muted small">${wc.turns} turn${wc.turns === 1 ? "" : "s"}</div></div>
+      <div class="card"><div class="k">${dlgWeek ? esc(dlgWeek.title) : "This week"}</div><div class="big">${fmtUSD(wc.total)}</div><div class="muted small">${wc.turns} turn${wc.turns === 1 ? "" : "s"}</div></div>
       <div class="card"><div class="k">Research vs writing <span class="est">est.</span></div>
         <div class="split-bar" title="research ${fmtUSD(wc.research)} · writing ${fmtUSD(wc.writing)}"><div style="width:${split}%"></div></div>
         <div class="muted small">research ${fmtUSD(wc.research)} · writing ${fmtUSD(wc.writing)}</div></div>
@@ -104,7 +105,8 @@ function panelHtml() {
     ${rows.length ? `<table class="cost-table"><thead><tr><th>Turn</th><th>In</th><th>Cached</th><th>Out</th><th title="web searches">🔎</th><th title="page fetches">🌐</th><th title="corpus calls">📚</th><th title="CAS runs">🧮</th><th>Time</th><th>Research <span class="est">est.</span></th><th>Cost</th></tr></thead><tbody>${rows.join("")}</tbody></table>` : `<p class="muted">No turns with cost data yet${week ? "" : " (start a week first)"}.</p>`}`;
 }
 
-export function openCost() {
+export function openCost(week = null) {
+  dlgWeek = week;
   const d = $("#cost-dlg");
   d.innerHTML = panelHtml();
   if (!d.open) d.showModal();

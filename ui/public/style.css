@@ -377,6 +377,31 @@ body { display: grid; grid-template-columns: 208px 1fr; overflow: hidden; }
 .h-body iframe { width: 100%; height: 100%; border: 1px solid var(--line); border-radius: 8px; }
 .h-src { font: 12px/1.45 var(--mono); background: #f8f7f3; padding: 12px; border-radius: 8px; white-space: pre-wrap; margin: 0; }
 .h-empty { margin: auto; }
+/* history: session list (Claude-app style) + read-only session view */
+#p-history .h-list { padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.s-search { padding: 12px 10px 8px; }
+.s-search input { width: 100%; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13.5px; background: var(--panel); }
+.s-scroll { flex: 1; min-height: 0; overflow: auto; padding: 0 8px 16px; }
+.s-scroll h4 { margin: 14px 8px 4px; font-size: 11.5px; font-weight: 600; color: var(--muted); }
+.s-scroll h4:first-child { margin-top: 4px; }
+#p-history .s-list li { flex-direction: column; gap: 0; font-family: inherit; padding: 6px 10px; border-radius: 8px; }
+#p-history .s-list li.file .s-title { font-family: var(--mono); font-size: 12.5px; }
+.s-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
+#p-history .s-list li small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.s-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+.s-dot.run { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.s-files { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 8px; }
+.s-files summary { cursor: pointer; font-size: 12.5px; color: var(--muted); padding: 4px 8px; }
+.s-none { padding: 8px; }
+#p-history .h-main { padding: 0; gap: 0; }
+#p-history .h-view { gap: 0; }
+.h-head { flex: none; display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+.h-titles { min-width: 0; } .h-titles h2 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.h-thread { padding: 18px max(20px, calc((100% - 820px) / 2)); background: #fbfaf7; }
+.h-hw { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 12px 20px; }
+#p-history .h-view > .h-empty, #p-history .h-view > .err, #p-history .h-view > p { margin: auto; }
+.msg details.block-stub summary { cursor: pointer; }
+.msg details.block-stub pre { font: 11.5px/1.45 var(--mono); white-space: pre-wrap; max-height: 420px; overflow: auto; margin: 6px 0 0; }
 
 /* corpus */
 .corpus-filters { flex-wrap: wrap; margin: 10px 0 14px; }

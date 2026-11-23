@@ -59,19 +59,31 @@ try {
   await step("page loads", "ui_reload", {}, /ui: page-load/, /GET \/api\/state status=200/);
   await tool("ui_eval", { js: "window.confirm = () => true; window.alert = (m) => console.error('alert: ' + m); return 'dialogs stubbed'" });
 
-  console.log("Check and save (a week waiting in Final)");
+  console.log("History: sessions, read-only");
   await step("open History", "ui_click", sel(".nav-item[data-page=history]"), /ui: page from=create to=history/);
-  await step("open the week", "ui_click", sel('#p-history li[data-id="TEST-final"]'), /GET \/api\/weeks\/TEST-final status=200/, /ui: page from=history to=create/);
+  await step("lists both sessions", "ui_wait", { until: "document.querySelectorAll('#p-history li[data-key^=\"w:TEST-\"]').length === 2", timeoutMs: 10000 }, /true after/);
+  await step("pick a session", "ui_click", sel('#p-history li[data-key="w:TEST-final"]'), /GET \/api\/weeks\/TEST-final status=200/);
+  await step("conversation shown in place", "ui_wait", { until: "document.querySelectorAll('#p-history .h-thread .msg.user').length > 0 && document.querySelectorAll('#p-history .h-thread .msg.assistant').length > 0", timeoutMs: 10000 }, /true after/);
+  await step("stays on History", "ui_eval", { js: "__hw.summary().page" }, /history/);
+  await step("Homework tab", "ui_click", sel("#p-history [data-view=hw]"), /click/);
+  await step("homework compiles", "ui_wait", { until: "!!document.querySelector('#p-history .h-hw iframe, #p-history .h-hw .err')", timeoutMs: 180000 }, /true after/);
+  await step("search filters", "ui_type", { selector: "#p-history .s-search input", text: "outline" }, /input/);
+  await step("one match", "ui_eval", { js: "document.querySelectorAll('#p-history li[data-key^=\"w:\"]').length" }, /^1\b/m);
+
+  console.log("Check and save (a week waiting in Final)");
+  await step("clear the search", "ui_eval", { js: "const i = document.querySelector('#p-history .s-search input'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); return 'cleared'" }, /cleared/);
+  await step("pick the unfinished week", "ui_click", sel('#p-history li[data-key="w:TEST-final"]'), /GET \/api\/weeks\/TEST-final status=200/);
+  await step("Continue is offered", "ui_wait", { until: "!!document.querySelector('#p-history [data-act=continue]')", timeoutMs: 10000 }, /true after/);
+  await step("Continue opens it in Create Homework", "ui_click", sel("#p-history [data-act=continue]"), /ui: page from=history to=create/, /GET \/api\/weeks\/TEST-final status=200/);
   await step("PDF compiles", "ui_wait", { until: "__hw.summary().final?.compile === 'ok'", timeoutMs: 180000 }, /true after/);
   await step("Save & finish", "ui_click", sel("#v-final .savebar .main"), /POST \/api\/weeks\/TEST-final\/finish status=200/, /phase from=final to=done/);
+  await step("saved session: no Continue", "ui_eval", { js: "document.querySelector('.nav-item[data-page=history]').click(); await new Promise((r) => setTimeout(r, 800)); document.querySelector('#p-history li[data-key=\"w:TEST-final\"]').click(); await new Promise((r) => setTimeout(r, 800)); const has = !!document.querySelector('#p-history [data-act=continue]'); document.querySelector('.nav-item[data-page=create]').click(); return has ? 'continue shown' : 'no continue'" }, /no continue/);
   await step("Outline breadcrumb looks back", "ui_click", sel("#strip [data-step=outline]"), /step-click step=outline/);
   await step("outline shown read-only", "ui_eval", { js: "__hw.summary().peek + ' ' + document.querySelector('#v-outline .main').textContent" }, /outline Back to saved/);
   await step("back to saved", "ui_click", sel("#v-outline .main"), /click/);
 
   console.log("Review the outline");
-  await step("open the week", "ui_click", sel(".nav-item[data-page=history]"), /ui: page from=\w+ to=history/);
-  await step("list loads", "ui_wait", { until: "!!document.querySelector('#p-history li[data-id=\"TEST-outline\"]')", timeoutMs: 10000 }, /true after/);
-  await step("pick it", "ui_click", sel('#p-history li[data-id="TEST-outline"]'), /GET \/api\/weeks\/TEST-outline/);
+  await step("open the week", "ui_eval", { js: "return __hw.openWeek('TEST-outline').then(() => __hw.summary().phase)" }, /outline/);
   await step("Start over", "ui_click", sel("#start-over"), /DELETE \/api\/weeks\/TEST-outline status=200/, /phase from=outline to=setup/);
 
   console.log("Set up the week");
