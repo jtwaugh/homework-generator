@@ -5,7 +5,7 @@ node ui/server.mjs
 ```
 Then open http://localhost:4747.
 
-Requires Node 18+, the `claude` CLI logged in to your Claude account (`claude` then `/login`) or, with no subscription, an API key (`ANTHROPIC_API_KEY=... HW_ALLOW_API_KEY=1`; see the main README), and `brew install tectonic` for PDFs. No npm install is needed.
+Requires Node 22, an Anthropic API key (`ANTHROPIC_API_KEY`; see the main README), `npm install`, and `brew install tectonic` for PDFs.
 
 The page is split in two: the conversation with Claude on the left (every tool call shown as a chip, with a cost footer per turn), and the current step's work on the right. The pill in the header always says what to do next.
 
@@ -25,7 +25,7 @@ The page is split in two: the conversation with Claude on the left (every tool c
    - **Save & finish** writes the `.tex` into the project folder and updates `weekly_status.md`. The old status file is backed up to `ui/data/backups/`. The set's problems go into the corpus and are tagged by content and solution method in the background (`tag` lines in the log).
 
 Header buttons:
-- **$ badge**: what each turn cost (API-equivalent on a subscription; real charges when running on an API key), tokens, searches, tool calls, and an estimated research vs writing split. `HW_BUDGET_USD=2` caps each turn.
+- **$ badge**: what each turn cost on your API account, tokens, searches, tool calls, and an estimated research vs writing split. `HW_BUDGET_USD=2` caps each turn.
 - **Progress map**: Wu's school algebra as two DAGs (Content and Methods). **Guess progress** has Claude read every homework file and your uploaded notes and mark each block done / partly / not yet; click a block to see its evidence or override it.
 - **Corpus**: every problem Claude can reuse (past homework, problems it saved from research). ★ to prefer, ✕ to never offer again.
 - **History**: a searchable list of sessions (one per homework, grouped by date). Each opens read-only in place: the **Conversation** (your inputs and Claude's steps, tool calls, replies and cost) and the **Homework** it produced (PDF / Source / Compile log). Older `.tex` files with no session are listed at the bottom; ← → between sessions.
@@ -34,7 +34,7 @@ Claude has three local tools (`ui/mcp/hw-tools.mjs`): `cas` (sympy, to check ans
 
 Claude keeps working if you close the tab. Each week is one resumable Claude session, stored in `ui/data/weeks/`.
 
-Options: `HW_STUDENT=<name>` (shown in the UI and prompts; default generic), `HW_CURRICULUM=<name>` (sidebar header; default Wu Algebra), `PORT=5000`, `HW_TAG_MODEL` (default Haiku), `HW_NO_TAG=1`, `HW_GOLD_FILES=3` (how many recent sets go in every prompt as style examples), `HW_MODEL=claude-sonnet-5-5`, `HW_GUESS_MODEL`, `HW_BUDGET_USD`, `HW_ALLOW_API_KEY=1` (use `ANTHROPIC_API_KEY` when no Claude subscription is logged in), `HW_PASSWORD_HASH` (require a login; from `node ui/scripts/hash-password.mjs`), `HW_HOST` (listen address, default 127.0.0.1; anything else needs a password), `HW_TRUST_PROXY=1` (behind a reverse proxy), `HW_LOG_QUIET=1`. Open `/#new` to skip an unfinished week.
+Options: `HW_STUDENT=<name>` (shown in the UI and prompts; default generic), `HW_CURRICULUM=<name>` (sidebar header; default Wu Algebra), `PORT=5000`, `HW_TAG_MODEL` (default Haiku), `HW_NO_TAG=1`, `HW_GOLD_FILES=3` (how many recent sets go in every prompt as style examples), `HW_MODEL=claude-sonnet-5-5`, `HW_GUESS_MODEL`, `HW_BUDGET_USD`, `HW_PASSWORD_HASH` (require a login; from `node ui/scripts/hash-password.mjs`), `HW_HOST` (listen address, default 127.0.0.1; anything else needs a password), `HW_TRUST_PROXY=1` (behind a reverse proxy), `HW_LOG_QUIET=1`. Open `/#new` to skip an unfinished week.
 
 ## Where things live
 
@@ -59,7 +59,7 @@ Options: `HW_STUDENT=<name>` (shown in the UI and prompts; default generic), `HW
 Everything that happens goes to one log, printed by the server as it runs and appended to `ui/data/logs/app.jsonl`:
 - `ui`: every click, change, typed value (after a pause), key, drag, zoom, file pick, dialog open/close and phase change in the browser, plus page errors.
 - `http`: every API request with status and time.
-- `claude`: each run's start, every tool call and result (web search, fetch, CAS, corpus), cost, stderr and exit.
+- `claude`: each run's start, every tool call and result (web search, fetch, CAS, corpus), cost and end.
 - `tex` and `dag`: compiles and progress-map guesses.
 
 `GET /api/logs?since=<seq>` returns the same events.

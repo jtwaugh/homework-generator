@@ -51,13 +51,15 @@ export function createLogin({ hash, dataDir, trustProxy = false, secureCookie = 
   const save = () => { try { fs.writeFileSync(file, JSON.stringify(sessions), { mode: 0o600 }); } catch {} };
   const limiter = rateLimiter();
 
-  const clientKey = (req) => (trustProxy && String(req.headers["x-forwarded-for"] || "").split(",")[0].trim()) || req.socket.remoteAddress || "?";
-  const isHttps = (req) => secureCookie ?? (req.socket.encrypted || (trustProxy && req.headers["x-forwarded-proto"] === "https"));
+  const clientKey = (req) => (trustProxy && String(req.headers["x-forwarded-for"] || "").split(",")[0].trim()) || req.socket?.remoteAddress || "?";
+  const isHttps = (req) => secureCookie ?? (req.socket?.encrypted || (trustProxy && req.headers["x-forwarded-proto"] === "https"));
   const cookie = (req, value, maxAge) => `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${isHttps(req) ? "; Secure" : ""}`;
 
   function loggedIn(req) {
     if (!enabled) return true;
     const t = parseCookies(req.headers.cookie)[COOKIE];
+    // Another instance (when hosted) may have written a newer sessions file: reread before saying no.
+    if (t && !sessions[sha(t)]) { try { sessions = JSON.parse(fs.readFileSync(file, "utf8")); } catch {} }
     const s = t && sessions[sha(t)];
     if (!s) return false;
     if (s.exp < Date.now()) { delete sessions[sha(t)]; save(); return false; }

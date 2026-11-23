@@ -1,0 +1,16 @@
+# Allowlist: deploy only the app. Homework files and ui/data never leave this machine this way
+# (hosted data lives in Vercel Blob; see deploy/vercel/migrate-data.mjs).
+/*
+!/api
+!/ui
+!/examples
+!/scripts
+!/package.json
+!/package-lock.json
+!/requirements.txt
+!/vercel.json
+/ui/data/*
+!/ui/data/wu_dag.json
+!/ui/data/wu_methods_dag.json
+/ui/node_modules
+__pycache__

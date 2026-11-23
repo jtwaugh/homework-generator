@@ -505,7 +505,7 @@ function renderHeader(phase) {
   switch (phase) {
     case "setup": {
       const m = setupMissing(), noClaude = S.auth?.mode === "none";
-      text = noClaude ? "No Claude subscription: run claude then /login, or set ANTHROPIC_API_KEY and HW_ALLOW_API_KEY=1" : !S.tectonic ? "Tectonic missing: brew install tectonic" : m.length ? `Next: add ${m.join(" and ")}` : "Next: Generate outline";
+      text = noClaude ? "No Claude API key: set ANTHROPIC_API_KEY and restart" : !S.tectonic ? "Tectonic missing: brew install tectonic" : m.length ? `Next: add ${m.join(" and ")}` : "Next: Generate outline";
       if (noClaude || !S.tectonic) cls = "bad";
       break;
     }

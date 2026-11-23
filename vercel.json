@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "node scripts/vercel-build.mjs",
+  "outputDirectory": "static-empty",
+  "rewrites": [
+    { "source": "/api/cas", "destination": "/api/cas" },
+    { "source": "/(.*)", "destination": "/api/index?__p=/$1" }
+  ],
+  "functions": {
+    "api/index.mjs": {
+      "maxDuration": 300,
+      "includeFiles": "{ui/**,examples/**,bin/tectonic}"
+    },
+    "api/cas.py": { "maxDuration": 60 }
+  }
+}

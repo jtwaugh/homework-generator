@@ -1,10 +1,9 @@
 // Tags corpus problems with Wu DAG nodes (content eNN, methods m:eNN) and short topic tags, using one cheap
-// `claude -p` pass per batch (Haiku by default, no tools). Used by the seed script, by Save & finish (for the
+// API call per batch (Haiku by default, no tools). Used by the seed script, by Save & finish (for the
 // set's new problems, in the background) and by scripts/tag-corpus.mjs (backfill).
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
-import { claudeEnv } from "./auth.mjs";
+import { runAgent, makeClient } from "./agent.mjs";
 
 export const TAG_MODEL = process.env.HW_TAG_MODEL || "claude-haiku-5-5";
 const BATCH = 40;
@@ -47,31 +46,19 @@ export function parseTags(text, ctx) {
   }));
 }
 
-function runClaude(prompt, cwd) {
-  const env = claudeEnv();
-  fs.mkdirSync(cwd, { recursive: true });
-  return new Promise((resolve, reject) => {
-    const c = spawn("claude", ["-p", "--model", TAG_MODEL, "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence", "--output-format", "json"], { env, cwd });
-    let out = "", err = "";
-    const timer = setTimeout(() => c.kill("SIGTERM"), 600000);
-    c.stdout.on("data", (d) => (out += d)); c.stderr.on("data", (d) => (err += d));
-    c.on("error", reject);
-    c.on("close", (code) => {
-      clearTimeout(timer);
-      try { const r = JSON.parse(out); if (r.is_error) throw new Error(r.result); resolve({ text: r.result, cost: r.total_cost_usd || 0 }); }
-      catch (e) { reject(new Error(`tagger exit ${code}: ${e.message} ${err.slice(0, 300)}`)); }
-    });
-    c.stdin.end(prompt);
-  });
+async function runClaude(prompt, client) {
+  const r = await runAgent({ client: client || makeClient(), model: TAG_MODEL, messages: [{ role: "user", content: prompt }], effort: "low" });
+  if (!r.ok) throw new Error(`tagger: ${r.error}`);
+  return { text: r.text, cost: r.usage.costUSD };
 }
 
 // Tags `probs` in place (wuNodes, tags; units only when the problem has none). Returns {tagged, cost}.
-export async function tagProblems(probs, { root, data, onBatch } = {}) {
+export async function tagProblems(probs, { root, data, onBatch, client } = {}) {
   const ctx = context({ root, data });
   let tagged = 0, cost = 0;
   for (let s = 0; s < probs.length; s += BATCH) {
     const batch = probs.slice(s, s + BATCH);
-    const r = await runClaude(tagPrompt(batch, ctx), path.join(data, "claude-cwd"));
+    const r = await runClaude(tagPrompt(batch, ctx), client);
     cost += r.cost;
     for (const t of parseTags(r.text, ctx)) {
       const p = batch[t.i]; if (!p) continue;

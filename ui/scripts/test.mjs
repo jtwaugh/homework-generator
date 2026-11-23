@@ -174,15 +174,10 @@ test("approval: the checkpoint's Assumptions become rulings", () => {
   assert.deepEqual(assumptionsOf(cp), ["U19 treated as CURRENT: positive integer exponents only.", "Domain means all real inputs that give a real output."]);
 });
 
-test("auth: subscription wins; API key only when none is found and HW_ALLOW_API_KEY=1", () => {
-  const sub = { loggedIn: true, authMethod: "claude.ai", subscriptionType: "max" }, none = { loggedIn: false, authMethod: "none" };
-  const key = { ANTHROPIC_API_KEY: "sk-x" }, optIn = { ...key, HW_ALLOW_API_KEY: "1" };
-  assert.equal(decideAuth(sub, optIn).mode, "subscription");
-  assert.equal(decideAuth(none, optIn).mode, "api-key");
-  assert.equal(decideAuth(null, optIn).mode, "api-key");
-  assert.equal(decideAuth(none, key).mode, "none");
-  assert.match(decideAuth(none, key).note, /HW_ALLOW_API_KEY=1/);
-  assert.equal(decideAuth(none, { HW_ALLOW_API_KEY: "1" }).mode, "none");
+test("auth: the API key is the only way in", () => {
+  assert.equal(decideAuth({ ANTHROPIC_API_KEY: "sk-test" }).mode, "api-key");
+  assert.equal(decideAuth({}).mode, "none");
+  assert.match(decideAuth({}).note, /ANTHROPIC_API_KEY/);
 });
 
 test("login: scrypt hash verifies only the right password; rate limit blocks and resets", () => {

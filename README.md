@@ -16,30 +16,29 @@ git clone git@github.com:jtwaugh/homework-generator.git
 cd homework-generator
 ```
 
-There is no build step and nothing to `npm install`: the server is one zero-dependency Node file and the front end
-is plain ES modules.
+There is no build step. `npm install` fetches the three dependencies (the Anthropic SDK, plus Vercel's Blob and
+functions SDKs, which only load when hosted); the front end is plain ES modules.
 
-## Run it locally with a Claude account
+## Run it locally
 
 You need:
 
-- **Node 18+** for the app; **Node 22** for the UI test and debugging harness (they use Node's built-in WebSocket).
-- **The `claude` CLI, logged in to your Claude account.** Install Claude Code
-  (https://claude.com/claude-code), run `claude`, then `/login`. The app runs `claude -p` for every turn,
-  so usage counts against your Claude plan. It ignores `ANTHROPIC_API_KEY` unless you opt in (see the next
-  section), so you aren't billed through the API by accident.
+- **Node 22** (the UI test and debugging harness use Node's built-in WebSocket).
+- **An Anthropic API key** (https://console.anthropic.com). Every turn calls the Claude API directly and is billed per
+  token to your API account; the **$** panel shows the real charges. `HW_BUDGET_USD=2` caps what each turn can spend.
 - **Tectonic** for PDFs: `brew install tectonic` (or see https://tectonic-typesetting.github.io).
-- *Optional:* **sympy** for checking answer keys. Claude uses it through a local `cas` tool:
+- *Optional:* **sympy** for checking answer keys. Claude uses it through a `cas` tool:
   `uv venv ui/data/venv && uv pip install --python ui/data/venv sympy`. Without it the app still works; answers just
   aren't CAS-verified.
 
 Then:
 
 ```
-HW_STUDENT="Sam" node ui/server.mjs
+npm install
+ANTHROPIC_API_KEY=sk-ant-... HW_STUDENT="Sam" node ui/server.mjs
 ```
 
-and open http://localhost:4747. `HW_STUDENT` is the student's name as it appears in the header and prompts (leave it
+(or put the key in `.env` and run `node --env-file=.env ui/server.mjs`), and open http://localhost:4747. `HW_STUDENT` is the student's name as it appears in the header and prompts (leave it
 out for a generic "the student"). On first run the server copies the files from `examples/` into the repo root:
 
 | file | what it is |
@@ -50,35 +49,16 @@ out for a generic "the student"). On first run the server copies the files from 
 
 Those copies are yours and are not tracked by git, so edit them freely.
 
-### No Claude subscription? Use an API key
-
-If `claude` isn't logged in to a Claude subscription, the app can use an Anthropic API key instead
-(create one at https://console.anthropic.com). You still need the `claude` CLI installed; it doesn't need to be
-logged in. Set the key and opt in:
-
-```
-ANTHROPIC_API_KEY=sk-ant-... HW_ALLOW_API_KEY=1 HW_STUDENT="Sam" node ui/server.mjs
-```
-
-At startup the server runs `claude auth status` and prints which one it is using (`Claude: subscription` or
-`Claude: api-key`). A subscription always wins: with one logged in, the key is ignored even with
-`HW_ALLOW_API_KEY=1`. On an API key every turn is billed per token to your API account, so the figures in the
-**$** panel are real charges rather than API-equivalent estimates. `HW_BUDGET_USD=2` caps what each turn can spend.
-A key without `HW_ALLOW_API_KEY=1` is ignored, and the setup screen shows a warning when there's no subscription and
-no opted-in key.
-
 The walkthrough of the screens, every option (`PORT`, `HW_MODEL`, `HW_BUDGET_USD`, …), the event log, the tests and
 the debugging harness are in [ui/README.md](ui/README.md).
 
 ## Host it for someone else
 
-The app is a long-running Node process that starts `claude` and `tectonic` and writes into its folder, so it needs a
-real machine: a small Linux VM (1 GB RAM is plenty) or an always-on computer at home. Serverless hosts such as
-Vercel won't work.
+Two ways: on Vercel (no server to run; see the end of this section), or as a long-running Node process on a small
+Linux VM or an always-on computer at home. The steps below are for a machine of your own.
 
-**1. Install the same tools as above** on the server: Node 22, the `claude` CLI (`npm install -g
-@anthropic-ai/claude-code`; it doesn't need to be logged in when you use an API key), Tectonic, and optionally the
-sympy venv. Then clone the repo.
+**1. Install the same tools as above** on the server: Node 22, Tectonic, and optionally the sympy venv. Then clone the
+repo and run `npm install`.
 
 **2. Make a password hash.** On the server, run
 
@@ -93,7 +73,6 @@ hash, never the password itself.
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
-HW_ALLOW_API_KEY=1
 HW_PASSWORD_HASH=scrypt$16384$8$1$...
 HW_TRUST_PROXY=1
 HW_BUDGET_USD=3
@@ -134,7 +113,7 @@ WantedBy=multi-user.target
 ```
 
 then `sudo systemctl enable --now homework`. The startup log (`journalctl -u homework`) should show
-`Claude: api-key` and `Login: password required`.
+`Claude: Anthropic API` and `Login: password required`.
 
 **How the login works.** With `HW_PASSWORD_HASH` set, every page and API call needs a session. You get one by
 entering the password at `/login`. Sessions last 30 days and survive restarts. **Log out** in the header ends yours.
@@ -144,26 +123,30 @@ there's no login, and the server refuses to listen on anything but localhost (`H
 with a password). Use a strong password: anyone who logs in can spend your API credit, and Claude's `cas` tool
 runs Python on the server.
 
-### Or: on Vercel, in a persistent Sandbox
+### Or: on Vercel
 
-`deploy/vercel/` runs the app unchanged inside a persistent [Vercel Sandbox](https://vercel.com/docs/sandbox) (a
-Linux VM whose filesystem is snapshotted when it sleeps), with a small Vercel function in front that wakes it, starts
-the server and proxies every request. It sleeps 20 minutes after the last request and wakes in about 5 seconds.
-Hobby plans cap a sandbox session at 45 minutes, after which the next request starts a new one; a generation still
-running at that moment dies and can be retried.
+The repo deploys to Vercel as it is (`vercel.json`): the Node app runs as one function (`api/index.mjs`), the sympy
+tool as a Python function (`api/cas.py`, with no network and a clean environment), and the build step bundles a
+static Linux Tectonic. A function's disk is temporary, so the homework files and `ui/data` live in a private
+[Vercel Blob](https://vercel.com/docs/vercel-blob) store, mirrored to `/tmp` on each instance (`ui/lib/mirror.mjs`):
+changes are pulled before each request and pushed after each write. Running jobs, their live progress and Stop
+requests go through the same store, so they work across instances. Preview deployments use their own copy of the
+data (`hw-preview/`), so testing never touches production.
 
 ```
-cd deploy/vercel && npm install
-vercel link --project homework                          # once
-vercel env add ANTHROPIC_API_KEY production --sensitive  # and HW_ALLOW_API_KEY, HW_PASSWORD_HASH, HW_BUDGET_USD, HW_STUDENT
-vercel env pull .env.local && node --env-file=.env.local provision.mjs   # uploads code, homework files, ui/data; installs claude, tectonic, sympy
-npm run deploy                                          # bundles api/proxy.mjs and deploys
+vercel link --project homework                                       # once; then create a private Blob store
+                                                                     # (dashboard: Storage > Blob) connected to it
+vercel env add ANTHROPIC_API_KEY production --sensitive              # and HW_PASSWORD_HASH, HW_BUDGET_USD, HW_STUDENT
+openssl rand -hex 32 | vercel env add HW_INTERNAL_TOKEN production --sensitive   # app -> cas function
+vercel env pull --environment=development .env.blob                  # copy your local data into Blob, once:
+node --env-file=.env.blob deploy/vercel/migrate-data.mjs --yes      #   refuses if the store already has data
+vercel deploy --prod
 vercel domains add homework.example.com homework
 ```
 
-Re-run `provision.mjs` after changing the app to upload the new code and restart the server (it leaves the
-sandbox's data alone; `--fresh` recreates the sandbox from your local data). The `.env.local` OIDC token expires after
-12 hours; pull it again if provisioning says you are not authorized.
+Hobby plans cap a request at 300 s (`maxDuration` in `vercel.json`; Pro allows 800). A turn still running at that
+point is cut off and can be retried. Logins on Vercel are always treated as behind a proxy (`HW_TRUST_PROXY` is
+implied).
 
 ## Add your own homework data
 

@@ -29,7 +29,7 @@ export function turnCost(m) {
   return Object.entries(u.models || {}).reduce((s, [n, x]) => s + modelCost(n, x), 0);
 }
 
-const RESEARCH_TOOLS = /^(WebSearch|WebFetch|mcp__hw__corpus_search)$/;
+const RESEARCH_TOOLS = /^(WebSearch|WebFetch|(mcp__hw__)?corpus_search)$/;
 // Research estimate (labelled "est."): searches x $0.01 + the fetch summarizer (non-main models)
 // + research results re-read as input (chars / 4 tokens at the main model's input rate).
 export function researchEstimate(m, mainModel) {
@@ -94,7 +94,7 @@ function panelHtml(week = dlgWeek || app.week) {
   const split = wc.total ? Math.round((wc.research / wc.total) * 100) : 0;
   return `
     <div class="row"><h2>Cost</h2><span class="spacer"></span><form method="dialog"><button class="ghost">✕</button></form></div>
-    <p class="hint">${S.auth?.mode === "api-key" ? "You're using an API key (no Claude subscription found), so these are real charges to your API account, as reported by the Claude CLI." : "You're on a Claude subscription, so these are API-equivalent figures from the Claude CLI, not charges."} Research is an estimate (web searches at $0.01, the page-fetch summarizer, and research results read as input).${S.budget ? ` Each turn stops at $${S.budget} (HW_BUDGET_USD).` : ""}</p>
+    <p class="hint">These are charges to your Anthropic API account, computed from the token counts the API reports. Research is an estimate (web searches at $0.01, the page-fetch summarizer, and research results read as input).${S.budget ? ` Each turn stops at $${S.budget} (HW_BUDGET_USD).` : ""}</p>
     <div class="cost-cards">
       <div class="card"><div class="k">${dlgWeek ? esc(dlgWeek.title) : "This week"}</div><div class="big">${fmtUSD(wc.total)}</div><div class="muted small">${wc.turns} turn${wc.turns === 1 ? "" : "s"}</div></div>
       <div class="card"><div class="k">Research vs writing <span class="est">est.</span></div>
@@ -117,6 +117,6 @@ onRender(function costBadge() {
   const wc = weekCost(), mc = monthCost();
   b.hidden = !app.week && !mc.total;
   b.textContent = app.week ? fmtUSD(wc.total) : `${mc.label.slice(0, 3)} ${fmtUSD(mc.total)}`;
-  b.title = `${S.auth?.mode === "api-key" ? "API cost (billed)" : "API-equivalent cost"}: ${fmtUSD(wc.total)} this week, ${fmtUSD(mc.total)} in ${mc.label}. Click for details.`;
+  b.title = `API cost: ${fmtUSD(wc.total)} this week, ${fmtUSD(mc.total)} in ${mc.label}. Click for details.`;
   if ($("#cost-dlg").open) $("#cost-dlg").innerHTML = panelHtml();
 });

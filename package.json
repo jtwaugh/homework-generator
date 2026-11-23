@@ -1,0 +1,14 @@
+{
+  "name": "homework-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node ui/server.mjs",
+    "test": "node ui/scripts/test.mjs && node ui/scripts/test-agent.mjs && node ui/scripts/test-mirror.mjs && node ui/scripts/test-mcp.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.12.0",
+    "@vercel/blob": "^2.9.0",
+    "@vercel/functions": "^3.11.3"
+  }
+}

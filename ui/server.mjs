@@ -1,6 +1,6 @@
 // Local UI for the weekly homework generator.
-// Uses the `claude` CLI (your logged-in Claude account) for generation and
-// Tectonic for LaTeX compilation. No npm dependencies.
+// Calls Claude through the Anthropic API (lib/agent.mjs; needs ANTHROPIC_API_KEY) and compiles LaTeX with
+// Tectonic. Dependency: @anthropic-ai/sdk (npm install).
 //
 //   node ui/server.mjs          then open http://localhost:4747
 
@@ -14,7 +14,10 @@ import { fileURLToPath } from "node:url";
 import { tagProblems, needsTags, TAG_MODEL } from "./lib/tagger.mjs";
 import { loadCorpus, saveCorpus, searchCorpus, formatHits, addProblems, patchProblem, dateFromName, tokenize, attachTex } from "./lib/corpus.mjs";
 import { buildBrief, briefText, saveRulings, loadRulings } from "./lib/preflight.mjs";
-import { claudeAuth, claudeEnv } from "./lib/auth.mjs";
+import { claudeAuth } from "./lib/auth.mjs";
+import { runAgent, makeClient, addUserTurn } from "./lib/agent.mjs";
+import { agentTools, casRemote } from "./lib/tools.mjs";
+import { createMirror, blobStore, blobConfigured } from "./lib/mirror.mjs";
 import { createLogin, validHash } from "./lib/login.mjs";
 
 const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -30,10 +33,7 @@ const DEBUG = path.join(DATA, "debug");
 const NOTES = path.join(DATA, "notes");
 const DAG_STATE = path.join(DATA, "dag_state.json");
 const LOGS = path.join(DATA, "logs");
-const MCP_SERVER = path.join(UI_DIR, "mcp", "hw-tools.mjs");
 const VENV_PY = path.join(DATA, "venv", "bin", "python");
-// Claude runs in an empty directory so it picks up no CLAUDE.md or project files.
-const CLAUDE_CWD = path.join(DATA, "claude-cwd");
 const PORT = Number(process.env.PORT || 4747);
 // HW_HOST=0.0.0.0 to listen beyond this machine (for hosting); that requires HW_PASSWORD_HASH (see lib/login.mjs).
 const HOST = process.env.HW_HOST || "127.0.0.1";
@@ -43,6 +43,11 @@ const GUESS_MODEL = process.env.HW_GUESS_MODEL || "claude-sonnet-5-5";
 // Past sets sent with every run as style examples (older ones are in the corpus). Each adds ~2k tokens to every turn.
 const GOLD_COUNT = Math.max(1, Number(process.env.HW_GOLD_FILES) || 3);
 const BUDGET = process.env.HW_BUDGET_USD ? String(Number(process.env.HW_BUDGET_USD)) : null;
+// Every turn of a week's conversation declares the same tools (replayed thinking is tied to the tool list);
+// each stage's `allowed` list decides which of our tools it may actually run.
+const WEEK_TOOLS = ["cas", "corpus_search", "corpus_add"];
+const WEEK_SERVER = ["WebSearch", "WebFetch"];
+const allowedOf = (st) => st.allowed.split(",").filter(Boolean).map((n) => n.replace(/^mcp__hw__/, ""));
 const ALLOWED_TOOLS = "WebSearch,WebFetch,mcp__hw__cas,mcp__hw__corpus_search,mcp__hw__corpus_add";
 
 // ---------- stage routing: the cheapest model that does each part well ----------
@@ -94,7 +99,8 @@ function mergeUsage(a, b) {
   return { costUSD: (a.costUSD || 0) + (b.costUSD || 0), durationMs: (a.durationMs || 0) + (b.durationMs || 0), numTurns: (a.numTurns || 0) + (b.numTurns || 0), webSearches: (a.webSearches || 0) + (b.webSearches || 0), models };
 }
 
-for (const d of [WEEKS, BUILD, BACKUPS, CLAUDE_CWD, MCP_DIR, DEBUG, NOTES, LOGS]) fs.mkdirSync(d, { recursive: true });
+const JOBS = path.join(DATA, "jobs");
+for (const d of [WEEKS, BUILD, BACKUPS, MCP_DIR, DEBUG, NOTES, LOGS, JOBS]) fs.mkdirSync(d, { recursive: true });
 
 const STATUS_FILE = path.join(ROOT, "weekly_status.md");
 const INSTRUCTIONS_FILE = path.join(ROOT, "project_instructions.md");
@@ -103,6 +109,9 @@ const LADDER_FILE = path.join(ROOT, "curriculum_ladder.md");
 const STUDENT = (process.env.HW_STUDENT || "").trim();
 // The curriculum's name, shown in the sidebar header. Set HW_CURRICULUM=<name> to change it.
 const CURRICULUM = (process.env.HW_CURRICULUM || "").trim() || "Wu Algebra";
+// The two Wu DAGs ship with the code. With DATA elsewhere (hosted: /tmp), copy them in on every start.
+const BUNDLED_DATA = ["wu_dag.json", "wu_methods_dag.json"];
+if (path.resolve(DATA) !== path.join(UI_DIR, "data")) for (const f of BUNDLED_DATA) { const src = path.join(UI_DIR, "data", f); if (fs.existsSync(src)) fs.copyFileSync(src, path.join(DATA, f)); }
 // First run: copy the example workflow, ladder and status into the homework folder if they aren't there yet.
 for (const f of [INSTRUCTIONS_FILE, LADDER_FILE, STATUS_FILE]) {
   const ex = path.join(UI_DIR, "..", "examples", path.basename(f));
@@ -134,6 +143,59 @@ export function logEvent(src, event, data = {}) {
 // Files may use CRLF line endings; work with \n internally and restore on write.
 const read = async (p) => (await fsp.readFile(p, "utf8")).replace(/\r\n/g, "\n");
 const readJson = async (p, dflt) => { try { return JSON.parse(await fsp.readFile(p, "utf8")); } catch { return dflt; } };
+
+// ---------- hosting: durable storage and background work ----------
+// When hosted on Vercel (a Blob store connected), ROOT and DATA are /tmp folders mirrored to Blob
+// (lib/mirror.mjs): pulled before each API request, pushed after writes and after background work.
+// Caches, builds and logs stay local to the instance.
+export const mirror = createMirror({
+  roots: { root: ROOT, data: DATA },
+  store: process.env.VERCEL && blobConfigured() ? blobStore() : null,
+  // Production and preview deployments share a store; previews keep their own copy so testing can't touch it.
+  base: process.env.HW_BLOB_PREFIX || (process.env.VERCEL_ENV && process.env.VERCEL_ENV !== "production" ? `hw-${process.env.VERCEL_ENV}` : "hw"),
+  skip: (rel, pre) => pre === "data" && (/^(build|logs|debug|mcp|venv|claude-cwd)\//.test(rel) || BUNDLED_DATA.includes(rel)),
+});
+// Work that outlives its request (tagging, the progress-map guess). The Vercel entry swaps in waitUntil so
+// the instance stays up until it finishes.
+let keepAlive = (p) => p;
+export const setKeepAlive = (fn) => { keepAlive = fn; };
+function background(fn) {
+  const p = Promise.resolve().then(fn).catch((e) => logEvent("server", "background-error", { error: e.message })).finally(() => mirror.push().catch((e) => logEvent("mirror", "push-error", { error: e.message })));
+  keepAlive(p);
+  return p;
+}
+// Job state other instances can see: data/jobs/<key>.json (state, refreshed while running) and <key>.stop.
+// Only used when mirrored; on one machine the in-memory maps are the whole story.
+const jobFile = (key, ext = "json") => path.join(JOBS, `${key}.${ext}`);
+const shareThrottle = new Map();
+async function shareJob(key, state, { force = false } = {}) {
+  if (!mirror.enabled) return;
+  const now = Date.now();
+  if (!force && now - (shareThrottle.get(key) || 0) < 2000) return;
+  shareThrottle.set(key, now);
+  try {
+    await fsp.writeFile(jobFile(key), JSON.stringify({ ...state, sharedAt: now }));
+    await mirror.putNow(jobFile(key));
+  } catch (e) { logEvent("mirror", "share-error", { key, error: e.message }); }
+}
+async function remoteJob(key) {
+  if (!mirror.enabled) return null;
+  try {
+    const b = await mirror.fetchNow(jobFile(key));
+    const j = b && JSON.parse(b);
+    return j && j.running && Date.now() - j.sharedAt < 90000 ? j : null; // a dead instance stops refreshing
+  } catch { return null; }
+}
+async function requestStop(key) {
+  if (!mirror.enabled) return;
+  await fsp.writeFile(jobFile(key, "stop"), "1");
+  await mirror.putNow(jobFile(key, "stop")).catch(() => {});
+}
+async function clearStop(key) {
+  if (!mirror.enabled) return;
+  await fsp.rm(jobFile(key, "stop"), { force: true });
+  await mirror.delNow(jobFile(key, "stop")).catch(() => {});
+}
 async function writeLikeOriginal(p, text) {
   const orig = fs.existsSync(p) ? await fsp.readFile(p, "utf8") : "";
   const out = text.replace(/\r\n/g, "\n");
@@ -172,16 +234,19 @@ async function texFiles() {
 }
 
 let tectonicPath;
+// Tectonic downloads TeX support files on demand into its cache; hosted, only /tmp is writable.
+const TEX_ENV = process.env.VERCEL ? { PATH: process.env.PATH, HOME: "/tmp", XDG_CACHE_HOME: "/tmp/cache" } : process.env;
 function findTectonic() {
   if (tectonicPath !== undefined) return tectonicPath;
-  for (const c of ["tectonic", "/opt/homebrew/bin/tectonic", "/usr/local/bin/tectonic"]) {
-    const r = spawnSync(c, ["--version"], { encoding: "utf8" });
+  // bin/tectonic: the static Linux build the Vercel build step downloads (scripts/vercel-build.mjs).
+  for (const c of [process.env.HW_TECTONIC, path.join(UI_DIR, "..", "bin", "tectonic"), "tectonic", "/opt/homebrew/bin/tectonic", "/usr/local/bin/tectonic"].filter(Boolean)) {
+    const r = spawnSync(c, ["--version"], { encoding: "utf8", env: TEX_ENV });
     if (r.status === 0) return (tectonicPath = c);
   }
   return (tectonicPath = null);
 }
 let casOk = null;
-const casAvailable = () => (casOk ??= fs.existsSync(VENV_PY) && spawnSync(VENV_PY, ["-c", "import sympy"], { timeout: 30000 }).status === 0);
+const casAvailable = () => (casOk ??= !!casRemote() || fs.existsSync(VENV_PY) && spawnSync(VENV_PY, ["-c", "import sympy"], { timeout: 30000 }).status === 0);
 
 // ---------- weekly_status / ladder parsing (just what the server needs) ----------
 
@@ -211,6 +276,8 @@ export function preloadQuery(status, ladder) {
 
 const weekPath = (id) => path.join(WEEKS, `${id}.json`);
 const toolsPath = (id) => path.join(WEEKS, `${id}.tools.jsonl`);
+// The API conversation for a week: {system, messages}, with thinking blocks and tool results as the API returned them.
+const convoPath = (id) => path.join(WEEKS, `${id}.convo.json`);
 
 async function loadWeek(id) {
   if (!WEEK_ID.test(id)) throw new Error("bad week id");
@@ -262,127 +329,68 @@ async function buildSystemPrompt() {
 const running = new Map(); // key (weekId or "dag-guess") -> child process
 const stopped = new Set(); // weeks whose teacher pressed Stop during a multi-stage message
 const progress = new Map(); // weekId -> { text, tools, startedAt } for the turn in flight
-let debugLogged = fs.existsSync(path.join(DEBUG, "result-event.json"));
 
 const clip = (s, n) => (s.length > n ? s.slice(0, n) + `\n… (${s.length - n} more chars)` : s);
-const resultText = (c) => typeof c === "string" ? c : Array.isArray(c) ? c.map((b) => b.type === "text" ? b.text : b.type === "image" ? "[image]" : JSON.stringify(b)).join("\n") : JSON.stringify(c ?? "");
 
-function summarizeUsage(ev) {
-  const models = {};
-  let webSearches = 0;
-  for (const [name, u] of Object.entries(ev.modelUsage || {})) {
-    models[name] = { in: u.inputTokens || 0, out: u.outputTokens || 0, cacheRead: u.cacheReadInputTokens || 0, cacheWrite: u.cacheCreationInputTokens || 0, webSearches: u.webSearchRequests || 0, costUSD: u.costUSD || 0 };
-    webSearches += u.webSearchRequests || 0;
+let apiClient = null;
+const client = () => (apiClient ??= makeClient());
+
+// One agent run (lib/agent.mjs). Registered in `running` under `key` so Stop can abort it.
+async function callAgent({ key, weekId = "", model, system, messages, toolNames = [], allow = null, server = [], effort, schema, binding = false, onEvent = () => {} }) {
+  const ac = new AbortController();
+  running.set(key, ac);
+  const t0 = Date.now();
+  // Hosted: Stop may land on another instance; it leaves a flag in Blob that we poll for.
+  const poll = mirror.enabled && setInterval(async () => {
+    if (await mirror.fetchNow(jobFile(key, "stop")).catch(() => null)) { stopped.add(key); ac.abort(); }
+  }, 3000);
+  try {
+    const r = await runAgent({
+      client: client(), model, system, messages, tools: agentTools(weekId, { names: toolNames }), allow, server, effort, schema, binding,
+      budgetUSD: BUDGET ? Number(BUDGET) : Infinity, signal: ac.signal, onEvent,
+      log: (event, d) => logEvent("claude", event, { key, ...d }),
+    });
+    logEvent("claude", "exit", { key, ms: Date.now() - t0, chars: r.text.length, tools: r.tools.length, error: r.error ? short(r.error, 300) : undefined });
+    return r;
+  } catch (e) {
+    logEvent("claude", "exit", { key, ms: Date.now() - t0, error: short(e.message, 300) });
+    return { ok: false, error: e.message, text: "", usage: null, structured: null, tools: [] };
+  } finally {
+    if (poll) clearInterval(poll);
+    if (running.get(key) === ac) running.delete(key);
   }
-  return { costUSD: ev.total_cost_usd || 0, durationMs: ev.duration_ms || 0, numTurns: ev.num_turns || 0, webSearches, models };
 }
 
-// Spawn `claude -p` with stream-json output. Collects text, tool calls (with result sizes) and usage.
-function spawnClaude({ key, args, prompt, cwd, onEvent = () => {} }) {
-  return new Promise((resolve) => {
-    // The logged-in Claude subscription; ANTHROPIC_API_KEY only if there is none and HW_ALLOW_API_KEY=1 (lib/auth.mjs).
-    const env = claudeEnv();
-
-    const t0 = Date.now();
-    const model = args[args.indexOf("--model") + 1];
-    logEvent("claude", "start", { key, model, promptChars: prompt.length });
-    // `claude -p` defaults to thinking display "omitted": thinking blocks arrive with empty text and only a
-    // signature. "summarized" asks the API for readable summaries, which the Steps trace and History show.
-    if (!args.includes("--thinking-display")) args = [...args, "--thinking-display", "summarized"];
-    const child = spawn("claude", args, { cwd, env });
-    running.set(key, child);
-    child.stdin.end(prompt);
-
-    const texts = []; // complete assistant text blocks, in order
-    const tools = []; // {id, name, input, at, ms, chars, ok, preview}
-    let buf = "", stderr = "", resultError = null, usage = null, structured = null, sawThinkingDelta = false;
-
-    const onLine = (line) => {
-      let ev;
-      try { ev = JSON.parse(line); } catch { return; }
-      if (ev.type === "stream_event" && !ev.parent_tool_use_id) {
-        const e = ev.event;
-        if (e.type === "content_block_delta" && e.delta?.type === "text_delta") onEvent({ type: "text", text: e.delta.text });
-        if (e.type === "content_block_delta" && e.delta?.type === "thinking_delta" && e.delta.thinking) { sawThinkingDelta = true; onEvent({ type: "thinking", text: e.delta.thinking }); }
-        if (e.type === "content_block_start" && e.content_block?.type === "text" && texts.length) onEvent({ type: "text", text: "\n\n" });
-      } else if (ev.type === "assistant" && !ev.parent_tool_use_id) {
-        for (const b of ev.message.content || []) {
-          if (b.type === "text" && b.text) texts.push(b.text);
-          // Without --include-partial-messages the thinking only arrives here, whole.
-          if (b.type === "thinking" && b.thinking && !sawThinkingDelta) onEvent({ type: "thinking", text: b.thinking + "\n\n" });
-          if (b.type === "tool_use") {
-            const t = { id: b.id, name: b.name, input: b.input, at: Date.now(), textIndex: texts.length };
-            tools.push(t);
-            logEvent("claude", "tool", { key, name: b.name, input: short(b.input, 200) });
-            onEvent({ type: "tool", tool: t });
-          }
-        }
-      } else if (ev.type === "user" && !ev.parent_tool_use_id) {
-        for (const b of ev.message?.content || []) {
-          if (b.type !== "tool_result") continue;
-          const t = tools.find((x) => x.id === b.tool_use_id);
-          if (!t) continue;
-          const txt = resultText(b.content);
-          Object.assign(t, { ms: Date.now() - t.at, chars: txt.length, ok: !b.is_error, preview: clip(txt, 4000) });
-          logEvent("claude", "tool-result", { key, name: t.name, ok: t.ok, ms: t.ms, chars: t.chars, ...(t.ok ? {} : { error: short(txt, 300) }) });
-          onEvent({ type: "tool_result", tool: t });
-        }
-      } else if (ev.type === "result") {
-        if (!debugLogged) { debugLogged = true; fsp.writeFile(path.join(DEBUG, "result-event.json"), JSON.stringify(ev, null, 2)).catch(() => {}); }
-        usage = summarizeUsage(ev);
-        structured = ev.structured_output ?? null;
-        logEvent("claude", "result", { key, costUSD: usage?.costUSD, turns: usage?.numTurns, webSearches: usage?.webSearches, error: ev.is_error ? short(ev.result || ev.subtype, 300) : undefined });
-        if (ev.is_error) resultError = ev.result || ev.subtype || "Claude returned an error";
-      }
-    };
-    child.stdout.on("data", (d) => {
-      buf += d.toString("utf8");
-      let i;
-      while ((i = buf.indexOf("\n")) >= 0) { const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (line) onLine(line); }
-    });
-    child.stderr.on("data", (d) => { const t = d.toString("utf8"); stderr += t; for (const l of t.split("\n")) if (l.trim()) logEvent("claude", "stderr", { key, line: short(l, 300) }); });
-    child.on("error", (err) => { resultError = `Could not start claude: ${err.message}`; });
-    child.on("close", (code) => {
-      if (buf.trim()) onLine(buf.trim());
-      running.delete(key);
-      logEvent("claude", "exit", { key, code, ms: Date.now() - t0, chars: texts.join("").length, tools: tools.length, error: resultError ? short(resultError, 300) : undefined });
-      const text = texts.join("\n\n");
-      const out = { text, usage, structured, tools: tools.map(({ at, ...t }) => t) };
-      if (resultError || (code !== 0 && !text)) resolve({ ...out, ok: false, error: resultError || stderr.trim() || `claude exited with code ${code}` });
-      else resolve({ ...out, ok: true });
-    });
-  });
-}
-
-async function mcpConfigFor(weekId) {
-  const file = path.join(MCP_DIR, `${weekId}.json`);
-  await fsp.writeFile(file, JSON.stringify({ mcpServers: { hw: { type: "stdio", command: process.execPath, args: [MCP_SERVER], env: { WEEK_ID: weekId, HW_DATA: DATA } } } }, null, 2));
-  return file;
-}
-
+// A turn in the week's conversation. The system prompt is fixed at the first turn and replayed unchanged.
 async function runClaude(week, prompt, systemPrompt, onEvent, stage = "outline") {
   const st = STAGES[stage];
-  const args = [
-    "-p",
-    "--output-format", "stream-json",
-    "--verbose",
-    "--include-partial-messages",
-    "--model", modelFor(stage, week),
-    "--tools", st.tools,
-    "--allowedTools", st.allowed,
-    "--mcp-config", await mcpConfigFor(week.id),
-    "--strict-mcp-config",
-    "--disable-slash-commands",
-  ];
-  if (BUDGET) args.push("--max-budget-usd", BUDGET);
-  if (st.effort) args.push("--effort", st.effort);
-  if (week.started) args.push("--resume", week.sessionId);
-  else {
-    // A run that died before replying may still have created this session; a retry needs a fresh id.
-    week.sessionId = randomUUID();
-    args.push("--session-id", week.sessionId, "--system-prompt", systemPrompt);
-  }
-  return spawnClaude({ key: week.id, args, prompt, cwd: CLAUDE_CWD, onEvent });
+  let convo = week.started ? await readJson(convoPath(week.id), null) : null;
+  if (!convo) convo = { system: systemPrompt || (await buildSystemPrompt()), messages: legacyHistory(week) };
+  const before = convo.messages.length;
+  addUserTurn(convo.messages, prompt);
+  const r = await callAgent({
+    key: week.id, weekId: week.id, model: modelFor(stage, week), system: convo.system, messages: convo.messages,
+    toolNames: WEEK_TOOLS, allow: allowedOf(st), server: WEEK_SERVER, effort: st.effort, binding: true, onEvent,
+  });
+  // Nothing came back: leave the conversation as it was so a retry starts clean.
+  if (!r.ok && !r.text) convo.messages.length = before;
+  await fsp.writeFile(convoPath(week.id), JSON.stringify(convo));
+  return r;
+}
+
+// Weeks started under the old `claude -p` sessions have no saved conversation: rebuild it from the chat text.
+function legacyHistory(week) {
+  if (!week.started) return [];
+  const out = [];
+  for (const m of week.messages.slice(0, -1)) if (m.text) pushTurn(out, m.role, m.text);
+  return out;
+}
+function pushTurn(out, role, text) {
+  if (role === "user") return addUserTurn(out, text);
+  const last = out.at(-1);
+  if (!last) return; // a conversation must start with a user turn
+  if (last.role === "assistant") last.content.push({ type: "text", text });
+  else out.push({ role: "assistant", content: [{ type: "text", text }] });
 }
 
 // ---------- compile (cached by content hash) ----------
@@ -402,7 +410,7 @@ async function compileTex(text) {
     await fsp.mkdir(dir, { recursive: true });
     await fsp.writeFile(path.join(dir, "hw.tex"), text);
     const r = await new Promise((resolve) => {
-      const child = spawn(tec, ["--keep-logs", "--outdir", dir, path.join(dir, "hw.tex")]);
+      const child = spawn(tec, ["--keep-logs", "--outdir", dir, path.join(dir, "hw.tex")], { env: TEX_ENV });
       let log = "";
       const t = setTimeout(() => child.kill("SIGKILL"), 180000);
       child.stdout.on("data", (d) => (log += d)); child.stderr.on("data", (d) => (log += d));
@@ -460,11 +468,8 @@ async function runResearch(week, brief, onEvent) {
   ].join("\n");
   let model = STAGES.research.model;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--model", model, "--tools", STAGES.research.tools, "--allowedTools", STAGES.research.allowed,
-      "--mcp-config", await mcpConfigFor(week.id), "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence",
-      "--effort", STAGES.research.effort, "--json-schema", JSON.stringify(RESEARCH_SCHEMA)];
-    if (BUDGET) args.push("--max-budget-usd", BUDGET);
-    const r = await spawnClaude({ key: week.id, args, prompt, cwd: CLAUDE_CWD, onEvent: (e) => e.type !== "text" && onEvent(e) });
+    const r = await callAgent({ key: week.id, weekId: week.id, model, messages: [{ role: "user", content: prompt }], toolNames: allowedOf(STAGES.research),
+      server: STAGES.research.tools.split(",").filter(Boolean), effort: STAGES.research.effort, schema: RESEARCH_SCHEMA, onEvent: (e) => e.type !== "text" && onEvent(e) });
     const probs = r.structured?.problems;
     if (r.ok && Array.isArray(probs) && (probs.length || r.structured.searchUnavailable)) {
       const today = new Date().toISOString().slice(0, 10);
@@ -507,10 +512,8 @@ export async function runVerify(week, text, onEvent) {
   ].join("\n");
   let model = STAGES.verify.model;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--model", model, "--tools", "", "--allowedTools", STAGES.verify.allowed,
-      "--mcp-config", await mcpConfigFor(week.id), "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence",
-      "--effort", STAGES.verify.effort, "--json-schema", JSON.stringify(VERIFY_SCHEMA)];
-    const r = await spawnClaude({ key: week.id, args, prompt, cwd: CLAUDE_CWD, onEvent: (e) => e.type !== "text" && onEvent(e) });
+    const r = await callAgent({ key: week.id, weekId: week.id, model, messages: [{ role: "user", content: prompt }], toolNames: allowedOf(STAGES.verify),
+      effort: STAGES.verify.effort, schema: VERIFY_SCHEMA, onEvent: (e) => e.type !== "text" && onEvent(e) });
     const usedCas = r.tools.some((t) => /cas$/.test(t.name) && t.ok);
     if (r.ok && r.structured && Array.isArray(r.structured.failures) && usedCas) {
       logEvent("stage", "verify-done", { week: week.id, model, checked: r.structured.checked, failures: r.structured.failures.length });
@@ -575,7 +578,7 @@ function saveManifest(week, name, tex) {
 let tagChain = Promise.resolve();
 export function tagInBackground(ids, label) {
   if (!ids.length || process.env.HW_NO_TAG) return;
-  tagChain = tagChain.then(async () => {
+  const job = tagChain.then(async () => {
     const probs = loadCorpus().filter((p) => ids.includes(p.id)).map((p) => structuredClone(p));
     logEvent("tag", "start", { label, problems: probs.length, model: TAG_MODEL });
     try {
@@ -586,6 +589,8 @@ export function tagInBackground(ids, label) {
       logEvent("tag", "done", { label, tagged: r.tagged, withMethods: probs.filter((p) => p.wuNodes.some((n) => n.startsWith("m:"))).length, costUSD: +r.cost.toFixed(4) });
     } catch (e) { logEvent("tag", "error", { label, error: e.message.slice(0, 300) }); }
   });
+  tagChain = job;
+  background(() => job);
 }
 
 // ---------- Wu DAG: snapshot + the student's progress ----------
@@ -639,12 +644,26 @@ async function buildGuessPrompt() {
     "- Word-problem method nodes are banned in these sets; mark them not-yet unless notes show otherwise.",
     "- ladderToWu: for every ladder unit id, the Wu node ids (both graphs) it covers.",
     "- Treat weekly_status.md unit statuses as the teacher's view, but judge from the homework. Don't fill gaps by assumption.",
-    binary.length ? `- Also read these uploaded note files with the Read tool (they are in the current directory): ${binary.map((b) => b.name).join(", ")}` : "",
+    binary.length ? `- Also use the uploaded note files attached after this text: ${binary.map((b) => b.name).join(", ")}` : "",
     "",
     "## Wu content DAG (arrow A -> B: A is used for B)", nodeLines(content, ""), "", edgeLines(content, ""),
     "", "## Wu methods DAG (arrow A -> B: A is used as a sub-step of B; 'rests on' = content node)", nodeLines(methods, "m:"), "", edgeLines(methods, "m:"),
     "", "## Curriculum ladder", ladder, "", "## weekly_status.md", status, "", "## Evidence files", ...files,
   ].join("\n");
+}
+
+// Uploaded images and PDFs go to Claude as content blocks (it used to open them with the CLI's Read tool).
+const MEDIA = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf" };
+async function noteAttachments() {
+  const out = [];
+  for (const n of (await noteFiles()).filter((x) => !TEXT_NOTE.test(x.name))) {
+    const type = MEDIA[n.name.split(".").pop().toLowerCase()];
+    if (!type) { out.push({ type: "text", text: `(note ${n.name} is in a format Claude can't read; ignore it)` }); continue; }
+    const data = (await fsp.readFile(path.join(NOTES, n.name))).toString("base64");
+    out.push({ type: "text", text: `Uploaded note: ${n.name}` });
+    out.push(type === "application/pdf" ? { type: "document", source: { type: "base64", media_type: type, data }, title: n.name } : { type: "image", source: { type: "base64", media_type: type, data } });
+  }
+  return out;
 }
 
 const MAX_RUNS = 50;
@@ -674,15 +693,17 @@ async function runGuess() {
   const log = [];
   const startedAt = Date.now();
   guessJob = { running: true, startedAt, tools: [], error: null, log };
-  const onLog = guessLogger(log);
+  await clearStop("dag-guess");
+  shareJob("dag-guess", guessJob, { force: true });
+  const heartbeat = setInterval(() => shareJob("dag-guess", guessJob), 5000);
+  const logLine = guessLogger(log);
+  const onLog = (e) => { logLine(e); shareJob("dag-guess", guessJob); };
   let r = null;
   const files = (await texFiles()).length + (await noteFiles()).length;
   const base = () => ({ id: `${startedAt}`, at: new Date(startedAt).toISOString(), model: GUESS_MODEL, ms: Date.now() - startedAt, files, usage: r?.usage || null, log });
   try {
-    const prompt = await buildGuessPrompt();
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--model", GUESS_MODEL, "--tools", "Read", "--allowedTools", "Read",
-      "--add-dir", NOTES, "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"];
-    r = await spawnClaude({ key: "dag-guess", args, prompt, cwd: NOTES, onEvent: (e) => { onLog(e); if (e.type === "tool") guessJob.tools.push(`${e.tool.name}: ${e.tool.input?.file_path || ""}`); } });
+    const content = [{ type: "text", text: await buildGuessPrompt() }, ...(await noteAttachments())];
+    r = await callAgent({ key: "dag-guess", model: GUESS_MODEL, messages: [{ role: "user", content }], onEvent: onLog });
     if (!r.ok) throw new Error(r.error);
     let parsed = null;
     const candidates = [...extractBlocks(r.text, "json"), r.text.slice(r.text.indexOf("{"), r.text.lastIndexOf("}") + 1)];
@@ -699,6 +720,9 @@ async function runGuess() {
     guessJob = { running: false, error: e.message };
     logEvent("dag", "guess-failed", { error: e.message });
     try { await saveRun(await dagState(), { ...base(), ok: false, error: e.message, summary: "" }); } catch {}
+  } finally {
+    clearInterval(heartbeat);
+    await shareJob("dag-guess", guessJob, { force: true });
   }
 }
 
@@ -810,7 +834,7 @@ async function handle(req, res) {
   // ---- DAG ----
   if (m === "GET" && p === "/api/dag") {
     const [content, methods, st] = await Promise.all([readJson(path.join(DATA, "wu_dag.json"), null), readJson(path.join(DATA, "wu_methods_dag.json"), null), dagState()]);
-    return send(res, 200, { content, methods, guess: st.guess, overrides: st.overrides || {}, job: guessJob && { ...guessJob, elapsed: guessJob.startedAt ? Date.now() - guessJob.startedAt : 0 }, notes: await noteFiles(), guessModel: GUESS_MODEL, runs: (st.runs || []).map(runSummary) });
+    return send(res, 200, { content, methods, guess: st.guess, overrides: st.overrides || {}, job: (guessJob?.running ? guessJob : (await remoteJob("dag-guess")) || guessJob) && { ...(guessJob?.running ? guessJob : (await remoteJob("dag-guess")) || guessJob), elapsed: guessJob.startedAt ? Date.now() - guessJob.startedAt : 0 }, notes: await noteFiles(), guessModel: GUESS_MODEL, runs: (st.runs || []).map(runSummary) });
   }
   const rm = p.match(/^\/api\/dag\/runs\/(\d+)$/);
   if (m === "GET" && rm) {
@@ -829,11 +853,11 @@ async function handle(req, res) {
     return send(res, 200, { overrides: st.overrides });
   }
   if (m === "POST" && p === "/api/dag/guess") {
-    if (guessJob?.running) return send(res, 409, { error: "already guessing" });
-    runGuess();
+    if (guessJob?.running || (await remoteJob("dag-guess"))) return send(res, 409, { error: "already guessing" });
+    background(runGuess);
     return send(res, 200, { started: true });
   }
-  if (m === "POST" && p === "/api/dag/guess/stop") { running.get("dag-guess")?.kill("SIGTERM"); return send(res, 200, { ok: true }); }
+  if (m === "POST" && p === "/api/dag/guess/stop") { running.get("dag-guess")?.abort(); await requestStop("dag-guess"); return send(res, 200, { ok: true }); }
 
   // ---- notes (evidence for the DAG guess) ----
   if (m === "GET" && p === "/api/notes") return send(res, 200, { notes: await noteFiles() });
@@ -869,10 +893,13 @@ async function handle(req, res) {
   const wm = p.match(/^\/api\/weeks\/([A-Za-z0-9_-]+)(\/message|\/stop|\/finish|\/tools)?$/);
   if (wm) {
     const [, id, action] = wm;
-    if (m === "GET" && !action) return send(res, 200, { ...(await loadWeek(id)), running: running.has(id), live: progress.get(id) || null });
+    if (m === "GET" && !action) {
+      const remote = running.has(id) ? null : await remoteJob(id);
+      return send(res, 200, { ...(await loadWeek(id)), running: running.has(id) || !!remote, live: progress.get(id) || remote?.live || null });
+    }
     if (m === "GET" && action === "/tools") return send(res, 200, { calls: await readToolLog(id) });
     if (m === "DELETE" && !action) {
-      for (const f of [weekPath(id), toolsPath(id), path.join(MCP_DIR, `${id}.json`)]) await fsp.rm(f, { force: true });
+      for (const f of [weekPath(id), toolsPath(id), convoPath(id), path.join(MCP_DIR, `${id}.json`)]) await fsp.rm(f, { force: true });
       return send(res, 200, { ok: true });
     }
     if (m === "POST" && action === "/finish") {
@@ -894,9 +921,9 @@ async function handle(req, res) {
       await saveWeek(week);
       return send(res, 200, { ok: true, corpus });
     }
-    if (m === "POST" && action === "/stop") { stopped.add(id); running.get(id)?.kill("SIGTERM"); return send(res, 200, { ok: true }); }
+    if (m === "POST" && action === "/stop") { stopped.add(id); running.get(id)?.abort(); await requestStop(id); return send(res, 200, { ok: true }); }
     if (m === "POST" && action === "/message") {
-      if (running.has(id)) return send(res, 409, { error: "Claude is already working on this week" });
+      if (running.has(id) || (await remoteJob(id))) return send(res, 409, { error: "Claude is already working on this week" });
       const { text, kind, overrides } = await body(req);
       const week = await loadWeek(id);
       const sys = week.started ? null : await buildSystemPrompt();
@@ -928,6 +955,10 @@ async function handle(req, res) {
       const live = { text: "", tools: [], trace: [], startedAt: Date.now() };
       const addTrace = (k, text) => { const last = live.trace.at(-1); if (last?.k === k) last.text += text; else live.trace.push({ k, text }); };
       progress.set(id, live);
+      await clearStop(id);
+      const share = (force) => shareJob(id, { running: true, live }, { force });
+      share(true);
+      const heartbeat = setInterval(() => share(), 5000);
       let clientGone = false;
       res.on("close", () => (clientGone = true));
       const emit = (e) => {
@@ -936,6 +967,7 @@ async function handle(req, res) {
         if (e.type === "stage") live.trace.push({ k: "stage", stage: e.stage, model: e.model, at: Date.now() - live.startedAt });
         if (e.type === "tool") { live.tools.push({ id: e.tool.id, name: e.tool.name, input: e.tool.input, textAt: live.text.length }); live.trace.push({ k: "tool", id: e.tool.id }); }
         if (e.type === "tool_result") { const t = live.tools.find((x) => x.id === e.tool.id); if (t) Object.assign(t, { ok: e.tool.ok, chars: e.tool.chars, ms: e.tool.ms }); }
+        share();
         if (!clientGone) res.write(JSON.stringify(e.tool ? { type: e.type, name: e.tool.name } : e) + "\n");
       };
       stopped.delete(id);
@@ -1000,6 +1032,8 @@ async function handle(req, res) {
       }
       await saveWeek(week);
       progress.delete(id);
+      clearInterval(heartbeat);
+      await shareJob(id, { running: false }, { force: true });
       emit(result.ok ? { type: "done" } : { type: "error", error: result.error });
       return res.end();
     }
@@ -1015,26 +1049,38 @@ async function handle(req, res) {
   send(res, 404, { error: "not found" });
 }
 
+// The whole app as one request handler: the local server below and the Vercel entry (api/index.mjs) both use it.
+let login = null;
+export async function app(req, res) {
+  login ??= createLogin({ hash: PASSWORD_HASH, dataDir: DATA, trustProxy: process.env.HW_TRUST_PROXY === "1" || !!process.env.VERCEL });
+  const t0 = Date.now();
+  const u = req.url.split("?")[0];
+  const dynamic = !u.startsWith("/") || u.startsWith("/api/") || u.startsWith("/build/") || u === "/";
+  if (dynamic) { try { await mirror.pull(); } catch (e) { logEvent("mirror", "pull-error", { error: e.message }); } }
+  try {
+    try { if (await login.gate(req, res)) return; } catch (e) { if (!res.headersSent) send(res, 500, { error: e.message }); return; }
+    // Static files and the log endpoints themselves would drown everything else out.
+    if (u.startsWith("/api/") && u !== "/api/log" && u !== "/api/logs") res.on("finish", () => logEvent("http", `${req.method} ${u}`, { status: res.statusCode, ms: Date.now() - t0 }));
+    try { await handle(req, res); }
+    catch (e) { logEvent("server", "error", { path: u, error: e.stack || e.message }); if (!res.headersSent) send(res, 500, { error: e.message }); else res.end(); }
+  } finally {
+    // Writes (including a login, which the gate answers itself) go to durable storage before the instance can sleep.
+    if (req.method !== "GET" && mirror.enabled) { try { await mirror.push(); } catch (e) { logEvent("mirror", "push-error", { error: e.message }); } }
+  }
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const loopback = /^(127\.\d+\.\d+\.\d+|::1|localhost)$/.test(HOST);
   if (PASSWORD_HASH && !validHash(PASSWORD_HASH)) { console.error("HW_PASSWORD_HASH isn't a hash from `node ui/scripts/hash-password.mjs`."); process.exit(1); }
   if (!loopback && !PASSWORD_HASH) { console.error(`Refusing to listen on ${HOST} without a login. Set HW_PASSWORD_HASH (node ui/scripts/hash-password.mjs).`); process.exit(1); }
-  const login = createLogin({ hash: PASSWORD_HASH, dataDir: DATA, trustProxy: process.env.HW_TRUST_PROXY === "1" });
   http
-    .createServer(async (req, res) => {
-      const t0 = Date.now();
-      try { if (await login.gate(req, res)) return; } catch (e) { if (!res.headersSent) send(res, 500, { error: e.message }); return; }
-      const u = req.url.split("?")[0];
-      // Static files and the log endpoints themselves would drown everything else out.
-      if (u.startsWith("/api/") && u !== "/api/log" && u !== "/api/logs") res.on("finish", () => logEvent("http", `${req.method} ${u}`, { status: res.statusCode, ms: Date.now() - t0 }));
-      handle(req, res).catch((e) => { logEvent("server", "error", { path: u, error: e.stack || e.message }); if (!res.headersSent) send(res, 500, { error: e.message }); else res.end(); });
-    })
+    .createServer((req, res) => { app(req, res); })
     .listen(PORT, HOST, () => {
       console.log(`Homework UI: http://${loopback ? "localhost" : HOST}:${PORT}  (event log: ${LOG_FILE})`);
-      console.log(login.enabled ? "Login: password required" : "Login: off (local only)");
+      console.log(PASSWORD_HASH ? "Login: password required" : "Login: off (local only)");
       if (!findTectonic()) console.log("Note: Tectonic not found; PDF compile is disabled until you run `brew install tectonic`.");
       const auth = claudeAuth();
-      console.log(auth.mode === "subscription" ? `Claude: subscription (${auth.plan || "logged in"})` : `Claude: ${auth.mode}`);
+      console.log(`Claude: ${auth.mode === "api-key" ? "Anthropic API" : "no API key"}`);
       if (auth.note) console.log("Note: " + auth.note);
       if (!casAvailable()) console.log("Note: CAS unavailable. Run: uv venv ui/data/venv && uv pip install --python ui/data/venv sympy");
     });
