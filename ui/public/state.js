@@ -6,6 +6,7 @@ export const app = {
   week: null,              // current week from the server, or null while setting up
   texOverride: null,       // { src: messageAt, text } when the teacher edits the LaTeX by hand
   finishedWhileHidden: false,
+  peek: null,              // "outline" while looking back at the outline from the final step (breadcrumb)
 };
 export const compiled = new Map(); // tex source -> compile result (or { pending: true })
 
@@ -21,7 +22,7 @@ export function render() {
     const phase = phaseOf();
     const ctx = { phase };
     const wk = app.week?.id || null;
-    if (phase !== lastPhase || wk !== lastWeek) { log("phase", { from: lastPhase, to: phase, week: wk }); lastPhase = phase; lastWeek = wk; }
+    if (phase !== lastPhase || wk !== lastWeek) { if (lastPhase !== null) app.peek = null; log("phase", { from: lastPhase, to: phase, week: wk }); lastPhase = phase; lastWeek = wk; }
     for (const fn of renderers) {
       try { fn(ctx); } catch (e) { console.error("render failed in", fn.name, e); log("render-error", { fn: fn.name, error: String(e.stack || e).slice(0, 500) }); }
     }
@@ -41,6 +42,14 @@ export function splitMessages(week = app.week) {
   if (cut < 0) { const t = msgs.findIndex(hasTex); cut = t < 0 ? msgs.length : t; }
   return { outline: msgs.slice(0, cut), final: msgs.slice(cut) };
 }
+
+// Leave the open week (it stays in History) and show a blank setup. "#new" stops refresh() reopening it.
+export async function newWeek() {
+  app.week = null; app.texOverride = null; app.peek = null;
+  history.replaceState(null, "", "#new");
+  await refresh();
+}
+const clearNewHash = () => { if (location.hash === "#new") history.replaceState(null, "", location.pathname + location.search); };
 
 export function phaseOf() {
   const week = app.week;
@@ -157,7 +166,8 @@ export const elapsed = (from = app.week?.live?.startedAt) => { const s = Math.fl
 
 export async function openWeek(id) {
   app.week = id ? await api(`/api/weeks/${id}`) : null;
-  app.texOverride = null;
+  app.texOverride = null; app.peek = null;
+  if (app.week) clearNewHash();
   if (app.week?.running) startPolling();
   render();
 }
@@ -167,8 +177,9 @@ export async function openWeek(id) {
 export async function refresh(pickWeek = true) {
   const st = await api("/api/state");
   const dirty = S.status !== S.savedStatus;
-  Object.assign(S, { savedStatus: st.status, ladder: st.ladder, texFiles: st.texFiles, student: st.student, weeks: st.weeks, tectonic: st.tectonic, model: st.model, cas: st.cas, auth: st.auth, budget: st.budget, corpusSize: st.corpusSize }, parseLadder(st.ladder));
+  Object.assign(S, { savedStatus: st.status, ladder: st.ladder, texFiles: st.texFiles, student: st.student, curriculum: st.curriculum, weeks: st.weeks, tectonic: st.tectonic, model: st.model, cas: st.cas, auth: st.auth, budget: st.budget, corpusSize: st.corpusSize }, parseLadder(st.ladder));
   document.getElementById("logout").hidden = !st.login;
+  if (st.curriculum) document.getElementById("curriculum").textContent = st.curriculum;
   if (!dirty) S.status = st.status;
   if (pickWeek && !app.week) {
     const open = location.hash === "#new" ? null : st.weeks.find((w) => !w.done);

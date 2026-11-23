@@ -1,0 +1,10 @@
+{
+  "name": "homework-proxy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bundle": "esbuild src/proxy.mjs --bundle --platform=node --target=node22 --format=esm --outfile=api/proxy.mjs --banner:js=\"import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);\"",
+    "deploy": "npm run bundle && vercel deploy --prod --yes"
+  },
+  "devDependencies": { "@vercel/sandbox": "^4.1.0", "esbuild": "^0.25.0" }
+}

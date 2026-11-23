@@ -1,8 +1,10 @@
 // Wu DAG progress map: the content board and the methods board (snapshots of the whiteboards), coloured by
 // how far the student has got. States come from Claude's guess (from homework + uploaded notes) unless the teacher
 // overrides a node ("set by you"). Methods ids are namespaced "m:eNN" everywhere outside their own file.
-// Pure helpers (edgePath, computeStates, ladderHints) are exported for ui/scripts/test.mjs.
-import { $, esc, api, S, parseUnitStatuses, log } from "./lib.js";
+// The sidebar sub-items pick the mode: the content board, the methods board, or the inference history
+// (every guess run with its chain of thought, tool calls and cost). Per-node evidence lives only there.
+// Pure helpers (edgePath, computeStates, ladderHints, statusText) are exported for ui/scripts/test.mjs.
+import { $, $$, esc, api, S, parseUnitStatuses, log, md } from "./lib.js";
 import { fmtUSD } from "./cost.js";
 
 export const LOW_CONFIDENCE = 0.6;
@@ -74,6 +76,32 @@ export function counts(dag, states) {
   return c;
 }
 
+// Plain explanation of one node's state for the node panel. `missing` lists what still blocks a locked node:
+// predecessors not done, and (methods) content nodes it rests on that are not at least partly done.
+export function statusText(dag, board, id, guess, overrides, contentDag) {
+  const n = dag.nodes.find((x) => x.id === id);
+  const st = computeStates(dag, board, guess, overrides, contentDag)[id];
+  const byWho = st.by === "you" ? `set by you${st.at ? " on " + new Date(st.at).toLocaleDateString() : ""}` : st.by === "claude" ? "Claude's guess" : "";
+  const missing = [];
+  if (st.display === "locked") {
+    for (const e of dag.edges) if (e.to === id && rawState(keyOf(board, e.from), guess, overrides).state !== "done") {
+      const p = dag.nodes.find((x) => x.id === e.from); if (p) missing.push({ key: keyOf(board, p.id), title: p.title });
+    }
+    if (board === "methods") for (const c of n?.restsOn || []) if (!["done", "partial"].includes(rawState(c, guess, overrides).state)) {
+      const p = contentDag?.nodes.find((x) => x.id === c); if (p) missing.push({ key: c, title: p.title });
+    }
+  }
+  const label = { done: "Done", partial: "Partly done", ready: "Ready next", locked: "Locked", unused: "Not used" }[st.display];
+  const note = {
+    done: `The student has this. ${byWho}`.trim(),
+    partial: `The student has seen this but it needs more practice. ${byWho}`.trim(),
+    ready: "Not done yet, and everything it needs is done, so it can come next.",
+    locked: missing.length ? "Not done yet. It needs these first:" : "Not done yet.",
+    unused: "Word problems are left out of these sets.",
+  }[st.display];
+  return { display: st.display, label, note, missing, by: st.by };
+}
+
 // Where Claude's ladder → Wu mapping disagrees with weekly_status unit statuses.
 export function ladderHints(statusMd, ladderToWu, guess, overrides) {
   if (!ladderToWu) return [];
@@ -92,7 +120,9 @@ export function ladderHints(statusMd, ladderToWu, guess, overrides) {
 
 // ---------- view ----------
 
-const D = { data: null, board: "content", sel: null, view: null, poll: null, side: "info", dragging: null };
+const D = { data: null, mode: "content", sel: null, view: null, poll: null, side: "info", dragging: null, run: null, runs: {} };
+Object.defineProperty(D, "board", { get: () => (D.mode === "methods" ? "methods" : "content"), enumerable: true });
+const MODE_LABEL = { content: "Content", methods: "Methods", runs: "Inference history" };
 
 function bbox(dag) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -122,7 +152,6 @@ function svgHtml() {
       ${n.kind === "word-problem" ? `<rect class="hatch" width="${n.w}" height="${n.h}" rx="10"/>` : ""}
       <rect class="band" width="${n.w}" height="7" rx="3"/>
       <foreignObject x="10" y="10" width="${n.w - 20}" height="${n.h - 14}"><div xmlns="http://www.w3.org/1999/xhtml" class="nt"><b>${esc(n.title)}</b>${n.detail ? `<span>${esc(n.detail)}</span>` : ""}</div></foreignObject>
-      ${s.low ? `<g class="qbadge" transform="translate(${n.w - 12},-6)"><circle r="11"/><text y="5">?</text></g>` : ""}
       ${s.by === "you" ? `<g class="ubadge" transform="translate(12,-6)"><circle r="9"/><text y="4">✎</text></g>` : ""}
     </g>`;
   }).join("");
@@ -142,36 +171,26 @@ function legendHtml() {
     <span class="lg d-done"></span>done <span class="lg d-partial"></span>partly <span class="lg d-ready"></span>ready next <span class="lg d-locked"></span>locked
     <span class="sep"></span>${kinds.map((k) => `<span class="lg-band k-${k}"></span>${esc(KIND_LABEL[k])}`).join(" ")}
     <span class="sep"></span><span class="lg-edge"></span>used for <span class="lg-edge prove"></span>${D.board === "methods" ? "sub-step" : "needed to prove"}
-    <span class="sep"></span><span class="qb">?</span>low confidence <span class="qb u">✎</span>set by you</div>`;
+    <span class="sep"></span><span class="qb u">✎</span>set by you</div>`;
 }
 
+// The node panel: what the node is, and where the student stands on it. Nothing about how Claude got there.
 function nodePanel(id) {
   const dag = curDag(), n = dag.nodes.find((x) => x.id === id);
   if (!n) return "";
-  const key = keyOf(D.board, id);
+  const t = statusText(dag, D.board, id, D.data.guess, D.data.overrides, D.data.content);
   const s = statesNow()[id];
-  const g = D.data.guess?.nodes?.[key];
-  const preds = dag.edges.filter((e) => e.to === id).map((e) => dag.nodes.find((x) => x.id === e.from)).filter(Boolean);
-  const succ = dag.edges.filter((e) => e.from === id).map((e) => dag.nodes.find((x) => x.id === e.to)).filter(Boolean);
-  const st = statesNow();
-  const content = D.data.content.nodes;
-  const rests = (n.restsOn || []).map((c) => content.find((x) => x.id === c)).filter(Boolean);
-  const units = Object.entries(D.data.guess?.ladderToWu || {}).filter(([, ids]) => ids.includes(key)).map(([u]) => u);
-  const nodeLink = (x) => `<button class="link nl d-${st[x.id]?.display || ""}" data-goto="${x.id}">${esc(x.title)}</button>`;
+  const g = D.data.guess?.nodes?.[keyOf(D.board, id)];
   const btn = (v, label) => `<button class="${s.state === v && s.by === "you" ? "on" : ""}" data-set="${v}">${label}</button>`;
   return `<div class="np">
-    <div class="k">${esc(BOARD_LABEL[D.board])} · ${esc(KIND_LABEL[n.kind] || n.kind)} · ${esc(key)}${n.sections?.length ? ` · §${n.sections.join(", §")}` : ""}</div>
+    <div class="k">${esc(BOARD_LABEL[D.board])} · ${esc(KIND_LABEL[n.kind] || n.kind)}${n.sections?.length ? ` · §${n.sections.join(", §")}` : ""}</div>
     <h3 class="np-title">${esc(n.title)}</h3>
-    ${n.detail ? `<p class="muted">${esc(n.detail)}</p>` : ""}
-    <div class="np-state d-${s.display}">${{ done: "Done", partial: "Partly done", ready: "Ready next", locked: "Locked", unused: "Not used (word problems are banned)" }[s.display]}
-      ${s.by === "you" ? `<span class="muted small">· set by you${s.at ? " " + new Date(s.at).toLocaleDateString() : ""}</span>` : s.by === "claude" ? `<span class="muted small">· Claude's guess${s.confidence != null ? `, ${Math.round(s.confidence * 100)}% sure` : ""}</span>` : ""}</div>
-    <div class="seg np-set">${btn("done", "Done")}${btn("partial", "Partly")}${btn("not-yet", "Not yet")}</div>
-    ${s.by === "you" ? `<button class="link" data-set="">use Claude's guess${g ? ` (${esc(g.state)})` : ""}</button>` : ""}
-    ${(g?.evidence || []).length ? `<h4>Evidence</h4><ul class="ev">${g.evidence.map((e) => `<li><b>${esc(e.file || "")}</b>${e.date ? ` <span class="muted">${esc(e.date)}</span>` : ""}${e.quote ? `<q>${esc(e.quote)}</q>` : ""}</li>`).join("")}</ul>` : g ? `<p class="muted small">No evidence found in the homework or notes.</p>` : ""}
-    ${units.length ? `<h4>Ladder units</h4><p>${units.map((u) => `<b>${esc(u)}</b> ${esc(S.units.find((x) => x.id === u)?.name || "")}`).join("<br>")}</p>` : ""}
-    ${preds.length ? `<h4>${D.board === "methods" ? "Sub-steps" : "Needs"}</h4><div class="nls">${preds.map(nodeLink).join("")}</div>` : ""}
-    ${rests.length ? `<h4>Rests on (content)</h4><div class="nls">${rests.map((x) => `<button class="link nl" data-goto-content="${x.id}">${esc(x.title)}</button>`).join("")}</div>` : ""}
-    ${succ.length ? `<h4>Used for</h4><div class="nls">${succ.map(nodeLink).join("")}</div>` : ""}
+    ${n.detail ? `<p>${esc(n.detail)}</p>` : ""}
+    <div class="np-state d-${t.display}">${esc(t.label)}</div>
+    <p class="np-note">${esc(t.note)}</p>
+    ${t.missing.length ? `<div class="nls">${t.missing.map((x) => `<button class="link nl" data-goto-key="${esc(x.key)}">${esc(x.title)}</button>`).join("")}</div>` : ""}
+    ${n.kind === "word-problem" ? "" : `<h4>Change it</h4><div class="seg np-set">${btn("done", "Done")}${btn("partial", "Partly")}${btn("not-yet", "Not yet")}</div>
+    ${s.by === "you" ? `<button class="link" data-set="">use Claude's guess${g ? ` (${esc(g.state)})` : ""}</button>` : ""}`}
   </div>`;
 }
 
@@ -185,55 +204,143 @@ function notesPanel() {
   </div>`;
 }
 
-function hintsPanel() {
-  const g = D.data.guess;
-  const hints = ladderHints(S.status, g?.ladderToWu, g, D.data.overrides);
-  return `<div class="np">
-    <h3>Last guess</h3>
-    ${g ? `<p>${esc(g.summary || "")}</p><p class="muted small">${new Date(g.at).toLocaleString()} · ${esc(g.model || "")} · ${g.files} files · ${fmtUSD(g.usage?.costUSD)}</p>` : '<p class="muted">No guess yet. Press <b>Guess progress</b>.</p>'}
-    <h3>Against weekly_status</h3>
-    ${hints.length ? `<ul class="hints">${hints.map((h) => `<li class="h-${h.kind}">${esc(h.text)} <span class="nls">${h.ids.map((k) => `<button class="link" data-goto-key="${esc(k)}">${esc(k)}</button>`).join(" ")}</span></li>`).join("")}</ul>` : `<p class="muted small">${g?.ladderToWu ? "No disagreements between the unit statuses and the map." : "Appears after a guess."}</p>`}
-  </div>`;
+// ---------- inference history ----------
+
+const fmtDur = (ms) => (ms == null ? "" : ms < 60000 ? `${Math.round(ms / 1000)}s` : `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`);
+const kb = (c) => (c == null ? "" : c < 1024 ? `${c} chars` : `${Math.round(c / 1024)}K chars`);
+
+function runsListHtml() {
+  const runs = D.data.runs || [], job = D.data.job;
+  const total = runs.reduce((a, r) => a + (r.costUSD || 0), 0);
+  const live = job?.running ? `<li data-run="live" class="${D.run === "live" ? "on" : ""}"><span><span class="spin"></span> Running now</span><small>${esc(D.data.guessModel || "")} · ${fmtDur(job.elapsed)}</small></li>` : "";
+  const rows = runs.map((r) => `<li data-run="${esc(r.id)}" class="${D.run === r.id ? "on" : ""}${r.ok ? "" : " failed"}">
+    <span>${esc(new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))}${r.id === D.data.guess?.runId ? ' <span class="cur-tag">current</span>' : ""}</span>
+    <small>${esc(r.model || "")} · ${r.ok ? fmtUSD(r.costUSD) : "failed"}${r.ms ? " · " + fmtDur(r.ms) : ""}</small></li>`).join("");
+  return `<h3>Guess runs</h3><p class="muted small">${runs.length} run${runs.length === 1 ? "" : "s"} · ${fmtUSD(total)} in all</p>
+    <ul class="h-weeks">${live}${rows || (live ? "" : '<li class="muted">No guesses yet</li>')}</ul>`;
 }
 
+function logHtml(entries, live = false) {
+  if (!entries?.length) return `<p class="muted small">${live ? '<span class="spin"></span> Waiting for Claude…' : "No log was kept for this run (it predates inference history)."}</p>`;
+  return `<ol class="cot">${entries.map((e) => {
+    if (e.t === "tool") return `<li class="cot-tool"><b>${esc(e.name)}</b> <code>${esc(e.input || "")}</code> <span class="muted">${e.ok === false ? "failed" : kb(e.chars)}${e.ms != null ? " · " + fmtDur(e.ms) : ""}</span></li>`;
+    // The guess reply is reasoning prose, then the ```json answer: show the prose, fold the JSON away.
+    const cut = e.t === "text" ? e.text.search(/```json/) : -1;
+    const prose = (cut >= 0 ? e.text.slice(0, cut) : e.text).trim(), json = cut >= 0 ? e.text.slice(cut) : "";
+    const head = e.t === "thinking" ? "Thinking" : "Reasoning";
+    const long = !json && prose.length > 2500;
+    const body = prose ? `<div class="md">${md(prose)}</div>` : "";
+    const raw = json ? `<details class="cot-json"><summary>Raw answer <span class="muted">(JSON, ${kb(json.length)})</span></summary><pre>${esc(json.replace(/^```json\s*|```\s*$/g, ""))}</pre></details>` : "";
+    return `<li class="cot-${e.t}">${long ? `<details><summary>${head} <span class="muted">(${kb(e.text.length)})</span></summary>${body}</details>` : `${body ? `<div class="cot-h">${head}</div>${body}` : ""}${raw}`}</li>`;
+  }).join("")}</ol>`;
+}
+
+function costHtml(u) {
+  if (!u) return "";
+  const models = Object.entries(u.models || {});
+  return `<table class="cost-t"><tr><th>Model</th><th>In</th><th>Out</th><th>Cache read</th><th>Cache write</th><th>Cost</th></tr>
+    ${models.map(([m, x]) => `<tr><td>${esc(m)}</td><td>${x.in}</td><td>${x.out}</td><td>${x.cacheRead}</td><td>${x.cacheWrite}</td><td>${fmtUSD(x.costUSD)}</td></tr>`).join("")}
+    <tr class="tot"><td>Total</td><td colspan="4">${u.numTurns || 0} turn${u.numTurns === 1 ? "" : "s"} · ${fmtDur(u.durationMs)}</td><td>${fmtUSD(u.costUSD)}</td></tr></table>`;
+}
+
+function nodesTableHtml(run) {
+  const nodes = Object.entries(run.nodes || {});
+  if (!nodes.length) return "";
+  const title = (k) => (k.startsWith("m:") ? D.data.methods : D.data.content)?.nodes.find((x) => x.id === k.replace(/^m:/, ""))?.title || "";
+  return `<details class="run-nodes"><summary>Per-node guesses (${nodes.length})</summary><table class="nodes-t"><tr><th>Node</th><th>State</th><th>Sure</th><th>Evidence</th></tr>
+    ${nodes.map(([k, g]) => `<tr><td><button class="link" data-goto-key="${esc(k)}">${esc(k)}</button> ${esc(title(k))}</td><td class="d-${esc(g.state || "")}">${esc(g.state || "")}</td><td>${g.confidence != null ? Math.round(g.confidence * 100) + "%" : ""}</td>
+      <td>${(g.evidence || []).map((e) => `<div><b>${esc(e.file || "")}</b>${e.quote ? ` <q>${esc(e.quote)}</q>` : ""}</div>`).join("")}</td></tr>`).join("")}</table></details>`;
+}
+
+function runDetailHtml() {
+  const job = D.data.job;
+  if (D.run === "live") {
+    if (!job?.running) return '<p class="muted">The run finished. Pick it on the left.</p>';
+    return `<div class="row"><h2>Running now</h2><span class="muted small">${esc(D.data.guessModel || "")} · ${fmtDur(job.elapsed)}</span><span class="spacer"></span><button class="secondary" data-act="stop-guess">Stop</button></div>
+      <h3>Chain of thought</h3>${logHtml(job.log, true)}`;
+  }
+  const r = D.runs[D.run];
+  if (!D.run) return `<div class="h-empty muted">${(D.data.runs || []).length ? "Pick a run on the left." : "No guesses yet. Press <b>Guess progress</b>."}</div>`;
+  if (!r) return '<p class="muted"><span class="spin"></span> Loading…</p>';
+  if (r.error && !r.log) return `<div class="err">${esc(r.error)}</div>`;
+  const hints = r.ok ? ladderHints(S.status, r.ladderToWu, { nodes: r.nodes }, D.data.overrides) : [];
+  return `<div class="row"><h2>${esc(new Date(r.at).toLocaleString())}</h2><span class="muted small">${esc(r.model || "")} · ${r.files ?? "?"} files read</span></div>
+    ${r.ok ? "" : `<div class="err">Failed: ${esc(r.error || "")}</div>`}
+    ${r.summary ? `<h3>Summary</h3><p>${esc(r.summary)}</p>` : ""}
+    <h3>Cost</h3>${costHtml(r.usage) || '<p class="muted small">No usage recorded.</p>'}
+    ${r.ok ? `<h3>Against weekly_status</h3>${hints.length ? `<ul class="hints">${hints.map((h) => `<li class="h-${h.kind}">${esc(h.text)} <span class="nls">${h.ids.map((k) => `<button class="link" data-goto-key="${esc(k)}">${esc(k)}</button>`).join(" ")}</span></li>`).join("")}</ul>` : '<p class="muted small">No disagreements between the unit statuses and this guess.</p>'}` : ""}
+    <h3>Chain of thought</h3>${logHtml(r.log)}
+    ${nodesTableHtml(r)}`;
+}
+
+async function pickRun(id) {
+  D.run = id;
+  drawAll();
+  if (id && id !== "live" && !D.runs[id]) {
+    try { D.runs[id] = await api(`/api/dag/runs/${encodeURIComponent(id)}`); } catch (e) { D.runs[id] = { error: e.message }; }
+    if (D.run === id) drawAll();
+  }
+}
+
+function runsHtml() {
+  return `<div class="h-wrap dag-runs"><aside class="h-list">${runsListHtml()}</aside><div class="h-main run-main">${runDetailHtml()}</div></div>`;
+}
+
+// ---------- page ----------
+
 function headHtml() {
-  const dag = curDag(), c = counts(dag, statesNow()), job = D.data.job;
-  const running = job?.running;
-  return `<h2>Progress map</h2>
-    <div class="seg board-seg">${["content", "methods"].map((b) => `<button data-board="${b}" class="${D.board === b ? "on" : ""}">${BOARD_LABEL[b]}</button>`).join("")}</div>
-    <span class="dag-count"><b>${c.done} of ${c.total} done</b>${c.partial ? ` · ${c.partial} partly` : ""} · ${c.ready} ready</span>
+  const job = D.data.job, running = job?.running;
+  const count = D.mode === "runs" ? "" : (() => { const c = counts(curDag(), statesNow()); return `<span class="dag-count"><b>${c.done} of ${c.total} done</b>${c.partial ? ` · ${c.partial} partly` : ""} · ${c.ready} ready</span>`; })();
+  return `<h2>Progress map <span class="muted">· ${esc(MODE_LABEL[D.mode])}</span></h2>
+    ${count}
     <span class="spacer"></span>
     ${running ? `<span class="muted small"><span class="spin"></span> Claude is reading the homework and notes… ${Math.round((job.elapsed || 0) / 1000)}s${job.tools?.length ? ` · read ${job.tools.length} file${job.tools.length > 1 ? "s" : ""}` : ""}</span><button class="secondary" data-act="stop-guess">Stop</button>`
       : `${job?.error ? `<span class="bad-text small" title="${esc(job.error)}">Last guess failed</span>` : ""}<button class="primary" data-act="guess" title="One ${esc(D.data.guessModel || "")} run over every homework file and your notes, for both boards">${D.data.guess ? "Guess again" : "Guess progress"}</button>`}
-    <button class="ghost" data-act="fit" title="Fit to screen">⤢</button>`;
+    ${D.mode === "runs" ? "" : '<button class="ghost" data-act="fit" title="Fit to screen">⤢</button>'}`;
+}
+
+function syncSidebar() {
+  for (const b of $$("[data-dag]")) b.classList.toggle("on", b.dataset.dag === D.mode);
 }
 
 function drawAll() {
   const d = $("#p-dag");
+  syncSidebar();
   if (!D.data) { d.innerHTML = `<p class="muted">Loading…</p>`; return; }
   if (!curDag()) { d.innerHTML = `<div class="row dag-head"><h2>Progress map</h2></div><p class="err">ui/data/wu_dag.json is missing.</p>`; return; }
+  if (D.mode === "runs") {
+    const keep = $(".run-main", d)?.scrollTop || 0;
+    d.innerHTML = `<div class="dag-head row">${headHtml()}</div>${runsHtml()}`;
+    const m = $(".run-main", d); if (m) m.scrollTop = keep;
+    return;
+  }
   D.view ||= bbox(curDag());
   d.innerHTML = `<div class="dag-head row">${headHtml()}</div>
     <div class="dag-main"><div class="dag-canvas">${svgHtml()}</div>
-      <aside class="dag-side"><div class="tabs">${["info", "notes", "hints"].map((t) => `<button class="tab${D.side === t ? " on" : ""}" data-side="${t}">${{ info: "Node", notes: `Notes (${(D.data.notes || []).length})`, hints: "Summary" }[t]}</button>`).join("")}</div>
-      <div class="side-body">${D.side === "info" ? (D.sel ? nodePanel(D.sel) : '<p class="muted">Click a block to see its evidence and set its state.</p>') : D.side === "notes" ? notesPanel() : hintsPanel()}</div></aside></div>
+      <aside class="dag-side"><div class="tabs">${["info", "notes"].map((t) => `<button class="tab${D.side === t ? " on" : ""}" data-side="${t}">${{ info: "Node", notes: `Notes (${(D.data.notes || []).length})` }[t]}</button>`).join("")}</div>
+      <div class="side-body">${D.side === "info" ? (D.sel ? nodePanel(D.sel) : '<p class="muted">Click a block to see where the student stands on it.</p>') : notesPanel()}</div></aside></div>
     ${legendHtml()}`;
 }
 function drawSvgOnly() { const c = $("#p-dag .dag-canvas"); if (c) c.innerHTML = svgHtml(); }
 
 async function load() {
   D.data = await api("/api/dag");
+  if (D.mode === "runs" && !D.run) return pickRun(D.data.job?.running ? "live" : D.data.runs?.[0]?.id || null).then(startPoll);
   drawAll();
+  startPoll();
+}
+function startPoll() {
   clearInterval(D.poll);
   if (D.data.job?.running) D.poll = setInterval(async () => {
     const was = D.data.job?.running;
     D.data = await api("/api/dag");
-    if (!D.data.job?.running) { clearInterval(D.poll); if (was) D.side = "hints"; }
+    if (!D.data.job?.running) { clearInterval(D.poll); if (was && D.run === "live") return pickRun(D.data.runs?.[0]?.id || null); }
     if (!$("#p-dag").hidden) drawAll();
   }, 2000);
 }
 
-export async function openDag() {
+export async function openDag(btn) {
+  if (btn?.dataset.dag && btn.dataset.dag !== D.mode) { const wasBoard = D.board; D.mode = btn.dataset.dag; if (D.board !== wasBoard) { D.sel = null; D.view = null; } if (D.mode === "runs") D.run = null; }
   if (!D.data) drawAll();
   await load();
 }
@@ -258,16 +365,14 @@ export function initDag() {
   const d = $("#p-dag");
   d.addEventListener("click", async (e) => {
     const t = e.target;
-    const b = t.closest("[data-board]"); if (b) { D.board = b.dataset.board; D.sel = null; D.view = null; return drawAll(); }
     const sd = t.closest("[data-side]"); if (sd) { D.side = sd.dataset.side; return drawAll(); }
     const a = t.closest("[data-act]");
     if (a?.dataset.act === "fit") { D.view = bbox(curDag()); return drawSvgOnly(); }
-    if (a?.dataset.act === "guess") { try { await api("/api/dag/guess", { method: "POST" }); } catch (err) { alert(err.message); } return load(); }
+    if (a?.dataset.act === "guess") { try { await api("/api/dag/guess", { method: "POST" }); } catch (err) { alert(err.message); } if (D.mode === "runs") D.run = "live"; return load(); }
     if (a?.dataset.act === "stop-guess") { await api("/api/dag/guess/stop", { method: "POST" }); return setTimeout(load, 500); }
+    const rn = t.closest("[data-run]"); if (rn) return pickRun(rn.dataset.run);
     const s = t.closest("[data-set]"); if (s && D.sel) return setNode(keyOf(D.board, D.sel), s.dataset.set);
-    const go = t.closest("[data-goto]"); if (go) { D.sel = go.dataset.goto; return drawAll(); }
-    const gc = t.closest("[data-goto-content]"); if (gc) { D.board = "content"; D.sel = gc.dataset.gotoContent; D.view = null; return drawAll(); }
-    const gk = t.closest("[data-goto-key]"); if (gk) { const k = gk.dataset.gotoKey; D.board = k.startsWith("m:") ? "methods" : "content"; D.sel = k.replace(/^m:/, ""); D.side = "info"; D.view = null; return drawAll(); }
+    const gk = t.closest("[data-goto-key]"); if (gk) { const k = gk.dataset.gotoKey; const mode = k.startsWith("m:") ? "methods" : "content"; if (mode !== D.board || D.mode === "runs") D.view = null; D.mode = mode; D.sel = k.replace(/^m:/, ""); D.side = "info"; log("dag-mode", { mode }); return drawAll(); }
     const dn = t.closest("[data-del-note]"); if (dn) { if (!confirm(`Delete ${dn.dataset.delNote}?`)) return; const r = await api(`/api/notes/${encodeURIComponent(dn.dataset.delNote)}`, { method: "DELETE" }); D.data.notes = r.notes; return drawAll(); }
   });
   d.addEventListener("change", (e) => { if (e.target.matches("#dag-drop input")) upload([...e.target.files]); });

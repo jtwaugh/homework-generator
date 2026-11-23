@@ -13,6 +13,7 @@ async function ask(q) {
 }
 
 const pw = await ask("Password: ");
+if (!pw && !process.stdin.isTTY) { console.error("No password given. Run this in a terminal, or pipe one in: read -s PW && echo \"$PW\" | node ui/scripts/hash-password.mjs"); process.exit(1); }
 if (pw.length < 10) { console.error("Use at least 10 characters."); process.exit(1); }
 if (process.stdin.isTTY && (await ask("Again: ")) !== pw) { console.error("They don't match."); process.exit(1); }
 console.log(hashPassword(pw));

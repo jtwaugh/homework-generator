@@ -6,6 +6,10 @@
 !/LICENSE
 !/README.md
 !/examples/
+!/deploy/
+/deploy/vercel/.vercel
+/deploy/vercel/.env*
+/deploy/vercel/api/
 !/ui/
 /ui/data/*
 !/ui/data/wu_dag.json

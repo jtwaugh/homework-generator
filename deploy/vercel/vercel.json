@@ -1,0 +1,5 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/proxy?__p=/$1" }],
+  "functions": { "api/proxy.mjs": { "maxDuration": 120 } }
+}

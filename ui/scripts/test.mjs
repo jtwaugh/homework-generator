@@ -11,7 +11,7 @@ import { decideAuth } from "../lib/auth.mjs";
 import { hashPassword, verifyPassword, validHash, rateLimiter, parseCookies } from "../lib/login.mjs";
 import { stageFor, modelFor, assumptionsOf, STAGES } from "../server.mjs";
 import { parseTopics, serializeTopics, historyTopics } from "../public/topics.js";
-import { computeStates } from "../public/dag.js";
+import { computeStates, statusText } from "../public/dag.js";
 import { S, lintTex, nextSetDate } from "../public/lib.js";
 import { parseTags } from "../lib/tagger.mjs";
 
@@ -92,6 +92,18 @@ test("progress map: Claude's guess shows, your override wins", () => {
   assert.equal(s.a.display, "done"); assert.equal(s.b.display, "partial"); assert.equal(s.c.display, "locked");
   const o = computeStates(dag, "content", guess, { b: { state: "done", at: "x" } });
   assert.equal(o.b.by, "you"); assert.equal(o.c.display, "ready");
+});
+test("progress map: node status explains what blocks a locked node", () => {
+  const content = { nodes: [{ id: "a", kind: "definition", title: "A" }, { id: "b", kind: "theorem", title: "B" }], edges: [{ from: "a", to: "b" }] };
+  const methods = { nodes: [{ id: "x", kind: "method", title: "X", restsOn: ["b"] }], edges: [] };
+  const guess = { nodes: { a: { state: "partial" } } };
+  const b = statusText(content, "content", "b", guess, {}, content);
+  assert.equal(b.display, "locked"); assert.deepEqual(b.missing, [{ key: "a", title: "A" }]);
+  const x = statusText(methods, "methods", "x", guess, {}, content);
+  assert.equal(x.display, "locked"); assert.deepEqual(x.missing, [{ key: "b", title: "B" }]);
+  const r = statusText(content, "content", "b", guess, { a: { state: "done", at: "2026-11-01" } }, content);
+  assert.equal(r.display, "ready"); assert.equal(r.missing.length, 0);
+  assert.match(statusText(content, "content", "a", guess, {}, content).note, /Claude's guess/);
 });
 
 // ---------- fuzzy retrieval, preflight, stage routing ----------

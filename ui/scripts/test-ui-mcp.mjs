@@ -60,13 +60,16 @@ try {
   await tool("ui_eval", { js: "window.confirm = () => true; window.alert = (m) => console.error('alert: ' + m); return 'dialogs stubbed'" });
 
   console.log("Check and save (a week waiting in Final)");
-  await step("open History", "ui_click", sel("[data-page=history]"), /ui: page from=create to=history/);
+  await step("open History", "ui_click", sel(".nav-item[data-page=history]"), /ui: page from=create to=history/);
   await step("open the week", "ui_click", sel('#p-history li[data-id="TEST-final"]'), /GET \/api\/weeks\/TEST-final status=200/, /ui: page from=history to=create/);
   await step("PDF compiles", "ui_wait", { until: "__hw.summary().final?.compile === 'ok'", timeoutMs: 180000 }, /true after/);
   await step("Save & finish", "ui_click", sel("#v-final .savebar .main"), /POST \/api\/weeks\/TEST-final\/finish status=200/, /phase from=final to=done/);
+  await step("Outline breadcrumb looks back", "ui_click", sel("#strip [data-step=outline]"), /step-click step=outline/);
+  await step("outline shown read-only", "ui_eval", { js: "__hw.summary().peek + ' ' + document.querySelector('#v-outline .main').textContent" }, /outline Back to saved/);
+  await step("back to saved", "ui_click", sel("#v-outline .main"), /click/);
 
   console.log("Review the outline");
-  await step("open the week", "ui_click", sel("[data-page=history]"), /ui: page from=\w+ to=history/);
+  await step("open the week", "ui_click", sel(".nav-item[data-page=history]"), /ui: page from=\w+ to=history/);
   await step("list loads", "ui_wait", { until: "!!document.querySelector('#p-history li[data-id=\"TEST-outline\"]')", timeoutMs: 10000 }, /true after/);
   await step("pick it", "ui_click", sel('#p-history li[data-id="TEST-outline"]'), /GET \/api\/weeks\/TEST-outline/);
   await step("Start over", "ui_click", sel("#start-over"), /DELETE \/api\/weeks\/TEST-outline status=200/, /phase from=outline to=setup/);
@@ -82,12 +85,19 @@ try {
   await step("Quick set is offered", "ui_eval", { js: "document.querySelector('#quick-set')?.textContent" }, /Quick set/);
 
   console.log("Sidebar tabs");
-  await step("Progress Map tab", "ui_click", sel("[data-page=dag]"), /ui: page from=\w+ to=dag/, /GET \/api\/dag status=200/);
+  await step("Progress Map tab", "ui_click", sel(".nav-item[data-page=dag]"), /ui: page from=\w+ to=dag/, /GET \/api\/dag status=200/);
+  await step("Methods sub-item", "ui_click", sel("[data-dag=methods]"), /GET \/api\/dag status=200/);
+  await step("shows the methods board", "ui_eval", { js: "__hw.summary().dag.board" }, /methods/);
+  await step("Inference history sub-item", "ui_click", sel("[data-dag=runs]"), /GET \/api\/dag status=200/);
+  await step("lists runs", "ui_eval", { js: "document.querySelector('#p-dag .dag-runs') ? 'runs view' : 'missing'" }, /runs view/);
+  await step("Content sub-item", "ui_click", sel("[data-dag=content]"), /GET \/api\/dag status=200/);
   await step("select a block", "ui_click", sel("#p-dag g.node[data-id=e28]"), /dag-select board=content id=e28/);
   await step("mark it done", "ui_click", sel("#p-dag [data-set=done]"), /PUT \/api\/dag status=200/);
-  await step("Corpus tab", "ui_click", sel("[data-page=corpus]"), /ui: page from=dag to=corpus/, /GET \/api\/corpus status=200/);
+  await step("Corpus tab", "ui_click", sel(".nav-item[data-page=corpus]"), /ui: page from=dag to=corpus/, /GET \/api\/corpus status=200/);
   await step("★ a problem", "ui_click", sel("#p-corpus .cp .star"), /data-set=favorite/, /PATCH \/api\/corpus\/\S+ status=200/);
-  await step("back to Create Homework", "ui_click", sel("[data-page=create]"), /ui: page from=corpus to=create/);
+  await step("back to Create Homework", "ui_click", sel(".nav-item[data-page=create]"), /ui: page from=corpus to=create/);
+  await step("Create Homework again: fresh setup", "ui_click", sel(".nav-item[data-page=create]"), /page-reselect page=create/, /GET \/api\/state status=200/);
+  await step("setup shown", "ui_eval", { js: "__hw.summary().phase" }, /setup/);
   await step("Cost opens", "ui_click", sel("[data-open=cost]"), /dialog-open id=cost-dlg/);
   await step("✕ closes", "ui_click", sel("#cost-dlg form button"), /dialog-close id=cost-dlg/);
 

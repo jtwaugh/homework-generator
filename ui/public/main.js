@@ -1,7 +1,7 @@
 // Entry point: imports every view module (each registers its renderer), wires the sidebar tabs,
 // exposes window.__hw for the dev harness, and loads the server state.
 import { $, S, parseWeekInput, flushLog } from "./lib.js";
-import { app, render, refresh, phaseOf, currentFinal, compiled, problemsOf, casCalls, openWeek } from "./state.js";
+import { app, render, refresh, phaseOf, currentFinal, compiled, problemsOf, casCalls, openWeek, newWeek } from "./state.js";
 import { weekCost, monthCost, openCost } from "./cost.js";
 import "./chat.js";
 import { unitsModel, unitsUI, topics, loadTopicSources } from "./work.js";
@@ -9,7 +9,7 @@ import { openHistory } from "./history.js";
 import { openDag, initDag, dagState } from "./dag.js";
 import { openCorpus, corpusState } from "./corpus.js";
 import { initUiLog, flushPending } from "./uilog.js";
-import { initPages, onShow, pages } from "./pages.js";
+import { initPages, onShow, onReselect, pages } from "./pages.js";
 
 initUiLog();
 
@@ -19,6 +19,7 @@ document.addEventListener("click", (e) => {
   ({ cost: openCost })[o.dataset.open]?.();
 });
 onShow("dag", openDag);
+onReselect("create", newWeek); // clicking Create Homework again: a fresh week on the setup page
 onShow("corpus", openCorpus);
 onShow("history", openHistory);
 $("#logout").onclick = () => fetch("/api/logout", { method: "POST" }).finally(() => location.replace("/login"));
@@ -37,7 +38,7 @@ window.__hw = {
     const wc = weekCost(), mc = monthCost();
     const cas = casCalls();
     return {
-      phase, page: pages.current,
+      phase, page: pages.current, peek: app.peek,
       week: week && { id: week.id, title: week.title, running: !!week.running, messages: week.messages.map((m) => `${m.role}${m.kind ? ":" + m.kind : ""}${m.error ? " ERROR " + m.error : ""} (${m.text.length} chars${m.tools?.length ? `, ${m.tools.length} tools` : ""})`), live: week.live && { chars: week.live.text.length, tools: week.live.tools.length }, done: !!week.done, savedAs: week.savedAs, sendError: week.sendError, corpusSaved: week.corpusSaved },
       statusDirty: S.status !== S.savedStatus,
       weekInput: S.status ? parseWeekInput(S.status) : null,
@@ -48,7 +49,7 @@ window.__hw = {
       cas: { available: !!S.cas, calls: cas.length, failed: cas.filter((x) => x.ok === false).length },
       corpusSize: S.corpusSize, tectonic: S.tectonic, model: S.model,
       dialogs: [...document.querySelectorAll("dialog[open]")].map((d) => d.id),
-      dag: !$("#p-dag").hidden ? { board: dagState.board, selected: dagState.sel, side: dagState.side, view: dagState.view && Object.values(dagState.view).map(Math.round).join(" "), notes: dagState.data?.notes?.length ?? null, guessRunning: !!dagState.data?.job?.running } : null,
+      dag: !$("#p-dag").hidden ? { mode: dagState.mode, board: dagState.board, run: dagState.run, runs: dagState.data?.runs?.length ?? null, selected: dagState.sel, side: dagState.side, view: dagState.view && Object.values(dagState.view).map(Math.round).join(" "), notes: dagState.data?.notes?.length ?? null, guessRunning: !!dagState.data?.job?.running } : null,
       corpus: !$("#p-corpus").hidden ? { q: corpusState.q, unit: corpusState.unit, status: corpusState.status, source: corpusState.source, shown: document.querySelectorAll("#p-corpus .cp").length } : null,
     };
   },

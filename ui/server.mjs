@@ -101,6 +101,8 @@ const INSTRUCTIONS_FILE = path.join(ROOT, "project_instructions.md");
 const LADDER_FILE = path.join(ROOT, "curriculum_ladder.md");
 // The student's name, shown in the UI and used in prompts. Set HW_STUDENT=<name>; the default is generic.
 const STUDENT = (process.env.HW_STUDENT || "").trim();
+// The curriculum's name, shown in the sidebar header. Set HW_CURRICULUM=<name> to change it.
+const CURRICULUM = (process.env.HW_CURRICULUM || "").trim() || "Wu Algebra";
 // First run: copy the example workflow, ladder and status into the homework folder if they aren't there yet.
 for (const f of [INSTRUCTIONS_FILE, LADDER_FILE, STATUS_FILE]) {
   const ex = path.join(UI_DIR, "..", "examples", path.basename(f));
@@ -585,7 +587,16 @@ export function tagInBackground(ids, label) {
 
 // ---------- Wu DAG: snapshot + the student's progress ----------
 
-async function dagState() { return readJson(DAG_STATE, { guess: null, overrides: {} }); }
+async function dagState() {
+  const st = await readJson(DAG_STATE, { guess: null, overrides: {} });
+  // Guesses made before run history existed: keep the last one as a run without a log.
+  if (st.guess && !st.runs) {
+    const g = st.guess, id = `${Date.parse(g.at) || 0}`;
+    g.runId = id;
+    st.runs = [{ id, at: g.at, model: g.model, ok: true, files: g.files, usage: g.usage || null, summary: g.summary || "", nodes: g.nodes, ladderToWu: g.ladderToWu || {}, log: [] }];
+  }
+  return st;
+}
 let guessJob = null; // { running, startedAt, tools, error }
 
 async function noteFiles() {
@@ -613,7 +624,8 @@ async function buildGuessPrompt() {
   return [
     `You are estimating how far a student${STUDENT ? ` (${STUDENT})` : ""} has got through H. Wu's algebra, using two dependency graphs of the material and the evidence below: every homework set the student was given (with dates), the teacher's weekly_status.md, and any uploaded notes.`,
     "",
-    "Return ONLY one ```json fenced block with this shape:",
+    "First write your reasoning under a \"## Reasoning\" heading, for the teacher to read later: go through the material in order (a few lines per ladder unit or group of nodes), saying what the homework and notes show and why you chose each state. Call out anything uncertain or where you disagree with weekly_status.md. Keep it under about 700 words.",
+    "Then give one ```json fenced block with this shape:",
     '{"nodes": {"e26": {"state": "done", "confidence": 0.9, "evidence": [{"file": "hw_9_11_2026.tex", "date": "2026-09-11", "quote": "short quote"}]}, "m:e46": {...}},',
     ' "ladderToWu": {"U05": ["e64", "m:e46"]},',
     ' "summary": "two sentences"}',
@@ -632,14 +644,42 @@ async function buildGuessPrompt() {
   ].join("\n");
 }
 
+const MAX_RUNS = 50;
+// One entry per thinking block, text block or tool call; consecutive deltas merge into one entry.
+function guessLogger(log) {
+  return (e) => {
+    const last = log[log.length - 1];
+    if (e.type === "thinking" || e.type === "text") {
+      if (last?.t === e.type) last.text += e.text;
+      else log.push({ t: e.type, text: e.text, at: Date.now() });
+    } else if (e.type === "tool") {
+      log.push({ t: "tool", id: e.tool.id, name: e.tool.name, input: e.tool.input?.file_path || short(e.tool.input, 200), at: Date.now() });
+    } else if (e.type === "tool_result") {
+      const t = log.find((x) => x.t === "tool" && x.id === e.tool.id);
+      if (t) Object.assign(t, { ok: e.tool.ok, chars: e.tool.chars, ms: e.tool.ms });
+    }
+  };
+}
+
+async function saveRun(st, run) {
+  st.runs = [run, ...(st.runs || [])].slice(0, MAX_RUNS);
+  await fsp.writeFile(DAG_STATE, JSON.stringify(st, null, 1));
+}
+
 async function runGuess() {
   if (guessJob?.running) return;
-  guessJob = { running: true, startedAt: Date.now(), tools: [], error: null };
+  const log = [];
+  const startedAt = Date.now();
+  guessJob = { running: true, startedAt, tools: [], error: null, log };
+  const onLog = guessLogger(log);
+  let r = null;
+  const files = (await texFiles()).length + (await noteFiles()).length;
+  const base = () => ({ id: `${startedAt}`, at: new Date(startedAt).toISOString(), model: GUESS_MODEL, ms: Date.now() - startedAt, files, usage: r?.usage || null, log });
   try {
     const prompt = await buildGuessPrompt();
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--model", GUESS_MODEL, "--tools", "Read", "--allowedTools", "Read",
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--model", GUESS_MODEL, "--tools", "Read", "--allowedTools", "Read",
       "--add-dir", NOTES, "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"];
-    const r = await spawnClaude({ key: "dag-guess", args, prompt, cwd: NOTES, onEvent: (e) => e.type === "tool" && guessJob.tools.push(`${e.tool.name}: ${e.tool.input?.file_path || ""}`) });
+    r = await spawnClaude({ key: "dag-guess", args, prompt, cwd: NOTES, onEvent: (e) => { onLog(e); if (e.type === "tool") guessJob.tools.push(`${e.tool.name}: ${e.tool.input?.file_path || ""}`); } });
     if (!r.ok) throw new Error(r.error);
     let parsed = null;
     const candidates = [...extractBlocks(r.text, "json"), r.text.slice(r.text.indexOf("{"), r.text.lastIndexOf("}") + 1)];
@@ -648,15 +688,18 @@ async function runGuess() {
     }
     if (!parsed) throw new Error("Claude's reply had no JSON nodes block");
     const st = await dagState();
-    st.guess = { at: new Date().toISOString(), model: GUESS_MODEL, nodes: parsed.nodes, ladderToWu: parsed.ladderToWu || {}, summary: parsed.summary || "", usage: r.usage, files: (await texFiles()).length + (await noteFiles()).length };
-    await fsp.writeFile(DAG_STATE, JSON.stringify(st, null, 1));
+    st.guess = { at: new Date().toISOString(), model: GUESS_MODEL, nodes: parsed.nodes, ladderToWu: parsed.ladderToWu || {}, summary: parsed.summary || "", usage: r.usage, files, runId: `${startedAt}` };
+    await saveRun(st, { ...base(), ok: true, summary: st.guess.summary, nodes: parsed.nodes, ladderToWu: st.guess.ladderToWu });
     guessJob = { running: false, finishedAt: Date.now(), costUSD: r.usage?.costUSD || 0 };
     logEvent("dag", "guess-done", { nodes: Object.keys(parsed.nodes).length, costUSD: r.usage?.costUSD });
   } catch (e) {
     guessJob = { running: false, error: e.message };
     logEvent("dag", "guess-failed", { error: e.message });
+    try { await saveRun(await dagState(), { ...base(), ok: false, error: e.message, summary: "" }); } catch {}
   }
 }
+
+const runSummary = (x) => ({ id: x.id, at: x.at, model: x.model, ok: x.ok, error: x.error, costUSD: x.usage?.costUSD || 0, files: x.files, summary: x.summary, ms: x.ms });
 
 // ---------- routes ----------
 
@@ -681,6 +724,7 @@ async function handle(req, res) {
       ladder: await read(LADDER_FILE),
       texFiles: await texFiles(),
       student: STUDENT,
+      curriculum: CURRICULUM,
       weeks: await listWeeks(),
       tectonic: !!findTectonic(),
       model: DEFAULT_MODEL,
@@ -763,7 +807,12 @@ async function handle(req, res) {
   // ---- DAG ----
   if (m === "GET" && p === "/api/dag") {
     const [content, methods, st] = await Promise.all([readJson(path.join(DATA, "wu_dag.json"), null), readJson(path.join(DATA, "wu_methods_dag.json"), null), dagState()]);
-    return send(res, 200, { content, methods, guess: st.guess, overrides: st.overrides || {}, job: guessJob && { ...guessJob, elapsed: guessJob.startedAt ? Date.now() - guessJob.startedAt : 0 }, notes: await noteFiles(), guessModel: GUESS_MODEL });
+    return send(res, 200, { content, methods, guess: st.guess, overrides: st.overrides || {}, job: guessJob && { ...guessJob, elapsed: guessJob.startedAt ? Date.now() - guessJob.startedAt : 0 }, notes: await noteFiles(), guessModel: GUESS_MODEL, runs: (st.runs || []).map(runSummary) });
+  }
+  const rm = p.match(/^\/api\/dag\/runs\/(\d+)$/);
+  if (m === "GET" && rm) {
+    const run = ((await dagState()).runs || []).find((x) => x.id === rm[1]);
+    return run ? send(res, 200, run) : send(res, 404, { error: "no such run" });
   }
   if (m === "PUT" && p === "/api/dag") {
     const { id, state, note } = await body(req);

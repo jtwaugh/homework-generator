@@ -9,9 +9,14 @@
 </head>
 <body>
   <nav class="sidebar" aria-label="Main">
-    <h1>Homework</h1>
+    <h1 id="curriculum">Wu Algebra</h1>
     <button class="nav-item" data-page="create" title="Create Homework"><span class="ni" aria-hidden="true">✎</span><span class="nl-text">Create Homework</span></button>
     <button class="nav-item" data-page="dag" title="Progress Map"><span class="ni" aria-hidden="true">◇</span><span class="nl-text">Progress Map</span></button>
+    <div class="nav-sub" id="dag-sub" hidden>
+      <button class="nav-subitem" data-page="dag" data-dag="content">Content</button>
+      <button class="nav-subitem" data-page="dag" data-dag="methods">Methods</button>
+      <button class="nav-subitem" data-page="dag" data-dag="runs">Inference history</button>
+    </div>
     <button class="nav-item" data-page="corpus" title="Corpus"><span class="ni" aria-hidden="true">▤</span><span class="nl-text">Corpus</span></button>
     <button class="nav-item" data-page="history" title="History"><span class="ni" aria-hidden="true">↺</span><span class="nl-text">History</span></button>
     <span class="spacer"></span>

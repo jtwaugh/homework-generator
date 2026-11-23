@@ -1,7 +1,7 @@
 // Right pane: only the current deliverable and its one primary button (setup → outline → final → done),
 // plus the header (progress strip, Next pill) that summarises where the week is.
 import { $, $$, esc, api, md, S, log, nextSetDate, STATUSES, parseUnitStatuses, writeUnitStatuses, sectionBounds, parseWeekInput, writeWeekInput, diffHtml } from "./lib.js";
-import { app, onRender, render, refresh, send, phaseOf, splitMessages, isCheckpoint, hasTex, currentFinal, compile, compiled, problemsOf, fnameFromDate, updateStatus, flushStatus, casCalls, openWeek } from "./state.js";
+import { app, onRender, render, refresh, send, phaseOf, splitMessages, isCheckpoint, hasTex, currentFinal, compile, compiled, problemsOf, fnameFromDate, updateStatus, flushStatus, casCalls, openWeek, newWeek } from "./state.js";
 import { mountTopics, buildSources, historyTopics, serializeTopics, parseTopics } from "./topics.js";
 import { composerText, clearComposer } from "./chat.js";
 
@@ -300,8 +300,22 @@ $("#generate").onclick = () => guardSetup() && startWeek("Follow the weekly work
 
 const lastAssistant = (msgs) => [...msgs].reverse().find((m) => m.role === "assistant");
 
+// Looking back at the approved outline from the final step (Outline breadcrumb): read-only, one way back.
+function renderOutlinePeek() {
+  const el = $("#v-outline");
+  const lastA = lastAssistant(splitMessages().outline);
+  $(".v-title", el).textContent = "Outline (approved)";
+  $(".v-note", el).textContent = "The outline you approved, for reference. Changes now go in the chat.";
+  $(".latest", el).innerHTML = lastA ? md(lastA.text) : `<p class="muted">No outline in this week.</p>`;
+  $(".latest", el).classList.remove("dim");
+  $("#start-over").hidden = true; $(".alt", el).hidden = true;
+  const main = $(".main", el); main.hidden = false; main.dataset.act = "back";
+  main.textContent = app.week.done ? "Back to saved →" : "Back to final →";
+}
+
 function renderOutline(phase) {
   const el = $("#v-outline");
+  $("#start-over").hidden = false;
   const { outline } = splitMessages();
   const lastA = lastAssistant(outline);
   const running = phase === "outline-running";
@@ -326,6 +340,7 @@ function renderOutline(phase) {
 }
 $("#v-outline .main").onclick = () => {
   const act = $("#v-outline .main").dataset.act;
+  if (act === "back") { app.peek = null; return render(); }
   const { outline } = splitMessages();
   if (act === "retry") { const s = outline.find((m) => m.kind === "start"); app.week.messages = []; return send("start", s.text); }
   const t = composerText(); clearComposer();
@@ -466,7 +481,7 @@ function renderDone() {
     + (cs && !cs.error ? `<br><span class="muted">${cs.total ? `${cs.added} new problem${cs.added === 1 ? "" : "s"} added to the corpus${cs.merged ? `, ${cs.merged} already there marked used` : ""}.` : "No problem manifest came with the final, so the corpus is unchanged."}</span>` : "")
     + (cs?.error ? `<br><span class="warn-text">Corpus not updated: ${esc(cs.error)}</span>` : "");
 }
-$("#v-done .next-week").onclick = async () => { app.week = null; app.texOverride = null; await refresh(); };
+$("#v-done .next-week").onclick = () => newWeek();
 
 // ======================= header =======================
 
@@ -474,7 +489,14 @@ const STEPS = [["setup", "Setup"], ["outline", "Outline"], ["final", "Final"], [
 function renderHeader(phase) {
   const base = phase.replace("-running", "");
   const idx = STEPS.findIndex(([k]) => k === base);
-  $("#strip").innerHTML = STEPS.map(([k, label], i) => `<li class="${i < idx || base === "done" ? "done" : i === idx ? "on" : ""}${i === idx && phase.endsWith("running") ? " busy" : ""}">${label}</li>`).join("");
+  const shown = app.peek ? STEPS.findIndex(([k]) => k === app.peek) : idx;
+  // Setup always starts a fresh week; Outline looks back from final/saved; the current step returns from a look back.
+  const clickable = (k, i) => (k === "setup" && app.week) || (k === "outline" && idx > 1 && i !== shown) || (app.peek && i === idx);
+  $("#strip").innerHTML = STEPS.map(([k, label], i) => {
+    const cls = i === shown ? "on" : i < idx || base === "done" ? "done" : "";
+    const busy = i === idx && phase.endsWith("running") ? " busy" : "";
+    return `<li class="${cls}${busy}">${clickable(k, i) ? `<button data-step="${k}" title="${k === "setup" ? "Start a new week (this one stays in History)" : k === "outline" ? "Look back at the approved outline" : "Back to this step"}">${label}</button>` : label}</li>`;
+  }).join("");
 
   const n = $("#next");
   let text = "", cls = "";
@@ -504,18 +526,29 @@ function renderHeader(phase) {
   n.textContent = text; n.className = "next " + cls;
   $("#week-name").textContent = app.week ? app.week.title : "";
   const icon = cls === "wait" ? "⏳ " : app.finishedWhileHidden ? "🟢 " : "";
-  document.title = icon + (app.week ? app.week.title + " · " : "") + (S.student ? `${S.student} HW` : "Homework");
+  document.title = icon + (app.week ? app.week.title + " · " : "") + (S.student ? `${S.student} HW` : S.curriculum || "Homework");
 }
+$("#strip").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-step]"); if (!b) return;
+  const k = b.dataset.step;
+  log("step-click", { step: k, phase: phaseOf() });
+  if (k === "setup") return newWeek();
+  app.peek = k === "outline" ? "outline" : null;
+  render();
+});
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { app.finishedWhileHidden = false; render(); } });
 
 // ======================= dispatch =======================
 
 onRender(function renderWork({ phase }) {
   if (!S.ladder) return; // not loaded yet
-  const base = phase.replace("-running", "");
+  const real = phase.replace("-running", "");
+  if (app.peek && !["final", "done"].includes(real)) app.peek = null;
+  const base = app.peek || real;
   for (const v of ["setup", "outline", "final", "done"]) $("#v-" + v).hidden = v !== base;
   if (base === "setup") renderSetup();
-  if (base === "outline") renderOutline(phase);
+  if (app.peek === "outline") renderOutlinePeek();
+  else if (base === "outline") renderOutline(phase);
   if (base === "final") renderFinal(phase);
   if (base === "done") renderDone();
   renderHeader(phase);

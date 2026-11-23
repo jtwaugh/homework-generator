@@ -34,7 +34,7 @@ Claude has three local tools (`ui/mcp/hw-tools.mjs`): `cas` (sympy, to check ans
 
 Claude keeps working if you close the tab. Each week is one resumable Claude session, stored in `ui/data/weeks/`.
 
-Options: `HW_STUDENT=<name>` (shown in the UI and prompts; default generic), `PORT=5000`, `HW_TAG_MODEL` (default Haiku), `HW_NO_TAG=1`, `HW_GOLD_FILES=3` (how many recent sets go in every prompt as style examples), `HW_MODEL=claude-sonnet-5-5`, `HW_GUESS_MODEL`, `HW_BUDGET_USD`, `HW_ALLOW_API_KEY=1` (use `ANTHROPIC_API_KEY` when no Claude subscription is logged in), `HW_PASSWORD_HASH` (require a login; from `node ui/scripts/hash-password.mjs`), `HW_HOST` (listen address, default 127.0.0.1; anything else needs a password), `HW_TRUST_PROXY=1` (behind a reverse proxy), `HW_LOG_QUIET=1`. Open `/#new` to skip an unfinished week.
+Options: `HW_STUDENT=<name>` (shown in the UI and prompts; default generic), `HW_CURRICULUM=<name>` (sidebar header; default Wu Algebra), `PORT=5000`, `HW_TAG_MODEL` (default Haiku), `HW_NO_TAG=1`, `HW_GOLD_FILES=3` (how many recent sets go in every prompt as style examples), `HW_MODEL=claude-sonnet-5-5`, `HW_GUESS_MODEL`, `HW_BUDGET_USD`, `HW_ALLOW_API_KEY=1` (use `ANTHROPIC_API_KEY` when no Claude subscription is logged in), `HW_PASSWORD_HASH` (require a login; from `node ui/scripts/hash-password.mjs`), `HW_HOST` (listen address, default 127.0.0.1; anything else needs a password), `HW_TRUST_PROXY=1` (behind a reverse proxy), `HW_LOG_QUIET=1`. Open `/#new` to skip an unfinished week.
 
 ## Where things live
 

@@ -144,6 +144,27 @@ there's no login, and the server refuses to listen on anything but localhost (`H
 with a password). Use a strong password: anyone who logs in can spend your API credit, and Claude's `cas` tool
 runs Python on the server.
 
+### Or: on Vercel, in a persistent Sandbox
+
+`deploy/vercel/` runs the app unchanged inside a persistent [Vercel Sandbox](https://vercel.com/docs/sandbox) (a
+Linux VM whose filesystem is snapshotted when it sleeps), with a small Vercel function in front that wakes it, starts
+the server and proxies every request. It sleeps 20 minutes after the last request and wakes in about 5 seconds.
+Hobby plans cap a sandbox session at 45 minutes, after which the next request starts a new one; a generation still
+running at that moment dies and can be retried.
+
+```
+cd deploy/vercel && npm install
+vercel link --project homework                          # once
+vercel env add ANTHROPIC_API_KEY production --sensitive  # and HW_ALLOW_API_KEY, HW_PASSWORD_HASH, HW_BUDGET_USD, HW_STUDENT
+vercel env pull .env.local && node --env-file=.env.local provision.mjs   # uploads code, homework files, ui/data; installs claude, tectonic, sympy
+npm run deploy                                          # bundles api/proxy.mjs and deploys
+vercel domains add homework.example.com homework
+```
+
+Re-run `provision.mjs` after changing the app to upload the new code and restart the server (it leaves the
+sandbox's data alone; `--fresh` recreates the sandbox from your local data). The `.env.local` OIDC token expires after
+12 hours; pull it again if provisioning says you are not authorized.
+
 ## Add your own homework data
 
 1. **Put your past sets in the repo root** as `hw_M_D_YYYY.tex`, e.g. `hw_9_24_2026.tex`. The date in the name orders
