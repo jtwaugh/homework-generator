@@ -331,13 +331,18 @@ async function saveWeek(w) {
   await fsp.writeFile(weekPath(w.id), JSON.stringify(w, null, 2));
 }
 const weekCost = (w) => w.messages.reduce((s, m) => s + (m.usage?.costUSD || 0), 0);
+// enrollmentId: the student × course a week belongs to (stamped at creation; older weeks: their assignment's,
+// else the first enrollment, which is the one the v0 migration created).
 async function listWeeks() {
+  const { db } = C();
+  const owner = new Map(db.prepare("SELECT id, enrollment_id FROM assignment").all().map((r) => [r.id, r.enrollment_id]));
+  const first = db.prepare("SELECT MIN(id) id FROM enrollment").get()?.id ?? null;
   const out = [];
   for (const f of await fsp.readdir(WEEKS)) {
     if (!f.endsWith(".json")) continue;
     try {
       const w = JSON.parse(await read(path.join(WEEKS, f)));
-      out.push({ id: w.id, title: w.title, createdAt: w.createdAt, turns: w.messages.length, done: !!w.done, savedAs: w.savedAs || null, model: w.model, costUSD: weekCost(w) });
+      out.push({ id: w.id, title: w.title, createdAt: w.createdAt, turns: w.messages.length, done: !!w.done, savedAs: w.savedAs || null, model: w.model, costUSD: weekCost(w), enrollmentId: w.enrollmentId ?? owner.get(w.id) ?? first });
     } catch {}
   }
   return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -617,7 +622,7 @@ function saveManifest(week, name, tex) {
     if (orig) { if (orig.status === "candidate") orig.status = "used"; rows.push({ problemId: orig.id, sourceRef: `adapted into ${own?.id || "?"}` }); }
   }
   saveCorpus(items);
-  recordAssignment(C(), { id: week.id, title: week.title, date, model: week.model, sessionId: week.sessionId, savedAs: name, transcriptPath: `weeks/${week.id}.json`, items: rows });
+  recordAssignment(week.enrollmentId ? ctx({ dir: DATA, enrollment: week.enrollmentId }) : C(), { id: week.id, title: week.title, date, model: week.model, sessionId: week.sessionId, savedAs: name, transcriptPath: `weeks/${week.id}.json`, items: rows });
   const ids = [...r.added, ...r.merged].filter((id) => needsTags(items.find((x) => x.id === id) || {}));
   return { added: r.added.length, merged: r.merged.length, total: list.length, toTag: ids };
 }
@@ -1008,7 +1013,7 @@ async function handle(req, res) {
     const base = (title || "week").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "") || "week";
     let id = base, n = 2;
     while (fs.existsSync(weekPath(id))) id = `${base}-${n++}`;
-    const w = { id, title: title || id, createdAt: new Date().toISOString(), sessionId: randomUUID(), started: false, model: model || DEFAULT_MODEL, messages: [] };
+    const w = { id, title: title || id, createdAt: new Date().toISOString(), sessionId: randomUUID(), started: false, model: model || DEFAULT_MODEL, enrollmentId: C().enrollmentId, messages: [] };
     await saveWeek(w);
     return send(res, 200, w);
   }

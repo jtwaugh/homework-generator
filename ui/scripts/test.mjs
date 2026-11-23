@@ -74,6 +74,21 @@ test("lesson plan: every U unit in ladder order, grouped by section, with status
   assert.deepEqual(g[0].units[1].missing, [], "a unit not yet started flags nothing");
   assert.equal(g[0].units[0].about, "Patterns. Formal.");
 });
+test("lesson plan from the course's structured plan: sections in layout order, M units included, unplaced units last", () => {
+  const plan = {
+    layout: [{ heading: "Ordered units", items: [{ unit: "U01" }, { unit: "U02" }, { raw: "" }] }, { heading: "Middle block", items: [{ unit: "M1" }] }],
+    units: [
+      { key: "U01", name: "Fractions", about: "Patterns.", needs: [], stance: "Formal", notes: "" },
+      { key: "U02", name: "Lines", about: "Slope.", needs: ["U01"], stance: "Formal", notes: "Say 'rate of change'." },
+      { key: "M1", name: "Absolute value", about: "", needs: ["U02"], stance: "Formal", notes: "" },
+      { key: "U03", name: "New unit", about: "", needs: [], stance: "", notes: "" },
+    ],
+  };
+  const g = lessonPlan(plan, "TAUGHT: U01\nCURRENT: M1\nFUTURE: everything else");
+  assert.deepEqual(g.map((x) => x.title), ["Ordered units", "Middle block", "Other units"]);
+  assert.deepEqual(g.flatMap((x) => x.units.map((u) => [u.id, u.status])), [["U01", "TAUGHT"], ["U02", "FUTURE"], ["M1", "CURRENT"], ["U03", "FUTURE"]]);
+  assert.deepEqual(g[1].units[0].missing, ["U02"]); assert.equal(g[0].units[1].guide, "Say 'rate of change'.");
+});
 test("topic chips round-trip through weekly_status text", () => {
   const chips = [{ text: "Systems of linear inequalities", id: "U14" }, { text: "harder line questions", id: null }, { text: "Substitution", id: "m:e12" }];
   assert.deepEqual(parseTopics(serializeTopics(chips)), chips);

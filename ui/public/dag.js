@@ -12,13 +12,30 @@ const KIND_LABEL = { assumed: "Assumed (pre-algebra)", definition: "Definition",
 
 // ---------- pure ----------
 
-// Lesson plan: every U unit in curriculum_ladder.md, in ladder order, grouped by the ladder's "## " sections,
-// with its status and note from weekly_status.md and any prerequisite not yet taught (only flagged once the
-// unit itself is taught or current, as in the Create Homework units widget).
-export function lessonPlan(ladderMd, statusMd) {
+// Lesson plan: the course version's units in plan order, grouped by its sections, with each unit's status and
+// note from weekly_status.md and any prerequisite not yet taught (only flagged once the unit itself is taught or
+// current, as in the Create Homework units widget). `plan` is the structured plan from GET /api/dag
+// ({layout:[{heading, items:[{unit}|{raw}]}], units:[{key, name, about, needs, stance, notes}]}), or, as a
+// fallback, curriculum_ladder.md text (U units only).
+export function lessonPlan(plan, statusMd) {
   const { map } = parseUnitStatuses(statusMd || "");
   const st = (id) => map[id]?.status || "FUTURE";
   const ok = (id) => ["TAUGHT", "CURRENT"].includes(st(id));
+  const unit = (id, name, about, needs, stance, guide = "") => {
+    const s = st(id);
+    return { id, name, about, needs, stance, guide, status: s, note: (map[id]?.note || "").replace(/^\(|\)$/g, ""), missing: ok(id) ? needs.filter((n) => !ok(n)) : [] };
+  };
+  if (plan && typeof plan === "object") {
+    const byKey = new Map((plan.units || []).map((u) => [u.key, u])), placed = new Set();
+    const groups = (plan.layout || []).map((sec) => ({ title: sec.heading || "", units: (sec.items || []).filter((i) => i.unit && byKey.has(i.unit)).map((i) => {
+      const u = byKey.get(i.unit); placed.add(u.key);
+      return unit(u.key, u.name, u.about, u.needs || [], u.stance || "", u.notes || "");
+    }) }));
+    const rest = (plan.units || []).filter((u) => !placed.has(u.key));
+    if (rest.length) groups.push({ title: groups.length ? "Other units" : "", units: rest.map((u) => unit(u.key, u.name, u.about, u.needs || [], u.stance || "", u.notes || "")) });
+    return groups.filter((g) => g.units.length);
+  }
+  const ladderMd = plan;
   const groups = []; let group = null;
   for (const line of (ladderMd || "").split("\n")) {
     const h = line.match(/^##\s+(.*)$/);
@@ -30,9 +47,7 @@ export function lessonPlan(ladderMd, statusMd) {
     const needs = (rest.match(/Needs\s+([^.]+)\./) || [, ""])[1].match(/U\d\d|M\d|F\d/g) || [];
     const stance = (rest.match(/\b(Formal|Informal[^.]*)\./) || [, ""])[1];
     const about = rest.split(/\s*Needs\s/)[0].trim();
-    const s = st(u[1]);
-    group.units.push({ id: u[1], name: u[2].trim(), about, needs, stance, status: s, note: (map[u[1]]?.note || "").replace(/^\(|\)$/g, ""),
-      missing: ok(u[1]) ? needs.filter((n) => !ok(n)) : [] });
+    group.units.push(unit(u[1], u[2].trim(), about, needs, stance));
   }
   return groups.filter((g) => g.units.length);
 }
@@ -145,7 +160,7 @@ export function ladderHints(statusMd, ladderToWu, guess, overrides) {
 
 // ---------- view ----------
 
-const D = { data: null, mode: "content", sel: null, view: null, poll: null, side: "info", dragging: null };
+const D = { data: null, version: null, mode: "content", sel: null, view: null, poll: null, side: "info", dragging: null };
 Object.defineProperty(D, "board", { get: () => (D.mode === "methods" ? "methods" : "content"), enumerable: true });
 const MODE_LABEL = { content: "Content", methods: "Methods", plan: "Lesson plan" };
 const STATUS_LABEL = { TAUGHT: "Taught", CURRENT: "Current", NEXT: "Next", FUTURE: "Future" };
@@ -215,7 +230,7 @@ function nodePanel(id) {
     <div class="np-state d-${t.display}">${esc(t.label)}</div>
     <p class="np-note">${esc(t.note)}</p>
     ${t.missing.length ? `<div class="nls">${t.missing.map((x) => `<button class="link nl" data-goto-key="${esc(x.key)}">${esc(x.title)}</button>`).join("")}</div>` : ""}
-    ${n.kind === "word-problem" ? "" : `<h4>Change it</h4><div class="seg np-set">${btn("done", "Done")}${btn("partial", "Partly")}${btn("not-yet", "Not yet")}</div>
+    ${n.kind === "word-problem" ? "" : viewingOther() ? `<p class="muted small">Showing v${D.data.version.seq}; ${esc(S.student || "the student")} is on another version, so states can only be changed there.</p>` : `<h4>Change it</h4><div class="seg np-set">${btn("done", "Done")}${btn("partial", "Partly")}${btn("not-yet", "Not yet")}</div>
     ${s.by === "you" ? `<button class="link" data-set="">use Claude's guess${g ? ` (${esc(g.state)})` : ""}</button>` : ""}`}
   </div>`;
 }
@@ -231,8 +246,8 @@ function notesPanel() {
 }
 
 function planHtml() {
-  const groups = lessonPlan(S.ladder, S.status);
-  if (!groups.length) return '<p class="muted plan-empty">No U units found in curriculum_ladder.md.</p>';
+  const groups = lessonPlan(D.data?.plan || S.ladder, S.status);
+  if (!groups.length) return '<p class="muted plan-empty">This version of the course has no units yet.</p>';
   return `<div class="plan">${groups.map((g) => `
     <section class="plan-group">${g.title ? `<h3>${esc(g.title)}</h3>` : ""}
       <ol class="plan-list">${g.units.map((u) => `
@@ -242,6 +257,7 @@ function planHtml() {
             <div class="plan-title"><b>${esc(u.name)}</b> <span class="st s-${u.status}">${STATUS_LABEL[u.status]}</span>${u.stance ? ` <span class="muted small">${esc(u.stance)}</span>` : ""}</div>
             ${u.about ? `<div class="plan-about">${esc(u.about)}</div>` : ""}
             ${u.note ? `<div class="plan-note small">${esc(u.note)}</div>` : ""}
+            ${u.guide ? `<div class="muted small plan-guide">${esc(u.guide)}</div>` : ""}
             ${u.needs.length ? `<div class="muted small">Needs ${u.needs.map(esc).join(", ")}${u.missing.length ? ` · <span class="bad-text">${u.missing.map(esc).join(", ")} not taught yet</span>` : ""}</div>` : ""}
           </div>
         </li>`).join("")}</ol>
@@ -251,20 +267,31 @@ function planHtml() {
 // ---------- page ----------
 
 function headHtml() {
-  const job = D.data.job, running = job?.running;
+  const job = D.data?.job, running = job?.running;
   if (D.mode === "plan") {
-    const us = lessonPlan(S.ladder, S.status).flatMap((g) => g.units), n = (s) => us.filter((u) => u.status === s).length;
+    const us = lessonPlan(D.data?.plan || S.ladder, S.status).flatMap((g) => g.units), n = (s) => us.filter((u) => u.status === s).length;
     return `<h2>Progress map <span class="muted">· Lesson plan</span></h2>
       <span class="dag-count"><b>${n("TAUGHT")} of ${us.length} taught</b> · ${n("CURRENT")} current${n("NEXT") ? ` · ${n("NEXT")} next` : ""}</span>
-      <span class="spacer"></span><span class="muted small">From curriculum_ladder.md and weekly_status.md · change statuses on Create Homework</span>`;
+      <span class="spacer"></span><span class="muted small">Statuses from weekly_status.md · change them on Create Homework</span>${versionPicker()}`;
   }
   const c = counts(curDag(), statesNow()), count = `<span class="dag-count"><b>${c.done} of ${c.total} done</b>${c.partial ? ` · ${c.partial} partly` : ""} · ${c.ready} ready</span>`;
   return `<h2>Progress map <span class="muted">· ${esc(MODE_LABEL[D.mode])}</span></h2>
     ${count}
     <span class="spacer"></span>
-    ${running ? `<span class="muted small"><span class="spin"></span> Claude is reading the homework and notes… ${Math.round((job.elapsed || 0) / 1000)}s${job.tools?.length ? ` · read ${job.tools.length} file${job.tools.length > 1 ? "s" : ""}` : ""}</span><button class="secondary" data-act="stop-guess">Stop</button>`
+    ${viewingOther() ? `<span class="muted small">Viewing v${D.data.version.seq}, read through the course's lineage</span>` : running ? `<span class="muted small"><span class="spin"></span> Claude is reading the homework and notes… ${Math.round((job.elapsed || 0) / 1000)}s${job.tools?.length ? ` · read ${job.tools.length} file${job.tools.length > 1 ? "s" : ""}` : ""}</span><button class="secondary" data-act="stop-guess">Stop</button>`
       : `${job?.error ? `<span class="bad-text small" title="${esc(job.error)}">Last guess failed</span>` : ""}<button class="primary" data-act="guess" title="One ${esc(D.data.guessModel || "")} run over every homework file and your notes, for both boards">${D.data.guess ? "Guess again" : "Guess progress"}</button>`}
-    <button class="ghost" data-act="fit" title="Fit to screen">⤢</button>`;
+    ${versionPicker()}<button class="ghost" data-act="fit" title="Fit to screen">⤢</button>`;
+}
+
+// Which version of the course to show. The student's own (enrolled) version is the default and the only one
+// where states can be changed; any other shows their progress read through the course's lineage.
+const viewingOther = () => D.data?.version && D.data.version.id !== D.data.version.enrolled;
+function versionPicker() {
+  const vs = D.data?.versions || [];
+  if (vs.length < 2) return "";
+  const en = D.data.version.enrolled;
+  return `<select class="dag-version" title="Version of the course to show">${[...vs].reverse().map((v) =>
+    `<option value="${v.id}"${v.id === D.data.version.id ? " selected" : ""}>v${v.seq}${v.status === "draft" ? " (draft)" : ""}${v.id === en ? ` · ${esc(S.student || "student")}'s` : ""}</option>`).join("")}</select>`;
 }
 
 function syncSidebar() {
@@ -286,15 +313,16 @@ function drawAll() {
 }
 function drawSvgOnly() { const c = $("#p-dag .dag-canvas"); if (c) c.innerHTML = svgHtml(); }
 
+const dagUrl = () => (D.version ? `/api/dag?version=${D.version}` : "/api/dag");
 async function load() {
-  D.data = await api("/api/dag");
+  try { D.data = await api(dagUrl()); } catch (e) { if (e.status === 404 && D.version) { D.version = null; D.data = await api(dagUrl()); } else throw e; }
   drawAll();
   startPoll();
 }
 function startPoll() {
   clearInterval(D.poll);
   if (D.data.job?.running) D.poll = setInterval(async () => {
-    D.data = await api("/api/dag");
+    D.data = await api(dagUrl());
     if (!D.data.job?.running) clearInterval(D.poll);
     if (!$("#p-dag").hidden) drawAll();
   }, 2000);
@@ -343,7 +371,14 @@ export function initDag() {
     const gk = t.closest("[data-goto-key]"); if (gk) { focusNode(gk.dataset.gotoKey); return drawAll(); }
     const dn = t.closest("[data-del-note]"); if (dn) { if (!confirm(`Delete ${dn.dataset.delNote}?`)) return; const r = await api(`/api/notes/${encodeURIComponent(dn.dataset.delNote)}`, { method: "DELETE" }); D.data.notes = r.notes; return drawAll(); }
   });
-  d.addEventListener("change", (e) => { if (e.target.matches("#dag-drop input")) upload([...e.target.files]); });
+  d.addEventListener("change", (e) => {
+    if (e.target.matches("#dag-drop input")) upload([...e.target.files]);
+    if (e.target.matches(".dag-version")) {
+      const id = Number(e.target.value);
+      D.version = id === D.data?.version?.enrolled ? null : id; D.sel = null; D.view = null;
+      log("dag-version", { version: id }); load();
+    }
+  });
   d.addEventListener("dragover", (e) => { if (e.target.closest("#dag-drop")) { e.preventDefault(); e.target.closest("#dag-drop").classList.add("over"); } });
   d.addEventListener("dragleave", (e) => e.target.closest?.("#dag-drop")?.classList.remove("over"));
   d.addEventListener("drop", (e) => { if (e.target.closest("#dag-drop")) { e.preventDefault(); upload([...e.dataTransfer.files]); } });

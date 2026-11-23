@@ -17,6 +17,8 @@ const H = { sub: "sessions", sel: null, view: "chat", tab: "pdf", q: "", week: n
 
 const savedNames = () => new Set(S.weeks.map((w) => w.savedAs).filter(Boolean));
 const looseFiles = () => [...S.texFiles].reverse().filter((n) => !savedNames().has(n));
+// Sessions are the working-on student's (S.enrollment); loose files belong to no one and show for everyone.
+const mine = () => S.weeks.filter((w) => !S.enrollment || w.enrollmentId == null || w.enrollmentId === S.enrollment.id);
 const match = (s) => !H.q || s.toLowerCase().includes(H.q.toLowerCase());
 
 const dayStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
@@ -34,13 +36,13 @@ const fmtWhen = (iso) => new Date(iso).toLocaleString([], { month: "short", day:
 
 // The keys in list order, for ← →.
 function order() {
-  const ws = S.weeks.filter((w) => match(`${w.title} ${w.savedAs || ""}`)).map((w) => `w:${w.id}`);
+  const ws = mine().filter((w) => match(`${w.title} ${w.savedAs || ""}`)).map((w) => `w:${w.id}`);
   const fs = H.filesOpen || H.q ? looseFiles().filter(match).map((n) => `f:${n}`) : [];
   return [...ws, ...fs];
 }
 
 function listHtml() {
-  const weeks = S.weeks.filter((w) => match(`${w.title} ${w.savedAs || ""}`));
+  const weeks = mine().filter((w) => match(`${w.title} ${w.savedAs || ""}`));
   const groups = [];
   for (const w of weeks) {
     const g = groupOf(w.createdAt);
@@ -53,7 +55,7 @@ function listHtml() {
     return `<li data-key="w:${esc(w.id)}" class="${H.sel === `w:${w.id}` ? "on" : ""}"><span class="s-title">${state}${esc(w.title)}</span><small>${sub}</small></li>`;
   };
   const sessions = groups.map((g) => `<h4>${esc(g.name)}</h4><ul class="s-list">${g.items.map(row).join("")}</ul>`).join("")
-    || `<p class="muted small s-none">${H.q ? "No sessions match." : "No sessions yet. Each homework you create shows up here."}</p>`;
+    || `<p class="muted small s-none">${H.q ? "No sessions match." : `No sessions for ${esc(S.student || "this student")} yet. Each homework you create shows up here.`}</p>`;
   const files = looseFiles().filter(match);
   const open = H.filesOpen || !!H.q;
   const filesHtml = files.length ? `<details class="s-files"${open ? " open" : ""}><summary>Files without a session <span class="muted">(${files.length})</span></summary>

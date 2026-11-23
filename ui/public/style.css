@@ -211,6 +211,8 @@ body { display: grid; grid-template-columns: 208px 1fr; overflow: hidden; }
 .nav-sub[hidden] { display: none; }
 .nav-divider { border: none; border-top: 1px solid var(--line); margin: 6px 10px; }
 .stub { max-width: 620px; padding: 28px 32px; }
+.dag-version { font-size: 12.5px; padding: 3px 6px; margin-left: 8px; }
+.plan-guide { margin-top: 2px; font-style: italic; }
 .people { max-width: 860px; padding: 28px 32px; overflow: auto; }
 .people p { line-height: 1.5; }
 .ptable { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }

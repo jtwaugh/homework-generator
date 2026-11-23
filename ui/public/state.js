@@ -177,7 +177,7 @@ export async function openWeek(id) {
 export async function refresh(pickWeek = true) {
   const st = await api("/api/state");
   const dirty = S.status !== S.savedStatus;
-  Object.assign(S, { savedStatus: st.status, ladder: st.ladder, texFiles: st.texFiles, student: st.student, curriculum: st.curriculum, weeks: st.weeks, tectonic: st.tectonic, model: st.model, cas: st.cas, auth: st.auth, budget: st.budget, corpusSize: st.corpusSize }, parseLadder(st.ladder));
+  Object.assign(S, { savedStatus: st.status, ladder: st.ladder, texFiles: st.texFiles, student: st.student, curriculum: st.curriculum, enrollment: st.enrollment, weeks: st.weeks, tectonic: st.tectonic, model: st.model, cas: st.cas, auth: st.auth, budget: st.budget, corpusSize: st.corpusSize }, parseLadder(st.ladder));
   document.getElementById("logout").hidden = !st.login;
   if (st.curriculum) document.getElementById("curriculum").textContent = st.curriculum;
   if (!dirty) S.status = st.status;
