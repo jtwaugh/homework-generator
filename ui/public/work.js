@@ -329,7 +329,7 @@ function renderBrief() {
   $$("button[data-key]", el).forEach((btn) => (btn.onclick = () => toggleBrief(btn.dataset.key)));
 }
 $("#quick-set").onclick = () => { if (guardSetup()) { log("quick-set", { from: "setup" }); startWeek(QUICK_PROMPT); } };
-$("#generate").onclick = () => guardSetup() && startWeek("Follow the weekly workflow. Use the brief below for every decision; do not ask me anything first. Do the research and reply with the checkpoint, listing your defaults under Assumptions.");
+$("#generate").onclick = () => guardSetup() && startWeek("Follow the weekly workflow.");
 
 // ======================= outline =======================
 

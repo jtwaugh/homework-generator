@@ -77,6 +77,12 @@ export function buildBrief({ status, ladder, corpus, dataDir, overrides = {}, no
   const unitCircle = on(input["Unit circle sheet"]);
   const we = (input["Worked examples"] || "").trim();
   const workedExamples = !on(we) ? 0 : Number(we.match(/^\d+$/)?.[0]) || "auto";
+  // Inputs the app filled in or interpreted; the rest Claude reads verbatim in weekly_status.md.
+  const literal = (v, ok) => ok.test((v || "").trim());
+  const inputNotes = [];
+  if (!literal(input["Graph paper"], /^(yes|no)$/i)) inputNotes.push(`Graph paper: ${graphPaperMode}${graphPaperMode === "auto" ? " (only if the set is graphing-adjacent)" : ""}`);
+  for (const [k, v] of [["Answer key", answerKey], ["Unit circle sheet", unitCircle]]) if (!literal(input[k], /^(yes|no)$/i)) inputNotes.push(`${k}: ${v ? "yes" : "no"}`);
+  if (!literal(we, /^(no|\d+)$/i)) inputNotes.push(`Worked examples: ${!workedExamples ? "no" : "yes (you choose how many)"}`);
 
   // Topics -> units. Unit ids in chips win; else the ladder name / keywords.
   const topicChips = parseTopics(input["Topics"] || "").map((c) => {
@@ -122,7 +128,7 @@ export function buildBrief({ status, ladder, corpus, dataDir, overrides = {}, no
   const rulings = loadRulings(dataDir).rulings;
   const required = date ? [] : ["date"];
   return {
-    date, disclaimer, graphPaper, graphPaperMode, answerKey, unitCircle, workedExamples, required,
+    date, disclaimer, graphPaper, graphPaperMode, answerKey, unitCircle, workedExamples, inputNotes, required,
     allowedUnits: [...allowed].sort(), promotions, decisions, rulings,
     extraBans: statusSection(status, "## Extra bans this week").split("\n").map((l) => l.replace(/^\s*-\s*/, "").trim()).filter((l) => l && !/^\(none\)$/i.test(l)),
     sections, needsResearch: sections.filter((s) => s.coverage !== "covered").map((s) => s.key),
@@ -132,8 +138,7 @@ export function buildBrief({ status, ladder, corpus, dataDir, overrides = {}, no
 // The brief as the text Claude gets (start of the outline stage).
 export function briefText(b, corpusById = {}) {
   const lines = [
-    `Date: ${b.date} · Disclaimer: ${b.disclaimer} · Graph paper: ${b.graphPaperMode || (b.graphPaper ? "yes" : "no")}${b.graphPaperMode === "auto" ? " (only if the set is graphing-adjacent)" : ""}`,
-    `Answer key: ${b.answerKey ? "yes" : "no"} · Worked examples: ${!b.workedExamples ? "no" : b.workedExamples === "auto" ? "yes (you choose how many)" : b.workedExamples} · Unit circle sheet: ${b.unitCircle ? "yes" : "no"}`,
+    b.inputNotes?.length ? `Inputs read as (blank or free-form in weekly_status.md): ${b.inputNotes.join(" · ")}` : "",
     `Allowed units this week (TAUGHT or CURRENT, after promotions): ${b.allowedUnits.join(", ")}`,
     b.extraBans.length ? `Extra bans: ${b.extraBans.join("; ")}` : "",
     "", "## Decisions already made (do not ask about these; list them under Assumptions)",

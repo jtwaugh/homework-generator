@@ -226,11 +226,14 @@ test("preflight: answer key, worked examples and unit circle sheet reach the bri
   const brief = (extra) => buildBrief({ status: [...base, ...extra, ""].join("\n"), ladder, corpus: fz, dataDir: path.join(HERE, "no-such-dir") });
   const none = brief([]);
   assert.equal(none.answerKey, false); assert.equal(none.unitCircle, false); assert.equal(none.workedExamples, 0); assert.equal(none.graphPaperMode, "auto");
-  assert.match(briefText(none), /Answer key: no · Worked examples: no · Unit circle sheet: no/);
+  assert.match(briefText(none), /Graph paper: auto \(only if the set is graphing-adjacent\) · Answer key: no · Unit circle sheet: no · Worked examples: no/);
   const all = brief(["Answer key: yes", "Worked examples: 2", "Unit circle sheet: yes", "Graph paper: yes"]);
   assert.equal(all.answerKey, true); assert.equal(all.unitCircle, true); assert.equal(all.workedExamples, 2);
-  assert.match(briefText(all), /Graph paper: yes\n.*Answer key: yes · Worked examples: 2 · Unit circle sheet: yes/);
-  assert.equal(brief(["Worked examples: yes"]).workedExamples, "auto");
+  assert.deepEqual(all.inputNotes, []); // all literal: Claude reads them in weekly_status.md, the brief doesn't repeat them
+  assert.doesNotMatch(briefText(all), /Answer key|Graph paper|Unit circle|Worked examples/);
+  const auto = brief(["Worked examples: yes"]);
+  assert.equal(auto.workedExamples, "auto");
+  assert.match(briefText(auto), /Worked examples: yes \(you choose how many\)/);
 });
 test("routing: checkpoint on the main model, final on Sonnet, fixes on Haiku then up a tier", () => {
   const w = { model: "claude-opus-5-5", messages: [] };
