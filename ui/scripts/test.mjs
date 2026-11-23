@@ -16,6 +16,7 @@ import { parseTopics, serializeTopics, historyTopics } from "../public/topics.js
 import { computeStates, statusText, lessonPlan, planGraph, curvePath } from "../public/dag.js";
 import { S, lintTex, nextSetDate } from "../public/lib.js";
 import { parseTags } from "../lib/tagger.mjs";
+import { corpusListing, corpusChatSystem, citedIds } from "../lib/corpuschat.mjs";
 import { openDb } from "../lib/db.mjs";
 import * as Cur from "../lib/curriculum.mjs";
 import * as Prog from "../lib/progress.mjs";
@@ -503,6 +504,18 @@ test("answer checks: the app's latest verdict per id, from the last .tex reply o
     A("```latex\nnew\n```", { ok: ["P1.1"], wrong: ["P1.2"], unchecked: ["P1.3"] }), { role: "user", text: "verify" }, A("", { ok: ["P1.2"], wrong: [], unchecked: [] })] };
   const ck = appChecks(week);
   assert.deepEqual([...ck.ok].sort(), ["P1.1", "P1.2"]); assert.deepEqual([...ck.wrong], []); assert.deepEqual([...ck.unchecked], ["P1.3"]);
+});
+
+test("corpus chat: whole corpus in the prompt until too big, cited ids resolve aliases", () => {
+  const items = [
+    { id: "p0000000001", tex: "Solve $2x+1=5$.", answer: "x=2", units: ["U14"], status: "used", usedOn: ["2026-10-08"], source: { kind: "gold", file: "HW_10_8_2026.tex" }, aliases: ["p00000000aa"], addedAt: "2026-11-01T00:00:00Z" },
+    { id: "p0000000002", tex: "Graph $y<x$.", units: [], status: "candidate", source: { kind: "web", url: "https://www.example.org/x" }, addedAt: "2026-11-02T00:00:00Z" },
+  ];
+  const sys = corpusChatSystem(items, "- U14 Linear equations. Needs U05.", "2026-11-23");
+  assert.match(sys, /\[p0000000001\] U14 · used · used 2026-10-08 · gold HW_10_8_2026\.tex/);
+  assert.match(sys, /answer: x=2/); assert.match(sys, /example\.org/); assert.match(sys, /U14 Linear equations/); assert.match(sys, /By status: used 1, candidate 1/);
+  assert.equal(corpusListing(items, 50).full, false);
+  assert.deepEqual(citedIds("see [p00000000aa] and p0000000002, also [p0000000001] and p9999999999", items), ["p0000000001", "p0000000002"]);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

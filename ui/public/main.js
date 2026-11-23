@@ -53,7 +53,7 @@ window.__hw = {
       dialogs: [...document.querySelectorAll("dialog[open]")].map((d) => d.id),
       history: !$("#p-history").hidden ? { sub: historyState.sub, sel: historyState.sel, run: inferenceState.run, runs: inferenceState.data?.runs?.length ?? null } : null,
       dag: !$("#p-dag").hidden ? { mode: dagState.mode, planView: dagState.planView, board: dagState.board, selected: dagState.sel, side: dagState.side, view: dagState.view && Object.values(dagState.view).map(Math.round).join(" "), notes: dagState.data?.notes?.length ?? null, guessRunning: !!dagState.data?.job?.running } : null,
-      corpus: !$("#p-corpus").hidden ? { q: corpusState.q, unit: corpusState.unit, status: corpusState.status, source: corpusState.source, shown: document.querySelectorAll("#p-corpus .cp").length } : null,
+      corpus: !$("#p-corpus").hidden ? { q: corpusState.q, unit: corpusState.unit, status: corpusState.status, source: corpusState.source, view: corpusState.view, sort: corpusState.sort, shown: document.querySelectorAll("#p-corpus .ct-row, #p-corpus .cp").length } : null,
     };
   },
 };

@@ -137,7 +137,7 @@ try {
   await step("Sessions sub-item", "ui_click", sel("[data-hist=sessions]"), /click/);
   await step("sessions shown", "ui_eval", { js: "document.querySelector('#p-history .h-inf').hidden && !document.querySelector('#p-history .h-sessions').hidden ? 'sessions' : 'wrong'" }, /sessions/);
   await step("Corpus tab", "ui_click", sel(".nav-item[data-page=corpus]"), /ui: page from=history to=corpus/, /GET \/api\/corpus status=200/);
-  await step("★ a problem", "ui_click", sel("#p-corpus .cp .star"), /data-set=favorite/, /PATCH \/api\/corpus\/\S+ status=200/);
+  await step("★ a problem", "ui_click", sel("#p-corpus .ct-row .star"), /data-set=favorite/, /PATCH \/api\/corpus\/\S+ status=200/);
   await step("back to Create Homework", "ui_click", sel(".nav-item[data-page=create]"), /ui: page from=corpus to=create/);
   await step("Create Homework again: fresh setup", "ui_click", sel(".nav-item[data-page=create]"), /page-reselect page=create/, /GET \/api\/state status=200/);
   await step("setup shown", "ui_eval", { js: "__hw.summary().phase" }, /setup/);

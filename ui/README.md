@@ -28,7 +28,7 @@ The page is split in two: the conversation with Claude on the left (every tool c
 Header buttons:
 - **$ badge**: what each turn cost on your API account, tokens, searches, tool calls, and an estimated research vs writing split. `HW_BUDGET_USD=2` caps each turn.
 - **Progress map**: Wu's school algebra as two DAGs (Content and Methods). **Export status.md** / **Upload status.md** (Lesson plan) download the status record or replace it with an edited copy; the root `weekly_status.md` is no longer read or written. **Guess progress** has Claude read every homework file and your uploaded notes and mark each block done / partly / not yet; click a block to see its evidence or override it. **Lesson plan › Edit units** adds, changes or removes units (a removed unit is retired or merged into another); edits go to the course's draft, which you publish on **Courses**.
-- **Corpus**: every problem Claude can reuse (past homework, problems it saved from research). ★ to prefer, ✕ to never offer again.
+- **Corpus**: every problem Claude can reuse (past homework, problems it saved from research), as a table: click a column to sort, a row to see the whole problem; **Cards** switches to the old view. ★ to prefer, ✕ to never offer again. **💬 Ask Claude** opens a side chat about the corpus ("which U14 problems are unused?", "any near-duplicates?"): Claude reads the whole corpus (Sonnet, `HW_CORPUS_CHAT_MODEL`; a few cents a question) but can't change it, and the problem ids it cites link to the table.
 - **History**: a searchable list of sessions (one per homework, grouped by date). Each opens read-only in place: the **Conversation** (your inputs and Claude's steps, tool calls, replies and cost) and the **Homework** it produced (PDF / Source / Compile log). Older `.tex` files with no session are listed at the bottom; ← → between sessions.
 
 Claude has three local tools (`ui/mcp/hw-tools.mjs`): `cas` (sympy, to check answer keys), `corpus_search` and `corpus_add`. Install the CAS once: `uv venv ui/data/venv && uv pip install --python ui/data/venv sympy`.
@@ -44,6 +44,7 @@ Options: `HW_STUDENT=<name>` (shown in the UI and prompts; default generic), `HW
 | `server.mjs` | HTTP API, the status record (hw.db) read/write and export, the Claude runs (`runClaude`, `buildSystemPrompt`), compiles, save & finish (`/finish`, `saveManifest`) |
 | `lib/tagger.mjs` | tags problems with Wu content and methods nodes (one cheap Claude pass), used by Save & finish, seeding and `tag-corpus.mjs` |
 | `lib/corpus.mjs` | problem corpus: load/save, search, `splitTex`, `attachTex` (manifest → problem LaTeX) |
+| `lib/corpuschat.mjs` | the corpus chat's system prompt (the whole corpus, or an index once it's too big) and cited ids |
 | `mcp/hw-tools.mjs` | the MCP tools Claude calls: `cas`, `corpus_search`, `corpus_add` |
 | `public/state.js` | app state, phases (`phaseOf`), `send`, polling, `currentFinal`, status autosave |
 | `public/statusmd.js` | the status record as Markdown: applying a finished week (`applyWeekUpdate`), reading the final's status-update block, checking uploads |

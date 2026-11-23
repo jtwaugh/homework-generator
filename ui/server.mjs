@@ -21,6 +21,7 @@ import { buildBrief, briefText, statusDigest } from "./lib/preflight.mjs";
 import { applyWeekUpdate, weekUpdateInputs, checkStatusUpload } from "./public/statusmd.js";
 import { claudeAuth } from "./lib/auth.mjs";
 import { runAgent, makeClient, addUserTurn } from "./lib/agent.mjs";
+import { CHAT_MODEL, corpusChatSystem, citedIds } from "./lib/corpuschat.mjs";
 import { agentTools, casRemote } from "./lib/tools.mjs";
 import { checksFrom, stripChecks } from "./lib/check.mjs";
 import { createMirror, storeFromEnv } from "./lib/mirror.mjs";
@@ -1081,6 +1082,19 @@ async function handle(req, res) {
   if (m === "GET" && p === "/api/corpus/preload") {
     const x = await corpusPreload();
     return send(res, 200, { ...x, hits: x.hits.map((h) => ({ id: h.p.id, score: +h.score.toFixed(2), why: h.why })) });
+  }
+  if (m === "POST" && p === "/api/corpus/chat") {
+    // Read-only questions about the corpus. The browser sends the whole (text-only) conversation each time.
+    const { messages: turns = [] } = await body(req);
+    const hist = (Array.isArray(turns) ? turns : []).slice(-20).filter((t) => t && ["user", "assistant"].includes(t.role) && typeof t.text === "string" && t.text.trim());
+    if (hist.at(-1)?.role !== "user") return send(res, 400, { error: "the last message must be the teacher's" });
+    const messages = [];
+    for (const t of hist) pushTurn(messages, t.role, t.text.slice(0, 20000));
+    const c = C(), items = loadCorpus();
+    const r = await callAgent({ key: `corpus-chat-${randomUUID().slice(0, 8)}`, model: CHAT_MODEL, system: corpusChatSystem(items, await readLadder(c)), messages, toolNames: ["corpus_search"], effort: "low", budgetUSD: BUDGET ? Number(BUDGET) : 1 });
+    if (!r.ok && !r.text) return send(res, 502, { error: r.error || "no reply" });
+    const reply = r.text.trim();
+    return send(res, 200, { text: reply, ids: citedIds(reply, items), error: r.ok ? undefined : r.error, costUSD: r.usage?.costUSD ?? null, tools: r.tools.map((t) => ({ name: t.name, input: t.input, ok: t.ok })) });
   }
   const cm = p.match(/^\/api\/corpus\/(p[0-9a-f]+)$/);
   if (cm && m === "PATCH") {
