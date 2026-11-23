@@ -269,7 +269,7 @@ test("hw.db: publish refuses unexplained removals, then migrates tags and queues
   const byId = Object.fromEntries(loadCorpusDb(c).map((p) => [p.id, p]));
   assert.deepEqual(byId.p1.wuNodes, ["e2"]); assert.deepEqual(byId.p1.units, ["U01"]); assert.equal(byId.p1.taggedIn, 1);
   assert.ok(byId.p2.needsRetag); assert.deepEqual(byId.p2.wuNodes, []);
-  assert.equal(byId.p3.taggedIn, 1);
+  assert.equal(byId.p3.taggedIn, undefined); // its only tag (e2) still exists: not stale
 });
 test("hw.db: a unit split sends units:[U02] tags to the retag queue; a unit merge moves them", () => {
   const { db, v1 } = freshCurriculum();

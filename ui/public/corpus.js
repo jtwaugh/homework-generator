@@ -29,7 +29,7 @@ function cardHtml(p) {
   const where = src.url ? `<a href="${esc(src.url)}" target="_blank" rel="noopener">${esc(new URL(src.url).host.replace(/^www\./, ""))}</a>` : esc(src.file || "");
   return `<div class="cp s-${st}" data-id="${p.id}">
     <div class="cp-head">${(p.units || []).map((u) => `<b class="tid">${esc(u)}</b>`).join("")}<span class="muted small">${esc(SOURCE_LABEL[src.kind] || src.kind || "")} · ${where}${src.date ? " · " + esc(src.date) : ""}</span>
-      <span class="spacer"></span>${p.casVerified ? '<span class="small ok-text" title="Answer checked with the CAS">🧮 verified</span>' : ""}${p.usedOn?.length ? `<span class="muted small" title="${esc(p.usedOn.join(", "))}">used ${p.usedOn.length}×</span>` : ""}
+      <span class="spacer"></span>${p.needsRetag ? '<span class="small warn-text" title="Some of its tags were split or retired in a newer version of the course; the tagger will retag it">needs retag</span>' : p.taggedIn ? `<span class="muted small" title="Its tags were made against v${p.taggedIn} and are read forward through the course's lineage">tagged in v${p.taggedIn}</span>` : ""}${p.casVerified ? '<span class="small ok-text" title="Answer checked with the CAS">🧮 verified</span>' : ""}${p.usedOn?.length ? `<span class="muted small" title="${esc(p.usedOn.join(", "))}">used ${p.usedOn.length}×</span>` : ""}
       <button class="ghost star${st === "favorite" ? " on" : ""}" data-set="${st === "favorite" ? "candidate" : "favorite"}" title="Favorite: offered first">★</button>
       <button class="ghost rej${st === "rejected" ? " on" : ""}" data-set="${st === "rejected" ? "candidate" : "rejected"}" title="Reject: never offered again">✕</button></div>
     <div class="cp-tex">${preview(p.tex)}</div>

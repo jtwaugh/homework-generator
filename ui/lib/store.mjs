@@ -21,7 +21,8 @@ export function setActiveEnrollment(db, id) { setSetting(db, "active_enrollment"
 // ---------- corpus ----------
 
 // Item shape as in the v0 jsonl: {id, tex, answer, units, wuNodes, tags, context, source, status, usedOn, casVerified, addedAt, aliases?}
-//   units/wuNodes: the problem's own tags resolved to the active version (stale: tagged in an older version).
+//   units/wuNodes: the problem's own tags resolved to the active version. taggedIn (a version seq) is set when
+//   some of those tags name nodes the active version no longer has; needsRetag when one can't be resolved.
 //   usedOn: dates of this enrollment's assignments that contain the problem.
 export function loadCorpusDb(c = ctx()) {
   const { db } = c;
@@ -36,13 +37,13 @@ export function loadCorpusDb(c = ctx()) {
   const queued = new Set(db.prepare("SELECT DISTINCT problem_id FROM retag_queue WHERE done_at IS NULL AND version_id = ?").all(c.versionId).map((r) => r.problem_id));
   return db.prepare("SELECT * FROM problem ORDER BY ord, added_at").all().map((r) => {
     const units = [], wuNodes = [];
-    let taggedIn = null;
+    let taggedIn = null; // set only when some tag had to be read forward (its key is gone in the active version)
     if (tagged.has(r.id)) {
       const base = baseTags(db, c.curriculumId, r.id, idx, c.versionId);
       if (base) {
-        taggedIn = base.version;
         for (const k of base.keys) {
           const res = idx.resolve(k, base.version, c.versionId);
+          if (res.status !== "current") taggedIn = base.version;
           if (res.keys.length !== 1) continue;
           const key = res.keys[0];
           const list = layerOfKey(key) === "unit" ? units : wuNodes;
