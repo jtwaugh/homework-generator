@@ -13,7 +13,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { tagProblems, needsTags, TAG_MODEL } from "./lib/tagger.mjs";
 import { loadCorpus, saveCorpus, searchCorpus, formatHits, addProblems, patchProblem, dateFromName, tokenize, attachTex, problemId, nearDuplicates } from "./lib/corpus.mjs";
-import { ctx, saveStatus, latestStatus, statusHistory, recordAssignment, setActiveEnrollment } from "./lib/store.mjs";
+import { ctx, loadCorpusDb, saveStatus, latestStatus, statusHistory, recordAssignment, setActiveEnrollment } from "./lib/store.mjs";
 import { closeDb, getSetting, setSetting } from "./lib/db.mjs";
 import * as Cur from "./lib/curriculum.mjs";
 import * as Prog from "./lib/progress.mjs";
@@ -210,8 +210,13 @@ async function writeLikeOriginal(p, text) {
 
 // ---------- weekly status and lesson plan: hw.db, exported to the root files ----------
 // Editing weekly_status.md by hand still works: a file newer than the latest revision becomes a revision.
+// The root files belong to the active (working-on) enrollment only. Another enrollment's status and ladder are
+// read from and written to hw.db without touching them (a week finished after switching students).
+const isActive = (c) => c.enrollmentId === C().enrollmentId;
+const weekCtx = (week) => (week?.enrollmentId ? ctx({ dir: DATA, enrollment: week.enrollmentId }) : C());
 async function readStatus(c = C()) {
   const last = latestStatus(c);
+  if (!isActive(c)) return last?.text ?? "";
   let file = null;
   try { file = await read(STATUS_FILE); } catch {}
   if (file != null && file !== last?.text && (!last || fs.statSync(STATUS_FILE).mtimeMs > Date.parse(last.at) + 1000)) {
@@ -223,7 +228,7 @@ async function readStatus(c = C()) {
 }
 async function writeStatus(text, { source = "teacher", assignmentId = null, c = C() } = {}) {
   const id = saveStatus(c, text, { source, assignmentId });
-  await writeLikeOriginal(STATUS_FILE, text);
+  if (isActive(c)) await writeLikeOriginal(STATUS_FILE, text);
   return id;
 }
 // The lesson plan the prompts use is the active enrollment's version. A hand edit of curriculum_ladder.md
@@ -231,6 +236,7 @@ async function writeStatus(text, { source = "teacher", assignmentId = null, c = 
 const sha = (t) => createHash("sha256").update(t).digest("hex").slice(0, 16);
 async function readLadder(c = C()) {
   const md = Cur.ladderFor(c.db, c.versionId);
+  if (!isActive(c)) return md;
   let file = null;
   try { file = await read(LADDER_FILE); } catch {}
   const exported = getSetting(c.db, "ladder_export_hash");
@@ -351,8 +357,8 @@ async function readToolLog(id) {
   try { return (await read(toolsPath(id))).split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } }); } catch { return []; }
 }
 
-async function buildSystemPrompt() {
-  const [instr, ladder] = await Promise.all([read(INSTRUCTIONS_FILE), readLadder()]);
+async function buildSystemPrompt(c = C()) {
+  const [instr, ladder] = await Promise.all([read(INSTRUCTIONS_FILE), readLadder(c)]);
   const gold = [];
   for (const n of (await texFiles()).slice(-GOLD_COUNT)) gold.push(`<file name="${n}">\n${await read(path.join(ROOT, n))}\n</file>`);
   return [
@@ -481,9 +487,9 @@ async function compileTex(text) {
 
 // ---------- stages that run outside the week's session ----------
 
-async function weekBrief(overrides = {}) {
-  const [status, ladder] = await Promise.all([readStatus(), readLadder()]);
-  return buildBrief({ status, ladder, corpus: loadCorpus(), dataDir: DATA, overrides });
+async function weekBrief(overrides = {}, c = C()) {
+  const [status, ladder] = await Promise.all([readStatus(c), readLadder(c)]);
+  return buildBrief({ status, ladder, corpus: loadCorpusDb(c), dataDir: DATA, overrides });
 }
 
 const RESEARCH_SCHEMA = {
@@ -584,10 +590,10 @@ function planStages(kind, week, brief) {
   return out;
 }
 
-async function corpusPreload() {
-  const [status, ladder] = await Promise.all([readStatus(), readLadder()]);
+async function corpusPreload(c = C()) {
+  const [status, ladder] = await Promise.all([readStatus(c), readLadder(c)]);
   const q = preloadQuery(status, ladder);
-  const hits = searchCorpus(loadCorpus(), { units: q.units, query: q.query, limit: 15 });
+  const hits = searchCorpus(loadCorpusDb(c), { units: q.units, query: q.query, limit: 15 });
   return { ...q, hits };
 }
 
@@ -622,7 +628,7 @@ function saveManifest(week, name, tex) {
     if (orig) { if (orig.status === "candidate") orig.status = "used"; rows.push({ problemId: orig.id, sourceRef: `adapted into ${own?.id || "?"}` }); }
   }
   saveCorpus(items);
-  recordAssignment(week.enrollmentId ? ctx({ dir: DATA, enrollment: week.enrollmentId }) : C(), { id: week.id, title: week.title, date, model: week.model, sessionId: week.sessionId, savedAs: name, transcriptPath: `weeks/${week.id}.json`, items: rows });
+  recordAssignment(weekCtx(week), { id: week.id, title: week.title, date, model: week.model, sessionId: week.sessionId, savedAs: name, transcriptPath: `weeks/${week.id}.json`, items: rows });
   const ids = [...r.added, ...r.merged].filter((id) => needsTags(items.find((x) => x.id === id) || {}));
   return { added: r.added.length, merged: r.merged.length, total: list.length, toTag: ids };
 }
@@ -1037,8 +1043,8 @@ async function handle(req, res) {
       const dest = path.join(ROOT, name);
       if (fs.existsSync(dest) && !overwrite) return send(res, 409, { error: `${name} already exists` });
       await fsp.writeFile(dest, tex);
-      if (status && status.trim()) await writeStatus(status.trimEnd() + "\n", { source: "claude", assignmentId: id });
       const week = await loadWeek(id);
+      if (status && status.trim()) await writeStatus(status.trimEnd() + "\n", { source: "claude", assignmentId: id, c: weekCtx(week) });
       let corpus = null;
       try { corpus = saveManifest(week, name, tex); tagInBackground(corpus.toTag || [], name); delete corpus.toTag; } catch (e) { corpus = { error: e.message }; }
       Object.assign(week, { done: true, savedAs: name, statusUpdated: !!(status && status.trim()), corpusSaved: corpus });
@@ -1050,15 +1056,16 @@ async function handle(req, res) {
       if (running.has(id) || (await remoteJob(id))) return send(res, 409, { error: "Claude is already working on this week" });
       const { text, kind, overrides } = await body(req);
       const week = await loadWeek(id);
-      const sys = week.started ? null : await buildSystemPrompt();
+      const wc = weekCtx(week);
+      const sys = week.started ? null : await buildSystemPrompt(wc);
       const userMsg = { role: "user", text, kind: kind || "chat", at: new Date().toISOString() };
       const stage = stageFor(userMsg.kind, week);
       let prompt = text, brief = null;
       if (kind === "start") {
-        brief = await weekBrief(overrides || {});
-        const corpus = loadCorpus(), byId = new Map(corpus.map((x) => [x.id, x]));
+        brief = await weekBrief(overrides || {}, wc);
+        const corpus = loadCorpusDb(wc), byId = new Map(corpus.map((x) => [x.id, x]));
         const ids = [...new Set(brief.sections.flatMap((x) => x.corpusIds.slice(0, 10)))];
-        const pre = await corpusPreload();
+        const pre = await corpusPreload(wc);
         for (const h of pre.hits) if (ids.length < 40 && !ids.includes(h.p.id)) ids.push(h.p.id);
         const hits = ids.map((i) => byId.get(i)).filter(Boolean).map((x) => ({ p: x, why: { recent: (x.usedOn || []).some((d) => Date.now() - Date.parse(d) < 42 * 864e5) } }));
         userMsg.preload = { count: hits.length, units: brief.allowedUnits, ids };
@@ -1066,7 +1073,7 @@ async function handle(req, res) {
         prompt += `\n\n# Brief from the app (settled before you were called)\n${briefText(brief)}\n\n## Corpus problems for this week (${corpus.length} in the corpus; search for more with corpus_search)\n${formatHits(hits)}`;
       }
       if (DRY_STAGES) {
-        const plan = planStages(userMsg.kind, week, brief || (await weekBrief(overrides || {})));
+        const plan = planStages(userMsg.kind, week, brief || (await weekBrief(overrides || {}, wc)));
         logEvent("stage", "dry-run", { week: id, kind, plan });
         return send(res, 200, { dryRun: true, plan, promptChars: prompt.length, prompt: clip(prompt, 20000) });
       }
