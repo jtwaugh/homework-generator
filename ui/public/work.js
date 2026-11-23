@@ -387,13 +387,13 @@ function renderOutline(phase) {
   // A turn that ended on an error (budget, stop, crash) before the checkpoint isn't asking anything.
   const halted = !running && lastA && lastA.error && !isCheckpoint(lastA.text);
   const asking = lastA && !halted && !isCheckpoint(lastA.text);
-  const err = !running && (lastA?.error || app.week.sendError);
+  const err = !running && (lastA?.error || app.week.sendError || (!lastA && app.week.lastError));
   $(".v-title", el).textContent = !lastA ? "Outline" : halted ? "Claude stopped before the checkpoint" : asking ? "Claude has questions" : "Outline checkpoint";
   $(".v-note", el).innerHTML = running ? `<span class="spin"></span> Claude is ${lastA ? "revising the outline" : "researching and writing the outline"}. Follow along in the chat.`
     : halted ? "Continue picks up where it stopped (re-reading the conversation so far costs extra), or Start over to set the week up again."
     : asking ? "Answer in the chat on the left, or let Claude use its stated defaults."
     : lastA ? "Read it over. Type any changes in the chat, or approve to write the final." : "";
-  $(".latest", el).innerHTML = (err ? `<div class="err">Something went wrong: ${esc(err)}</div>` : "") + (lastA ? md(lastA.text) : running ? "" : `<p class="muted">Claude didn't reply.</p>`);
+  $(".latest", el).innerHTML = (err ? `<div class="err">Something went wrong: ${esc(err)}</div>` : "") + (lastA ? md(lastA.text) : running || err ? "" : noReply());
   $(".latest", el).classList.toggle("dim", running);
 
   const main = $(".main", el), alt = $(".alt", el);
@@ -625,3 +625,11 @@ onRender(function renderWork({ phase }) {
 });
 
 export { openWeek };
+
+// The turn ended but the page has no reply and no error: say what is known instead of a bare "didn't reply".
+function noReply() {
+  const sent = [...app.week.messages].reverse().find((m) => m.role === "user");
+  const when = sent?.at ? new Date(sent.at).toLocaleTimeString() : "?";
+  return `<div class="err">The run ended, but no reply reached this page and no error was recorded (week ${esc(app.week.id)}, sent ${esc(when)}). `
+    + `Reload to check again. If it's still missing, the server log for ${esc(app.week.id)} from that time shows what Claude did.</div>`;
+}

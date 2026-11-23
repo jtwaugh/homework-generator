@@ -686,6 +686,9 @@ async function turnSlice(id, lim = {}) {
     progress.delete(id);
     stopped.delete(id);
     await fsp.writeFile(turnPath(id), JSON.stringify({ phase: "done", endedAt: new Date().toISOString() }));
+    // The week (with the reply) must be in storage before anyone is told the turn ended: a page that polls in
+    // between would otherwise read the old week from another instance and show no reply.
+    if (mirror.enabled) await mirror.push().catch((e) => logEvent("mirror", "push-error", { error: e.message }));
     await shareJob(id, { running: false }, { force: true });
     emit(result.ok ? { type: "done" } : { type: "error", error: result.error });
     return { done: true };
@@ -1267,6 +1270,7 @@ async function handle(req, res) {
         } catch (e) {
           logEvent("stage", "workflow-start-error", { week: id, error: e.message });
           week.messages.pop(); week.lastError = e.message; await saveWeek(week);
+          if (mirror.enabled) await mirror.push().catch(() => {});
           await shareJob(id, { running: false }, { force: true });
           res.write(JSON.stringify({ type: "error", error: "could not start the turn: " + e.message }) + "\n");
         }
