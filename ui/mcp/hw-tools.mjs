@@ -19,7 +19,7 @@ const LOG = WEEK_ID && /^[A-Za-z0-9_-]+$/.test(WEEK_ID) ? path.join(DATA, "weeks
 export const TOOLS = [
   {
     name: "cas",
-    description: "Run a short Python program with sympy available (import sympy as sp) and return its stdout/stderr. Use it to verify answer keys: substitute each solution back, check for extraneous roots, confirm factorizations and simplifications. Batch many checks into one call and print one line per problem, e.g. 'P1.3 ok x=2'. No network or file access; 20 second limit.",
+    description: "Run a short Python program and return its stdout/stderr. Already imported, so you never need import lines: sympy as sp plus everything from sympy (symbols, solve, Eq, Rational, sqrt, simplify, factor, expand, ...), math, itertools, functools, collections, fractions.Fraction, and the symbols x y z t a b c k m n (real). Your own imports and symbol definitions still work and override these. Use it to verify answer keys: substitute each solution back, check for extraneous roots, confirm factorizations and simplifications. Batch many checks into one call and print one line per problem, e.g. 'P1.3 ok x=2'. No network or file access; 20 second limit.",
     inputSchema: { type: "object", properties: { code: { type: "string", description: "Python source; print() what you want to see." } }, required: ["code"] },
   },
   {
@@ -62,13 +62,28 @@ export const TOOLS = [
 
 // ---------- cas ----------
 
+// The model often forgets imports (itertools, Fraction, ...), so run.py preloads the usual ones and then runs
+// main.py in that namespace. Compiling under the name "main.py" keeps traceback line numbers matching its code.
+const PRELUDE = `import math, itertools, functools, collections, fractions, random
+import sympy as sp
+from sympy import *
+from fractions import Fraction
+from itertools import product, permutations, combinations
+x, y, z, t, a, b, c, k, m, n = symbols("x y z t a b c k m n", real=True)
+__ns = {k_: v_ for k_, v_ in globals().items() if not k_.startswith("__")}
+__ns["__name__"] = "__main__"
+with open("main.py") as __f:
+    exec(compile(__f.read(), "main.py", "exec"), __ns)
+`;
+
 export async function runCas(code) {
   if (!fs.existsSync(PY)) return { ok: false, text: "CAS unavailable: run `uv venv ui/data/venv && uv pip install --python ui/data/venv sympy`." };
   const dir = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), "hw-cas-")));
   await fsp.writeFile(path.join(dir, "main.py"), code);
+  await fsp.writeFile(path.join(dir, "run.py"), PRELUDE);
   const profile = `(version 1)(allow default)(deny network*)(deny file-write*)(allow file-write* (subpath "${dir}") (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") (literal "/dev/tty"))`;
   const useSandbox = fs.existsSync("/usr/bin/sandbox-exec");
-  const [cmd, args] = useSandbox ? ["/usr/bin/sandbox-exec", ["-p", profile, PY, "-I", "-B", "main.py"]] : [PY, ["-I", "-B", "main.py"]];
+  const [cmd, args] = useSandbox ? ["/usr/bin/sandbox-exec", ["-p", profile, PY, "-I", "-B", "run.py"]] : [PY, ["-I", "-B", "run.py"]];
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { cwd: dir, env: { PATH: "/usr/bin:/bin", HOME: dir, MPLBACKEND: "Agg" } });
     let out = "", err = "", killed = false;

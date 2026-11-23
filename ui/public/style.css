@@ -209,6 +209,10 @@ body { display: grid; grid-template-columns: 208px 1fr; overflow: hidden; }
 .nav-item.on .ni { color: var(--accent); }
 .nav-sub { display: flex; flex-direction: column; gap: 1px; margin: 0 0 4px 28px; padding-left: 8px; border-left: 1px solid var(--line); }
 .nav-sub[hidden] { display: none; }
+.nav-divider { border: none; border-top: 1px solid var(--line); margin: 6px 10px; }
+.stub { max-width: 620px; padding: 28px 32px; }
+.stub p { line-height: 1.5; }
+.stub h2.v-title { font-size: 18px; margin: 0 0 12px; }
 .nav-subitem { text-align: left; border: none; background: none; padding: 5px 10px; font-size: 13px; color: var(--muted); border-radius: 6px; }
 .nav-subitem:hover { background: #e4e2db; color: var(--ink); }
 .nav-subitem.on { color: var(--accent); font-weight: 600; background: #e4e2db; }

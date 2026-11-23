@@ -286,6 +286,9 @@ function spawnClaude({ key, args, prompt, cwd, onEvent = () => {} }) {
     const t0 = Date.now();
     const model = args[args.indexOf("--model") + 1];
     logEvent("claude", "start", { key, model, promptChars: prompt.length });
+    // `claude -p` defaults to thinking display "omitted": thinking blocks arrive with empty text and only a
+    // signature. "summarized" asks the API for readable summaries, which the Steps trace and History show.
+    if (!args.includes("--thinking-display")) args = [...args, "--thinking-display", "summarized"];
     const child = spawn("claude", args, { cwd, env });
     running.set(key, child);
     child.stdin.end(prompt);

@@ -53,7 +53,7 @@ fs.unlinkSync(tgz);
 await sh(sb, `mkdir -p ${APP} && tar -xzf /vercel/sandbox/upload.tgz -C ${APP} && rm /vercel/sandbox/upload.tgz && ls ${APP}`, { quiet: true });
 
 await sh(sb, `mkdir -p $HOME/.local/bin
-command -v claude >/dev/null || npm install -g --prefix $HOME/.local @anthropic-ai/claude-code >/dev/null
+npm install -g --prefix $HOME/.local @anthropic-ai/claude-code@latest >/dev/null # always update: ui/server.mjs passes --thinking-display
 tectonic --version >/dev/null 2>&1 || curl -fsSL "${TECTONIC_URL}" | tar -xz -C $HOME/.local/bin tectonic
 cd ${APP} && { [ -x ui/data/venv/bin/python ] || { python3 -m venv ui/data/venv && ui/data/venv/bin/pip install -q sympy; }; }
 echo "node $(node -v) | claude $(claude --version) | $(tectonic --version) | sympy $(ui/data/venv/bin/python -c 'import sympy; print(sympy.__version__)')"`);
