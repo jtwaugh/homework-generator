@@ -1181,13 +1181,15 @@ async function handle(req, res) {
 }
 
 // The whole app as one request handler: the local server below and the Vercel entry (api/index.mjs) both use it.
-let login = null;
+let login = null, pulledOnce = false;
 export async function app(req, res) {
   login ??= createLogin({ hash: PASSWORD_HASH, dataDir: DATA, trustProxy: process.env.HW_TRUST_PROXY === "1" || !!process.env.VERCEL });
   const t0 = Date.now();
   const u = req.url.split("?")[0];
   const dynamic = !u.startsWith("/") || u.startsWith("/api/") || u.startsWith("/build/") || u === "/";
-  if (dynamic) { try { await mirror.pull(); } catch (e) { logEvent("mirror", "pull-error", { error: e.message }); } }
+  // A fresh instance pulls on its first request whatever it is: otherwise a static file (main.js) that lands
+  // on a new instance before any API call finds no sessions.json and redirects the module to the login page.
+  if (dynamic || !pulledOnce) { try { await mirror.pull(); pulledOnce = true; } catch (e) { logEvent("mirror", "pull-error", { error: e.message }); } }
   const dbStamp = () => { try { const s = fs.statSync(path.join(DATA, "hw.db")); return `${s.size}:${s.mtimeMs}`; } catch { return null; } };
   const dbBefore = mirror.enabled ? dbStamp() : null;
   try {
