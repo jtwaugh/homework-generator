@@ -358,13 +358,16 @@ async function listWeeks() {
   const first = db.prepare("SELECT MIN(id) id FROM enrollment").get()?.id ?? null;
   const out = [];
   for (const f of await fsp.readdir(WEEKS)) {
-    if (!f.endsWith(".json")) continue;
+    // <id>.convo.json (the saved Claude conversation) sits beside <id>.json and isn't a week.
+    if (!f.endsWith(".json") || f.endsWith(".convo.json")) continue;
     try {
       const w = JSON.parse(await read(path.join(WEEKS, f)));
+      if (!w.id) continue;
       out.push({ id: w.id, title: w.title, createdAt: w.createdAt, turns: w.messages.length, done: !!w.done, savedAs: w.savedAs || null, model: w.model, costUSD: weekCost(w), enrollmentId: w.enrollmentId ?? owner.get(w.id) ?? first });
     } catch {}
   }
-  return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  // A week missing createdAt (hand-edited, or an old format) sorts last instead of breaking the list.
+  return out.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
 }
 async function readToolLog(id) {
   try { return (await read(toolsPath(id))).split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } }); } catch { return []; }
