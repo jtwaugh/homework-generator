@@ -1,0 +1,139 @@
+// Deterministic preflight: everything the app can settle from the files before any LLM call.
+// Builds the week's "brief": inputs with defaults filled in, unit statuses (with automatic promotions instead of
+// questions), standing rulings, a section plan, and per-section corpus coverage (which sections need research).
+// No dependencies; shared by the server and the tests.
+import fs from "node:fs";
+import path from "node:path";
+import { searchCorpus, coverage, tokenize, queryUnits } from "./corpus.mjs";
+import { parseTopics } from "../public/topics.js";
+
+const UNIT_ID = /\b(U\d\d|M\d|F\d)\b/g;
+
+export function ladderUnits(ladder) {
+  return [...ladder.matchAll(/^-\s+(U\d\d|M\d|F\d)\s+([^.]+)\.(.*)$/gm)].map((m) => ({
+    id: m[1], name: m[2].trim(), needs: (m[3].match(/Needs ([^.]*)\./)?.[1].match(UNIT_ID)) || [],
+  }));
+}
+export function gatedTerms(ladder) {
+  const sec = statusSection(ladder, "## Gated terms");
+  return sec.split("\n").flatMap((l) => { const m = l.match(/^-\s+(.+):\s*(U\d\d|M\d|F\d)\s*$/); return m ? m[1].split(/,\s*/).map((t) => ({ term: t.replace(/\s*\(.*\)$/, "").trim(), unit: m[2] })) : []; });
+}
+export function statusSection(md, heading) {
+  const i = md.toLowerCase().indexOf(heading.toLowerCase());
+  if (i < 0) return "";
+  const rest = md.slice(i + heading.length);
+  const j = rest.search(/\n##\s/);
+  return j < 0 ? rest : rest.slice(0, j);
+}
+export function weekInput(status) {
+  const sec = statusSection(status, "## This week's input");
+  const out = {};
+  for (const m of sec.matchAll(/^([A-Z][^:\n]{1,60}):[ \t]*(.*(?:\n {2,}.*)*)$/gm)) out[m[1].trim()] = m[2].replace(/\n\s+/g, " ").trim();
+  return out;
+}
+// "TAUGHT: U01, U02 (note)" -> { U01: "TAUGHT", ... }. Phrases like "rest of U11" mark that unit partial.
+export function unitStatuses(status) {
+  const st = {}, partial = new Set();
+  for (const s of ["TAUGHT", "CURRENT", "NEXT"]) {
+    const line = status.match(new RegExp(`^${s}:(.*)$`, "m"))?.[1] || "";
+    for (const id of line.match(UNIT_ID) || []) { if (!st[id]) st[id] = s; }
+    for (const m of line.matchAll(/rest of (U\d\d|M\d|F\d)/g)) partial.add(m[1]);
+  }
+  return { st, partial: [...partial] };
+}
+const reviewItems = (status) => statusSection(status, "## Review priority").split("\n").filter((l) => /^\s*(\d+[.)]|[-*])\s/.test(l))
+  .map((l) => l.replace(/^\s*(\d+[.)]|[-*])\s+/, "").replace(/\(.*$/, "").trim()).filter(Boolean);
+
+// The section plan's default sizes (project_instructions.md: routine ~15, idea-building 4-8).
+const ROUTINE = /arithmetic|drill|practice|simplify|expand|factor|solve|exponent law|basic/i;
+
+// Rulings the teacher (or an approved checkpoint) has made once, so they are never asked again.
+export function loadRulings(dataDir) {
+  try { return JSON.parse(fs.readFileSync(path.join(dataDir, "definitions.json"), "utf8")); } catch { return { rulings: [] }; }
+}
+export function saveRulings(dataDir, add) {
+  const cur = loadRulings(dataDir);
+  const seen = new Set(cur.rulings.map((r) => r.text.toLowerCase()));
+  for (const r of add) if (r?.text && !seen.has(r.text.toLowerCase())) { cur.rulings.push({ at: new Date().toISOString(), ...r }); seen.add(r.text.toLowerCase()); }
+  fs.writeFileSync(path.join(dataDir, "definitions.json"), JSON.stringify(cur, null, 1));
+  return cur;
+}
+
+export function buildBrief({ status, ladder, corpus, dataDir, overrides = {}, now = Date.now() }) {
+  const units = ladderUnits(ladder);
+  const byId = Object.fromEntries(units.map((u) => [u.id, u]));
+  const input = weekInput(status);
+  const { st, partial } = unitStatuses(status);
+  const decisions = []; // each: {key, text, default, accepted}
+
+  // Inputs, with defaults instead of questions.
+  const date = input["Date (for title)"] || "";
+  const disclaimer = /^y/i.test(input["Disclaimer"] || "") ? "yes" : "no";
+  if (!input["Disclaimer"]) decisions.push({ key: "disclaimer", text: "Disclaimer is blank: no disclaimer line.", default: "no" });
+  const graphPaper = /^y/i.test(input["Graph paper"] || "");
+
+  // Topics -> units. Unit ids in chips win; else the ladder name / keywords.
+  const topicChips = parseTopics(input["Topics"] || "").map((c) => {
+    const ids = [...new Set([...(c.id && /^(U|M|F)/.test(c.id) ? [c.id] : []), ...((c.text.match(UNIT_ID)) || [])])];
+    if (!ids.length) {
+      const toks = new Set(tokenize(c.text));
+      const byName = units.filter((u) => { const w = tokenize(u.name); return w.length && w.filter((x) => toks.has(x)).length >= Math.min(2, w.length); }).map((u) => u.id);
+      ids.push(...(byName.length ? byName : queryUnits(c.text)));
+    }
+    return { text: c.text.replace(/\s*\((U\d\d|M\d|F\d)\)\s*$/, "").trim(), units: ids };
+  });
+
+  // Units this week needs that aren't TAUGHT/CURRENT: promote them by default (the teacher put them in Topics).
+  const allowed = new Set(Object.entries(st).filter(([, s]) => s === "TAUGHT" || s === "CURRENT").map(([id]) => id));
+  const promotions = [];
+  for (const c of topicChips) for (const id of c.units) {
+    if (allowed.has(id) || promotions.some((p) => p.id === id)) continue;
+    const from = st[id] || "FUTURE";
+    const missing = (byId[id]?.needs || []).filter((n) => !allowed.has(n) && !promotions.some((p) => p.id === n));
+    const key = `promote:${id}`;
+    const accept = overrides[key] !== false;
+    promotions.push({ id, from, missingNeeds: missing, accepted: accept });
+    decisions.push({ key, text: `${id} ${byId[id]?.name || ""} is ${from}; treat it as CURRENT this week${missing.length ? ` (its prerequisites ${missing.join(", ")} are not marked taught; stay within what the topic needs)` : ""}.`, default: true, accepted: accept });
+    if (accept) allowed.add(id);
+  }
+  for (const id of partial) if (topicChips.some((c) => c.units.includes(id))) decisions.push({ key: `partial:${id}`, text: `${id} is only partly taught; use only the parts already covered.`, default: true });
+
+  // Section plan.
+  const nSections = Number((input["Number of sections (default 3-4)"] || input["Number of sections"] || "").match(/\d+/)?.[0]) || null;
+  const review = reviewItems(status);
+  const topicSecs = topicChips.filter((c) => !c.units.length || c.units.some((u) => allowed.has(u)));
+  const dropped = topicChips.filter((c) => !topicSecs.includes(c));
+  for (const c of dropped) decisions.push({ key: `drop:${c.text}`, text: `Skipping topic "${c.text}" (its unit is not promoted).`, default: true });
+  const sections = topicSecs.map((c, i) => ({ key: `t${i + 1}`, title: c.text, query: c.text, units: c.units, kind: ROUTINE.test(c.text) && i === 0 ? "routine" : "idea", target: ROUTINE.test(c.text) && i === 0 ? 15 : 6 }));
+  const maxSecs = nSections || 4;
+  if (sections.length < maxSecs && review.length) sections.push({ key: "review", title: "Mixed review", query: review.join(" "), units: [...new Set(review.flatMap((r) => queryUnits(r)))].filter((u) => st[u] === "TAUGHT" || (st[u] === "CURRENT" && !promotions.some((p) => p.id === u))), kind: "review", target: Math.min(6, review.length * 2), review });
+  if (sections.length > maxSecs) decisions.push({ key: "sections", text: `${sections.length} topics for ${maxSecs} sections: the lowest-priority topics merge or move to optional review.`, default: true });
+
+  // Coverage: which sections the corpus can fill without research.
+  const cov = coverage(corpus, sections, { allowed: [...allowed], now });
+  sections.forEach((s, i) => Object.assign(s, { coverage: cov[i].verdict, usable: cov[i].usable, corpusIds: cov[i].ids }));
+
+  const rulings = loadRulings(dataDir).rulings;
+  const required = date ? [] : ["date"];
+  return {
+    date, disclaimer, graphPaper, required,
+    allowedUnits: [...allowed].sort(), promotions, decisions, rulings,
+    extraBans: statusSection(status, "## Extra bans this week").split("\n").map((l) => l.replace(/^\s*-\s*/, "").trim()).filter((l) => l && !/^\(none\)$/i.test(l)),
+    sections, needsResearch: sections.filter((s) => s.coverage !== "covered").map((s) => s.key),
+  };
+}
+
+// The brief as the text Claude gets (start of the outline stage).
+export function briefText(b, corpusById = {}) {
+  const lines = [
+    `Date: ${b.date} · Disclaimer: ${b.disclaimer} · Graph paper: ${b.graphPaper ? "yes" : "no"}`,
+    `Allowed units this week (TAUGHT or CURRENT, after promotions): ${b.allowedUnits.join(", ")}`,
+    b.extraBans.length ? `Extra bans: ${b.extraBans.join("; ")}` : "",
+    "", "## Decisions already made (do not ask about these; list them under Assumptions)",
+    ...b.decisions.filter((d) => d.accepted !== false).map((d) => `- ${d.text}`),
+    ...(b.rulings.length ? ["", "## Standing rulings from the teacher (apply them; never re-ask)", ...b.rulings.map((r) => `- ${r.text}`)] : []),
+    "", "## Section plan (corpus coverage decides where research is needed)",
+    ...b.sections.map((s, i) => `${i + 1}. ${s.title} [${s.units.join(", ") || "no unit"}] ${s.kind}, about ${s.target} problems. Corpus: ${s.coverage} (${s.usable} usable${s.corpusIds.length ? ": " + s.corpusIds.slice(0, 12).join(", ") : ""})`),
+  ];
+  return lines.filter((l) => l !== "").join("\n").replace(/\n## /g, "\n\n## ");
+}

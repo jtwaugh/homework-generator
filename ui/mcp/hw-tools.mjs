@@ -31,6 +31,7 @@ export const TOOLS = [
         units: { type: "array", items: { type: "string" }, description: "Ladder unit ids, e.g. [\"U14\", \"U05\"]" },
         query: { type: "string", description: "Keywords, e.g. 'systems of inequalities empty solution set'" },
         wuNodes: { type: "array", items: { type: "string" }, description: "Optional Wu DAG node ids (content eNN, methods m:eNN)" },
+        similarTo: { type: "string", description: "Optional problem LaTeX: finds the same problem type even with different numbers, variables or wording" },
         limit: { type: "number", description: "Max results (default 10, max 30)" },
       },
     },
@@ -95,7 +96,7 @@ export async function callTool(name, args = {}) {
     return runCas(args.code);
   }
   if (name === "corpus_search") {
-    const hits = searchCorpus(loadCorpus(), { units: args.units, query: args.query, wuNodes: args.wuNodes, limit: Math.min(30, args.limit || 10) });
+    const hits = searchCorpus(loadCorpus(), { units: args.units, query: args.query, wuNodes: args.wuNodes, similarTo: args.similarTo, limit: Math.min(30, args.limit || 10) });
     return { ok: true, text: formatHits(hits), hits: hits.length };
   }
   if (name === "corpus_add") {

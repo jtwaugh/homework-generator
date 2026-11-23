@@ -5,7 +5,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { searchCorpus, splitTex, problemId, addProblems, attachTex } from "../lib/corpus.mjs";
+import { searchCorpus, splitTex, problemId, addProblems, attachTex, shapeSim, coverage } from "../lib/corpus.mjs";
+import { buildBrief, briefText } from "../lib/preflight.mjs";
+import { decideAuth } from "../lib/auth.mjs";
+import { stageFor, modelFor, assumptionsOf, STAGES } from "../server.mjs";
 import { parseTopics, serializeTopics, historyTopics } from "../public/topics.js";
 import { computeStates } from "../public/dag.js";
 import { S, lintTex, nextSetDate } from "../public/lib.js";
@@ -88,6 +91,74 @@ test("progress map: Claude's guess shows, your override wins", () => {
   assert.equal(s.a.display, "done"); assert.equal(s.b.display, "partial"); assert.equal(s.c.display, "locked");
   const o = computeStates(dag, "content", guess, { b: { state: "done", at: "x" } });
   assert.equal(o.b.by, "you"); assert.equal(o.c.display, "ready");
+});
+
+// ---------- fuzzy retrieval, preflight, stage routing ----------
+const fz = [
+  P("Find the slope of the line through $(5,-2)$ and $(3,\\frac{1}{2})$.", ["U12"]),
+  P("Shade the half-plane $y < 3x + 2$ and say whether $(0,0)$ is in it.", ["U13"]),
+  P("Expand $(x+3)^2$ and simplify.", ["U19"]),
+  P("Solve $|x-4| = 7$.", ["M1"]),
+];
+test("fuzzy search: a numeric/variable variant of a problem ranks first", () => {
+  const hits = searchCorpus(fz, { similarTo: "Find the slope of the line through $(7,1)$ and $(-2,\\frac{3}{4})$.", limit: 3 });
+  assert.equal(hits[0].p.units[0], "U12");
+  assert.ok(shapeSim("Solve $2x+3=7$.", "Solve $5t+1=9$.") > 0.9);
+});
+test("fuzzy search: spelling and synonym variants match (halfplane, perp)", () => {
+  assert.equal(searchCorpus(fz, { query: "halfplane", limit: 2 })[0]?.p.units[0], "U13");
+  assert.equal(searchCorpus(fz, { query: "absolute value equation", limit: 2 })[0]?.p.units[0], "M1");
+});
+test("corpus save merges near-duplicates (same numbers, different spacing/wording)", () => {
+  const list = fz.map((x) => ({ ...x, aliases: [] }));
+  const r = addProblems(list, [{ tex: "Find the slope of the line through $(5, -2)$ and $(3, \\dfrac{1}{2})$." }], { file: false });
+  assert.equal(r.added.length, 0);
+  assert.equal(r.merged[0], fz[0].id);
+});
+test("coverage: a section with enough usable corpus problems needs no research", () => {
+  const many = Array.from({ length: 8 }, (_, i) => P(`Expand $(x+${i + 1})^2$.`, ["U19"]));
+  const c = coverage([...fz, ...many], [{ key: "a", title: "expand squares", query: "expand", units: ["U19"], target: 6 }, { key: "b", title: "parabola focus", query: "parabola focus directrix", units: ["U15"], target: 6 }], { allowed: ["U19", "U15"] });
+  assert.equal(c[0].verdict, "covered");
+  assert.equal(c[1].verdict, "empty");
+});
+test("preflight: topics in NEXT/FUTURE units are promoted instead of asked; blank disclaimer means no", () => {
+  const ladder = fs.readFileSync(path.join(HERE, "..", "..", "curriculum_ladder.md"), "utf8");
+  const status = ["# Weekly status", "", "TAUGHT: U01, U02, U03, U04, U05, U06, U07, U08, U09, U10, U12, U13, U14", "CURRENT: U11", "NEXT: U15", "",
+    "## This week's input", "Date (for title): 11/23/2026", "Topics: Polynomial arithmetic and exponent laws (U19); Functions and domain, introduced only as needed (U21); Parabolas geometrically (U15)", "Disclaimer: ", ""].join("\n");
+  const b = buildBrief({ status, ladder, corpus: fz, dataDir: path.join(HERE, "no-such-dir") });
+  assert.deepEqual(b.promotions.map((p) => p.id).sort(), ["U15", "U19", "U21"]);
+  assert.equal(b.disclaimer, "no");
+  assert.deepEqual(b.required, []);
+  assert.ok(b.sections.length >= 3 && b.sections.length <= 4);
+  assert.ok(b.allowedUnits.includes("U19"));
+  assert.match(briefText(b), /do not ask/);
+  const off = buildBrief({ status, ladder, corpus: fz, dataDir: path.join(HERE, "no-such-dir"), overrides: { "promote:U21": false } });
+  assert.ok(!off.allowedUnits.includes("U21"));
+});
+test("routing: checkpoint on the main model, final on Sonnet, fixes on Haiku then up a tier", () => {
+  const w = { model: "claude-opus-5-5", messages: [] };
+  assert.equal(stageFor("start", w), "outline");
+  assert.equal(modelFor("outline", w), "claude-opus-5-5");
+  assert.equal(stageFor("approve", w), "final");
+  assert.equal(modelFor("final", w), STAGES.final.model);
+  assert.equal(modelFor("fix", { messages: [{ role: "user", kind: "fix" }] }), STAGES.fix.model);
+  assert.notEqual(modelFor("fix", { messages: [{ role: "user", kind: "fix" }, { role: "user", kind: "fix" }] }), STAGES.fix.model);
+  assert.equal(stageFor("chat", { messages: [{ role: "assistant", text: "```latex\n\\begin{document}\n```" }] }), "final");
+});
+test("approval: the checkpoint's Assumptions become rulings", () => {
+  const cp = "**Judgment calls:** none\n**Assumptions:**\n- U19 treated as CURRENT: positive integer exponents only.\n- Domain means all real inputs that give a real output.\n**Removed in audit:** none";
+  assert.deepEqual(assumptionsOf(cp), ["U19 treated as CURRENT: positive integer exponents only.", "Domain means all real inputs that give a real output."]);
+});
+
+test("auth: subscription wins; API key only when none is found and HW_ALLOW_API_KEY=1", () => {
+  const sub = { loggedIn: true, authMethod: "claude.ai", subscriptionType: "max" }, none = { loggedIn: false, authMethod: "none" };
+  const key = { ANTHROPIC_API_KEY: "sk-x" }, optIn = { ...key, HW_ALLOW_API_KEY: "1" };
+  assert.equal(decideAuth(sub, optIn).mode, "subscription");
+  assert.equal(decideAuth(none, optIn).mode, "api-key");
+  assert.equal(decideAuth(null, optIn).mode, "api-key");
+  assert.equal(decideAuth(none, key).mode, "none");
+  assert.match(decideAuth(none, key).note, /HW_ALLOW_API_KEY=1/);
+  assert.equal(decideAuth(none, { HW_ALLOW_API_KEY: "1" }).mode, "none");
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

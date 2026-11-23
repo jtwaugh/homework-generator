@@ -41,8 +41,10 @@ export function addProblems(items, incoming, { file } = {}) {
     const units = asList(raw.units).map((u) => u.toUpperCase()).filter((u) => /^(U\d\d|M\d|F\d)$/.test(u));
     const wuNodes = asList(raw.wuNodes);
     const tags = asList(raw.tags).map((t) => t.toLowerCase());
-    const old = byId.get(id);
+    // Exact match by id, else a cosmetic near-copy (renamed variable, reworded directions).
+    const old = byId.get(id) || nearDuplicates(items, raw.tex)[0];
     if (old) {
+      if (old.id !== id) old.aliases = [...new Set([...(old.aliases || []), id])];
       // merge: never downgrade status, union tags, keep the earliest source
       old.units = [...new Set([...old.units, ...units])];
       old.wuNodes = [...new Set([...(old.wuNodes || []), ...wuNodes])];
@@ -51,7 +53,7 @@ export function addProblems(items, incoming, { file } = {}) {
       if (raw.casVerified) old.casVerified = true;
       if (raw.status === "used" && old.status === "candidate") old.status = "used";
       if (raw.usedOn) old.usedOn = [...new Set([...(old.usedOn || []), ...asList(raw.usedOn)])].sort();
-      merged.push(id);
+      merged.push(old.id);
     } else {
       const p = {
         id, tex: String(raw.tex).trim(), answer: raw.answer ? String(raw.answer) : "",
@@ -81,35 +83,124 @@ export function tokenize(s) {
 const daysAgo = (d, now) => (now - new Date(d).getTime()) / 864e5;
 const STATUS_BOOST = { favorite: 1.5, candidate: 0.6, used: 0.2 };
 
-export function searchCorpus(items, { units = [], query = "", wuNodes = [], limit = 10, now = Date.now(), recentDays = 42, includeUsed = true } = {}) {
+// ---------- fuzzy matching helpers ----------
+
+// Topic words the teacher uses -> words that appear in problems. Each expansion counts at 0.6 of an exact hit.
+export const SYNONYMS = {
+  exponent: ["power", "exponent", "law", "product", "quotient"], power: ["exponent"], polynomial: ["monomial", "binomial", "trinomial", "degree", "coefficient", "expand", "term"],
+  arithmetic: ["expand", "simplify", "add", "subtract", "multiply"], parabola: ["focu", "directrix", "equidistant", "distance", "vertex"],
+  function: ["domain", "input", "output", "value"], domain: ["function", "defined", "denominator"],
+  inequality: ["halfplane", "inequality", "region", "shade"], halfplane: ["inequality", "region", "shade", "boundary"],
+  system: ["system", "simultaneou", "intersection"], line: ["slope", "intercept", "point", "perpendicular", "parallel"],
+  perpendicular: ["bisector", "slope", "altitude"], bisector: ["perpendicular", "midpoint", "circumcenter"],
+  triangle: ["vertice", "median", "altitude", "centroid", "orthocenter", "circumcenter"], center: ["centroid", "orthocenter", "circumcenter"],
+  square: ["completing", "root", "radical"], completing: ["square", "canonical"], quadratic: ["square", "factor", "root", "completing"],
+  rational: ["fraction", "extraneou", "denominator"], extraneou: ["rational", "check"], radical: ["root", "sqrt"], root: ["radical", "solution"],
+  factor: ["factoring", "difference", "trinomial"], distance: ["pythagorean", "midpoint", "length"], midpoint: ["distance", "bisector"],
+};
+
+const trigramsOf = (w) => { const s = ` ${w} `; const out = new Set(); for (let i = 0; i < s.length - 2; i++) out.add(s.slice(i, i + 3)); return out; };
+const dice = (a, b) => { let n = 0; for (const x of a) if (b.has(x)) n++; return (2 * n) / (a.size + b.size || 1); };
+const jaccard = (a, b) => { let n = 0; for (const x of a) if (b.has(x)) n++; return n / (a.size + b.size - n || 1); };
+
+// Index tokens plus joined neighbours, so "half plane" also matches "halfplane".
+const withCompounds = (toks) => { const out = [...toks]; for (let i = 0; i + 1 < toks.length; i++) out.push(toks[i] + toks[i + 1]); return out; };
+
+// Structural signature of a problem's math: numbers -> #, single-letter variables -> v, commands and operators kept.
+// Two problems with the same shape are the same exercise type with different data.
+const MATH_RE = /\$\$([\s\S]*?)\$\$|\$([^$]*)\$|\\\[([\s\S]*?)\\\]|\\begin\{(cases|align\*?|aligned)\}([\s\S]*?)\\end\{\4\}/g;
+export function shapeTokens(tex) {
+  const math = [...String(tex || "").matchAll(MATH_RE)].map((m) => m[1] ?? m[2] ?? m[3] ?? `\\${m[4]} ${m[5]}`).join(" ; ");
+  return math.replace(/\\(left|right|,|;|!|quad|qquad|displaystyle)\b/g, " ")
+    .match(/\\[a-zA-Z]+|\d+(?:\.\d+)?|[A-Za-z]|[=<>+\-*/^_(){}\[\],;|]/g)?.map((t) => /^\d/.test(t) ? "#" : /^[A-Za-z]$/.test(t) ? "v" : t.replace(/^\\(dfrac|tfrac)$/, "\\frac").replace(/^\\(leq|le)$/, "≤").replace(/^\\(geq|ge)$/, "≥")) || [];
+}
+export function shapeOf(tex) {
+  const t = shapeTokens(tex), out = new Set();
+  for (let i = 0; i + 2 < t.length; i++) out.add(t.slice(i, i + 3).join(""));
+  if (t.length && t.length < 3) out.add(t.join(""));
+  return out;
+}
+export const shapeSim = (a, b) => jaccard(a instanceof Set ? a : shapeOf(a), b instanceof Set ? b : shapeOf(b));
+const numbersOf = (tex) => (String(tex).match(/\d+(?:\.\d+)?/g) || []).sort().join(",");
+
+// Same exercise, cosmetically different (renamed variable, reworded directions): same numbers, same shape, similar words.
+export function isNearDuplicate(a, b) {
+  if (numbersOf(a) !== numbersOf(b)) return false;
+  if (shapeSim(a, b) < 0.9) return false;
+  return jaccard(new Set(tokenize(a.replace(MATH_RE, " "))), new Set(tokenize(b.replace(MATH_RE, " ")))) >= 0.5;
+}
+export function nearDuplicates(items, tex) {
+  const s = shapeOf(tex);
+  return items.filter((p) => p.tex && shapeSim(s, shapeOf(p.tex)) >= 0.9 && isNearDuplicate(p.tex, tex));
+}
+
+export function searchCorpus(items, { units = [], query = "", wuNodes = [], similarTo = "", limit = 10, now = Date.now(), recentDays = 42, includeUsed = true } = {}) {
   units = asList(units).map((u) => u.toUpperCase());
   wuNodes = asList(wuNodes);
   const pool = items.filter((p) => p.status !== "rejected" && (includeUsed || p.status !== "used"));
-  const docs = pool.map((p) => tokenize([p.tex, p.tags.join(" "), p.context, p.answer].join(" ")));
+  const docs = pool.map((p) => withCompounds(tokenize([p.tex, (p.tags || []).join(" "), p.context, p.answer].join(" "))));
   const N = docs.length || 1, avg = docs.reduce((s, d) => s + d.length, 0) / N || 1;
   const df = new Map();
   for (const d of docs) for (const w of new Set(d)) df.set(w, (df.get(w) || 0) + 1);
-  const q = [...new Set(tokenize(query))];
+
+  // Query terms with weights: exact (1), keyword units' words, synonyms (0.6), and fuzzy vocabulary matches (dice x 0.8).
+  const qWeights = new Map();
+  const bump = (w, x) => { if (x > (qWeights.get(w) || 0)) qWeights.set(w, x); };
+  const qToks = withCompounds(tokenize(query));
+  const vocab = [...df.keys()].map((w) => [w, trigramsOf(w)]);
+  for (const w of qToks) {
+    bump(w, 1);
+    for (const s of SYNONYMS[w] || []) bump(s, 0.6);
+    if (!df.has(w) && w.length >= 5) {
+      const g = trigramsOf(w);
+      for (const [v, vg] of vocab) { const d = dice(g, vg); if (d >= 0.7 && v !== w) bump(v, 0.8 * d); }
+    }
+  }
+  const unitsFromQuery = queryUnits(query);
+  const shape = similarTo ? shapeOf(similarTo) : null;
   const k1 = 1.2, b = 0.75;
   const scored = pool.map((p, i) => {
     const d = docs[i]; const tf = new Map();
     for (const w of d) tf.set(w, (tf.get(w) || 0) + 1);
-    let bm = 0;
-    for (const w of q) {
+    let bm = 0, exact = 0;
+    for (const [w, wt] of qWeights) {
       const f = tf.get(w); if (!f) continue;
       const idf = Math.log(1 + (N - df.get(w) + 0.5) / (df.get(w) + 0.5));
-      bm += idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * d.length / avg));
+      bm += wt * idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * d.length / avg));
+      if (wt === 1) exact++;
     }
     const unitHits = units.filter((u) => p.units.includes(u)).length;
+    const inferredHits = unitsFromQuery.filter((u) => !units.includes(u) && p.units.includes(u)).length;
     const nodeHits = wuNodes.filter((n) => (p.wuNodes || []).includes(n)).length;
+    const sim = shape ? shapeSim(shape, shapeOf(p.tex)) : 0;
     const lastUsed = (p.usedOn || []).at(-1);
     const recent = lastUsed && daysAgo(lastUsed, now) < recentDays;
-    let score = bm + 2.5 * unitHits + 1.5 * nodeHits + (STATUS_BOOST[p.status] || 0);
+    let score = bm + 2.5 * unitHits + 1.0 * inferredHits + 1.5 * nodeHits + 6 * sim + (STATUS_BOOST[p.status] || 0);
     if (recent) score -= 4; // used in the last ~6 weeks: avoid repeating; older uses are fine as review
-    return { p, score, why: { bm: +bm.toFixed(2), unitHits, nodeHits, recent: !!recent } };
-  }).filter((x) => (q.length || units.length || wuNodes.length) ? x.why.bm > 0 || x.why.unitHits || x.why.nodeHits : true);
+    return { p, score, why: { bm: +bm.toFixed(2), exact, unitHits: unitHits + inferredHits, nodeHits, shape: +sim.toFixed(2), recent: !!recent } };
+  }).filter((x) => (qWeights.size || units.length || wuNodes.length || shape) ? x.why.bm > 0 || x.why.unitHits || x.why.nodeHits || x.why.shape >= 0.3 : true);
   scored.sort((a, b) => b.score - a.score || a.p.id.localeCompare(b.p.id));
   return scored.slice(0, limit);
+}
+
+// Units a free-text topic points at, from the ladder keywords ("systems of inequalities" -> U14).
+export function queryUnits(query) {
+  const t = String(query || "").toLowerCase();
+  return Object.entries(UNIT_KEYWORDS).filter(([, ks]) => ks.some((k) => k.length > 3 && !k.startsWith("\\") && t.includes(k))).map(([u]) => u);
+}
+
+// For each planned section, does the corpus already hold enough usable problems?
+//   sections: [{key, title, query, units, target}]   allowed: unit ids that are TAUGHT or CURRENT
+//   -> [{key, verdict: covered|thin|empty, usable, target, ids}]
+export function coverage(items, sections, { allowed = null, now = Date.now(), recentDays = 42 } = {}) {
+  const ok = allowed && new Set(allowed);
+  return sections.map((s) => {
+    const hits = searchCorpus(items, { units: s.units, query: s.query || s.title, limit: Math.max(30, (s.target || 6) * 4), now, recentDays });
+    const usable = hits.filter((h) => !h.why.recent && h.why.unitHits > 0 && (!ok || h.p.units.every((u) => ok.has(u))) && (h.why.exact > 0 || h.why.unitHits > 0));
+    const target = s.target || 6;
+    const verdict = usable.length >= target ? "covered" : usable.length >= Math.ceil(target / 2) ? "thin" : "empty";
+    return { key: s.key, title: s.title, units: s.units, verdict, usable: usable.length, target, ids: usable.slice(0, target * 2).map((h) => h.p.id) };
+  });
 }
 
 // Compact text for Claude (tool results and the start-prompt preload).
@@ -165,7 +256,10 @@ const UNIT_KEYWORDS = {
   U06: ["rational equation", "extraneous"], U07: ["ordered pair", "plot", "coordinate"], U08: ["slope", "point-slope", "y-intercept", "line"],
   U09: ["system", "\\begin{cases}", "number of solutions"], U10: ["x-intercept", "standard form", "perpendicular", "parallel", "elimination"],
   U11: ["midpoint", "distance", "pythagorean", "orthocenter", "centroid", "circumcenter", "median", "altitude", "bisector"],
-  U12: ["inequality", "compound"], U13: ["half-plane", "halfplane", "graph the inequality", "shade"], U14: ["system of inequalities", "solution set of the system", "region"],
+  U12: ["inequality", "compound"], U13: ["half-plane", "halfplane", "graph the inequality", "shade"], U14: ["system of inequalities", "systems of linear inequalities", "solution set of the system", "region"],
+  U15: ["parabola", "focus", "directrix", "equidistant"], U16: ["vertex form", "transformation"], U17: ["quadratic formula", "discriminant", "vieta"],
+  U18: ["complex number", "imaginary"], U19: ["exponent", "polynomial", "monomial", "degree of", "power"], U20: ["synthetic", "remainder theorem", "factor theorem", "polynomial division"],
+  U21: ["function", "domain", "f(x)", "f(", "g("], M1: ["absolute value", "|x"], M2: ["quadratic inequalit"], M3: ["radical equation"], M4: ["line and parabola", "line-parabola"],
 };
 export function keywordUnits(tex) {
   const t = String(tex).toLowerCase();

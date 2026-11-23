@@ -118,7 +118,7 @@ export async function flushStatus(backup = false) {
 
 let pollTimer = null, tickTimer = null;
 
-export async function send(kind, text) {
+export async function send(kind, text, extra = {}) {
   const week = app.week;
   if (!week || week.running) return;
   week.messages.push({ role: "user", text, kind, at: new Date().toISOString() });
@@ -126,7 +126,7 @@ export async function send(kind, text) {
   week.sendError = null;
   week.live = { text: "", tools: [], startedAt: Date.now() };
   render();
-  fetch(`/api/weeks/${week.id}/message`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, kind }) })
+  fetch(`/api/weeks/${week.id}/message`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, kind, ...extra }) })
     .then(async (r) => { if (!r.ok) throw new Error((await r.json()).error); const rd = r.body.getReader(); while (!(await rd.read()).done); })
     .catch((e) => { if (app.week?.id === week.id) app.week.sendError = e.message; })
     .finally(() => poll());
@@ -167,7 +167,7 @@ export async function openWeek(id) {
 export async function refresh(pickWeek = true) {
   const st = await api("/api/state");
   const dirty = S.status !== S.savedStatus;
-  Object.assign(S, { savedStatus: st.status, ladder: st.ladder, texFiles: st.texFiles, student: st.student, weeks: st.weeks, tectonic: st.tectonic, model: st.model, cas: st.cas, budget: st.budget, corpusSize: st.corpusSize }, parseLadder(st.ladder));
+  Object.assign(S, { savedStatus: st.status, ladder: st.ladder, texFiles: st.texFiles, student: st.student, weeks: st.weeks, tectonic: st.tectonic, model: st.model, cas: st.cas, auth: st.auth, budget: st.budget, corpusSize: st.corpusSize }, parseLadder(st.ladder));
   if (!dirty) S.status = st.status;
   if (pickWeek && !app.week) {
     const open = location.hash === "#new" ? null : st.weeks.find((w) => !w.done);

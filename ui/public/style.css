@@ -248,6 +248,30 @@ header button.ghost { padding: 5px 10px; font-size: 13.5px; }
 .tool-chip[open] { flex-basis: 100%; }
 .tool-body pre { font: 11px/1.4 var(--mono); background: #f4f3ef; padding: 6px 8px; border-radius: 6px; max-height: 220px; overflow: auto; white-space: pre-wrap; margin: 4px 0; }
 @keyframes pulse { 50% { opacity: .35; } }
+/* step trace */
+.trace { list-style: none; margin: 0 0 4px; padding: 0 0 0 12px; border-left: 2px solid var(--line); display: flex; flex-direction: column; gap: 3px; }
+.trace > li { position: relative; font-size: 12.5px; }
+.trace details { margin: 0; }
+.trace summary { list-style: none; display: flex; gap: 6px; align-items: baseline; cursor: pointer; padding: 1px 0; min-width: 0; }
+.trace summary::-webkit-details-marker { display: none; }
+.trace .tl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trace details[open] > summary .tl { white-space: normal; }
+.tr-tool .tm { color: var(--muted); font: 11px var(--mono); white-space: nowrap; }
+.tr-tool.pending .ti { animation: pulse 1s ease-in-out infinite; } .tr-tool.pending .tm { font-style: italic; }
+.tr-tool.bad summary { color: var(--bad); } .tr-tool.bad .tm { color: var(--bad); }
+.tr-think summary { color: var(--muted); font-style: italic; }
+.tr-think .tl { white-space: normal; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.tr-think details[open] > summary .tl { display: none; }
+.think-body { color: var(--muted); font-style: italic; white-space: pre-wrap; font-size: 12.5px; max-height: 260px; overflow: auto; padding: 2px 0 4px 22px; }
+.tr-think.now .think-body { max-height: 140px; }
+.tr-say { padding: 3px 0; } .tr-say .md { font-size: 14px; } .tr-say .md > :first-child { margin-top: 0; } .tr-say .md > :last-child { margin-bottom: 0; }
+.tr-stage { font-size: 11px !important; text-transform: uppercase; letter-spacing: .07em; font-weight: 600; color: var(--accent); margin-top: 4px; }
+.tr-stage:first-child { margin-top: 0; }
+.trace > li::before { content: ""; position: absolute; left: -17px; top: 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--panel); border: 2px solid var(--line); }
+.trace > li.tr-stage::before { background: var(--accent); border-color: var(--accent); }
+.trace > li.tr-say::before { top: 9px; }
+.steps-wrap { margin: 0 0 8px; } .steps-wrap > summary { font-size: 12.5px; cursor: pointer; color: var(--ink); }
+.steps-wrap[open] > summary { margin-bottom: 6px; }
 .composer { border-top: 1px solid var(--line); padding: 10px 14px 12px; background: var(--panel); display: flex; flex-direction: column; gap: 6px; }
 .composer textarea { font-size: 14px; min-height: 64px; max-height: 40vh; }
 
@@ -405,3 +429,15 @@ header button.ghost { padding: 5px 10px; font-size: 13.5px; }
 .cp-head { flex-wrap: wrap; row-gap: 2px; }
 .cp-head > .muted.small:first-of-type { flex: 1 1 200px; min-width: 0; }
 .cost-table tr.muted td { color: var(--muted); font-style: italic; }
+
+/* setup: the app's brief (decisions made without asking, corpus coverage, stage plan) */
+.brief { display: grid; gap: 6px; margin: 10px 0; }
+.brief:empty { display: none; }
+.brief .chip { display: inline-block; padding: 1px 8px; border-radius: 10px; border: 1px solid #ccc; background: #fafafa; font: inherit; margin: 2px 2px 2px 0; }
+.brief button.chip { cursor: pointer; }
+.brief .chip.off { text-decoration: line-through; opacity: .6; }
+.brief .cov-covered { border-color: #6a6; }
+.brief .cov-thin { border-color: #c90; }
+.brief .cov-empty { border-color: #c66; }
+.brief ul { margin: 4px 0 0 18px; padding: 0; }
+.u-now > .muted.small, .u-now > button.link { white-space: nowrap; }

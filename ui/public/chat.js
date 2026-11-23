@@ -27,6 +27,42 @@ function toolChip(t, key) {
 }
 const chipsHtml = (tools, prefix) => (tools?.length ? `<div class="chips-row">${tools.map((t, i) => toolChip(t, `${prefix}-${i}`)).join("")}</div>` : "");
 
+// ---------- step trace: thinking, narration and tool calls in the order they happened ----------
+
+const STAGE_NAME = { research: "Research", outline: "Outline", final: "Writing", fix: "Fixing", verify: "Answer check" };
+const modelShort = (m) => String(m || "").replace(/^claude-/, "").replace(/-\d{8}$/, "");
+function toolStep(t, key) {
+  const n = short(t.name);
+  const status = t.ok === false ? " bad" : t.chars == null ? " pending" : "";
+  const meta = t.chars == null ? "running…" : [t.ms != null ? `${(t.ms / 1000).toFixed(1)}s` : "", `${(t.chars / 1000).toFixed(1)}k`].filter(Boolean).join(" · ");
+  const input = n === "cas" ? t.input?.code : JSON.stringify(t.input, null, 1);
+  return `<li class="tr-tool${status}"><details data-key="${esc(key)}"><summary><span class="ti">${ICON[n] || "🔧"}</span><span class="tl">${esc(toolLabel(t))}</span><span class="tm">${esc(t.ok === false ? "failed" : meta)}</span></summary>
+    <div class="tool-body"><div class="muted small">${esc(n)}</div><pre>${esc(input || "")}</pre>${t.preview ? `<div class="muted small">result</div><pre>${esc(t.preview)}</pre>` : ""}</div></details></li>`;
+}
+function traceHtml(trace, tools, prefix, live) {
+  const byId = new Map((tools || []).map((t) => [t.id, t]));
+  const lastThink = live ? trace.findLastIndex((x) => x.k === "think") : -1;
+  return `<ol class="trace">${trace.map((x, i) => {
+    const key = `${prefix}-${i}`;
+    if (x.k === "stage") return `<li class="tr-stage"><span>${esc(STAGE_NAME[x.stage] || x.stage)}</span>${x.model ? `<span class="muted"> · ${esc(modelShort(x.model))}</span>` : ""}</li>`;
+    if (x.k === "tool") { const t = byId.get(x.id); return t ? toolStep(t, key) : ""; }
+    const text = (x.text || "").trim();
+    if (!text || text === "---") return "";
+    if (x.k === "think") {
+      const current = i === lastThink && i === trace.length - 1;
+      return `<li class="tr-think${current ? " now" : ""}"><details data-key="${esc(key)}"${current ? " open" : ""}><summary><span class="ti">💭</span><span class="tl">${esc(text.replace(/\s+/g, " ").slice(0, 600))}</span></summary><div class="think-body">${esc(text)}</div></details></li>`;
+    }
+    return `<li class="tr-say"><div class="md">${assistantHtml(text)}</div></li>`;
+  }).join("")}</ol>`;
+}
+// A finished turn keeps its steps folded away above the reply; older weeks without a trace fall back to chips.
+function stepsHtml(m, prefix) {
+  if (!m.trace?.length) return chipsHtml(m.tools, prefix);
+  const nTools = m.trace.filter((x) => x.k === "tool").length, nThink = m.trace.filter((x) => x.k === "think" && x.text.trim()).length;
+  const bits = [nTools && `${nTools} tool call${nTools === 1 ? "" : "s"}`, nThink && `${nThink} thought${nThink === 1 ? "" : "s"}`].filter(Boolean).join(" · ");
+  return `<details class="steps-wrap" data-key="${esc(prefix)}-steps"><summary>Steps${bits ? ` <span class="muted">· ${bits}</span>` : ""}</summary>${traceHtml(m.trace, m.tools, prefix, false)}</details>`;
+}
+
 // ---------- messages ----------
 
 // Long fenced blocks (the .tex, weekly_status.md, the manifest) go to the work pane; show a stub here.
@@ -66,12 +102,13 @@ function threadHtml() {
   week.messages.forEach((m, i) => {
     if (i === outline.length && i > 0) out.push(`<div class="phase-sep"><span>Final</span></div>`);
     if (m.role === "user") out.push(`<div class="msg user k-${esc(kindOf(m))}">${userLabel(m)}</div>`);
-    else if (m === shownRight) out.push(`<div class="msg assistant">${chipsHtml(m.tools, `m${i}`)}<div class="md">${md((m.text || "").split(/\n\s*\n/)[0].slice(0, 400))}</div><div class="block-stub">📋 ${isCheckpoint(m.text) ? "Outline checkpoint" : "Claude's questions"} <span class="muted">· shown on the right</span></div>${m.error ? `<div class="err">Stopped: ${esc(m.error)}</div>` : ""}${costFooter(m)}</div>`);
-    else out.push(`<div class="msg assistant">${chipsHtml(m.tools, `m${i}`)}<div class="md">${assistantHtml(m.text)}</div>${m.error ? `<div class="err">Stopped: ${esc(m.error)}</div>` : ""}${costFooter(m)}</div>`);
+    else if (m === shownRight) out.push(`<div class="msg assistant">${stepsHtml(m, `m${i}`)}<div class="md">${md((m.text || "").split(/\n\s*\n/)[0].slice(0, 400))}</div><div class="block-stub">📋 ${isCheckpoint(m.text) ? "Outline checkpoint" : "Claude's questions"} <span class="muted">· shown on the right</span></div>${m.error ? `<div class="err">Stopped: ${esc(m.error)}</div>` : ""}${costFooter(m)}</div>`);
+    else out.push(`<div class="msg assistant">${stepsHtml(m, `m${i}`)}<div class="md">${assistantHtml(m.text)}</div>${m.error ? `<div class="err">Stopped: ${esc(m.error)}</div>` : ""}${costFooter(m)}</div>`);
   });
   if (week.running) {
     const live = week.live || { text: "", tools: [] };
-    out.push(`<div class="msg assistant live">${chipsHtml(live.tools, "live")}<div class="md">${live.text ? assistantHtml(live.text) : ""}</div>
+    const body = live.trace ? traceHtml(live.trace, live.tools, "live", true) : `${chipsHtml(live.tools, "live")}<div class="md">${live.text ? assistantHtml(live.text) : ""}</div>`;
+    out.push(`<div class="msg assistant live">${body}
       <div class="working-line"><span class="spin"></span>${live.tools.length || live.text ? "Working" : "Starting"} <span class="elapsed">${elapsed()}</span><span class="muted"> · you can leave this page</span></div></div>`);
   }
   if (week.sendError && !week.running) out.push(`<div class="err">Couldn't send: ${esc(week.sendError)}</div>`);
@@ -98,7 +135,7 @@ let lastSig = "";
 onRender(function renderChat({ phase }) {
   const week = app.week;
   const thread = $("#thread");
-  const sig = JSON.stringify([week?.id, week?.messages.length, week?.running, week?.live?.text.length, week?.live?.tools.map((t) => t.chars ?? -1), week?.sendError]);
+  const sig = JSON.stringify([week?.id, week?.messages.length, week?.running, week?.live?.text.length, week?.live?.tools.map((t) => t.chars ?? -1), week?.live?.trace?.length, week?.live?.trace?.at(-1)?.text?.length, week?.sendError]);
   if (sig !== lastSig) {
     lastSig = sig;
     const nearBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 80;

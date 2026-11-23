@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { claudeEnv } from "./auth.mjs";
 
 export const TAG_MODEL = process.env.HW_TAG_MODEL || "claude-haiku-5-5";
 const BATCH = 40;
@@ -47,7 +48,7 @@ export function parseTags(text, ctx) {
 }
 
 function runClaude(prompt, cwd) {
-  const env = { ...process.env }; delete env.ANTHROPIC_API_KEY; delete env.ANTHROPIC_AUTH_TOKEN;
+  const env = claudeEnv();
   fs.mkdirSync(cwd, { recursive: true });
   return new Promise((resolve, reject) => {
     const c = spawn("claude", ["-p", "--model", TAG_MODEL, "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence", "--output-format", "json"], { env, cwd });

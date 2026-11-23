@@ -259,11 +259,42 @@ async function startWeek(instructions) {
   app.week = await api("/api/weeks", { method: "POST", body: { title: `HW ${date}` } });
   history.replaceState(null, "", location.pathname);
   send("start", "Here is this week's weekly_status.md:\n\n```markdown\n" + S.savedStatus.trim() + "\n```\n\n" +
-    "Everything for this week is in its \"This week's input\" section. " + instructions);
+    "Everything for this week is in its \"This week's input\" section. " + instructions, { overrides: Object.fromEntries([...briefOff].map((k) => [k, false])) });
 }
 
+// ---- brief: what the app settled before calling Claude (promotions, section coverage, which stages run) ----
+const briefOff = new Set(); // decision keys the teacher rejected, e.g. "promote:U19"
+let briefFor = null, briefData = null, briefTimer = null;
+function loadBrief() {
+  const sig = S.savedStatus + [...briefOff].join();
+  if (briefFor === sig) return;
+  briefFor = sig;
+  clearTimeout(briefTimer);
+  briefTimer = setTimeout(async () => {
+    briefData = await api(`/api/brief?off=${encodeURIComponent([...briefOff].join(","))}`).catch(() => null);
+    renderBrief();
+  }, 400);
+}
+const COVER = { covered: "✓ corpus", thin: "◐ thin", empty: "○ research" };
+function toggleBrief(k) {
+  if (briefOff.has(k)) briefOff.delete(k); else briefOff.add(k);
+  loadBrief();
+}
+function renderBrief() {
+  const el = $("#brief");
+  if (!el) return;
+  const b = briefData;
+  if (!b || !b.sections?.length) { el.innerHTML = ""; return; }
+  const promos = b.promotions.map((p) => `<button class="chip ${p.accepted ? "on" : "off"}" data-key="promote:${esc(p.id)}" title="${esc(p.from)} unit. Click to ${p.accepted ? "keep it out of" : "allow it in"} this week's set">${p.accepted ? "✓" : "✕"} ${esc(p.id)} as CURRENT</button>`).join(" ");
+  const secs = b.sections.map((x) => `<span class="chip cov-${esc(x.coverage)}" title="${x.usable} usable corpus problems for about ${x.target}">${esc(x.title)} · ${COVER[x.coverage] || esc(x.coverage)}</span>`).join(" ");
+  const plan = (b.stagesPlan || []).map((x) => `${esc(x.stage)}: ${x.skip ? "skipped" : esc((x.model || "").replace(/^claude-/, ""))}`).join(" → ");
+  const other = b.decisions.filter((d) => !d.key.startsWith("promote:")).map((d) => `<li>${esc(d.text)}</li>`).join("");
+  el.innerHTML = `<div class="small"><b>Decided without asking</b> ${promos || '<span class="muted">nothing to decide</span>'}${other ? `<ul class="muted">${other}</ul>` : ""}</div>
+    <div class="small">${secs}</div><div class="small muted">Stages: ${plan}${b.rulings?.length ? ` · ${b.rulings.length} standing ruling${b.rulings.length > 1 ? "s" : ""}` : ""}</div>`;
+  $$("button[data-key]", el).forEach((btn) => (btn.onclick = () => toggleBrief(btn.dataset.key)));
+}
 $("#quick-set").onclick = () => { if (guardSetup()) { log("quick-set", { from: "setup" }); startWeek(QUICK_PROMPT); } };
-$("#generate").onclick = () => guardSetup() && startWeek("Follow the weekly workflow: if something required is missing or needs my confirmation, ask me now. Otherwise do the research and reply with the checkpoint.");
+$("#generate").onclick = () => guardSetup() && startWeek("Follow the weekly workflow. Use the brief below for every decision; do not ask me anything first. Do the research and reply with the checkpoint, listing your defaults under Assumptions.");
 
 // ======================= outline =======================
 
@@ -450,7 +481,12 @@ function renderHeader(phase) {
   const f = phase === "final" ? currentFinal() : null;
   const c = f && compiled.get(f.tex);
   switch (phase) {
-    case "setup": { const m = setupMissing(); text = !S.tectonic ? "Tectonic missing: brew install tectonic" : m.length ? `Next: add ${m.join(" and ")}` : "Next: Generate outline"; if (!S.tectonic) cls = "bad"; break; }
+    case "setup": {
+      const m = setupMissing(), noClaude = S.auth?.mode === "none";
+      text = noClaude ? "No Claude subscription: run claude then /login, or set ANTHROPIC_API_KEY and HW_ALLOW_API_KEY=1" : !S.tectonic ? "Tectonic missing: brew install tectonic" : m.length ? `Next: add ${m.join(" and ")}` : "Next: Generate outline";
+      if (noClaude || !S.tectonic) cls = "bad";
+      break;
+    }
     case "outline-running": case "final-running": text = "Claude is working"; cls = "wait"; break;
     case "outline": {
       const lastA = lastAssistant(splitMessages().outline);

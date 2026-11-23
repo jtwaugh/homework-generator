@@ -26,8 +26,8 @@ You need:
 - **Node 18+** for the app; **Node 22** for the UI test and debugging harness (they use Node's built-in WebSocket).
 - **The `claude` CLI, logged in to your Claude account.** Install Claude Code
   (https://claude.com/claude-code), run `claude`, then `/login`. The app runs `claude -p` for every turn,
-  so usage counts against your Claude plan. It deliberately ignores `ANTHROPIC_API_KEY` so you aren't billed through
-  the API by accident.
+  so usage counts against your Claude plan. It ignores `ANTHROPIC_API_KEY` unless you opt in (see the next
+  section), so you aren't billed through the API by accident.
 - **Tectonic** for PDFs: `brew install tectonic` (or see https://tectonic-typesetting.github.io).
 - *Optional:* **sympy** for checking answer keys. Claude uses it through a local `cas` tool:
   `uv venv ui/data/venv && uv pip install --python ui/data/venv sympy`. Without it the app still works; answers just
@@ -49,6 +49,23 @@ out for a generic "the student"). On first run the server copies the files from 
 | `weekly_status.md` | unit statuses, review priority, standing conventions, history and this week's input; the app edits this as you work |
 
 Those copies are yours and are not tracked by git, so edit them freely.
+
+### No Claude subscription? Use an API key
+
+If `claude` isn't logged in to a Claude subscription, the app can use an Anthropic API key instead
+(create one at https://console.anthropic.com). You still need the `claude` CLI installed; it doesn't need to be
+logged in. Set the key and opt in:
+
+```
+ANTHROPIC_API_KEY=sk-ant-... HW_ALLOW_API_KEY=1 HW_STUDENT="Sam" node ui/server.mjs
+```
+
+At startup the server runs `claude auth status` and prints which one it is using (`Claude: subscription` or
+`Claude: api-key`). A subscription always wins: with one logged in, the key is ignored even with
+`HW_ALLOW_API_KEY=1`. On an API key every turn is billed per token to your API account, so the figures in the
+**$** panel are real charges rather than API-equivalent estimates. `HW_BUDGET_USD=2` caps what each turn can spend.
+A key without `HW_ALLOW_API_KEY=1` is ignored, and the setup screen shows a warning when there's no subscription and
+no opted-in key.
 
 The walkthrough of the screens, every option (`PORT`, `HW_MODEL`, `HW_BUDGET_USD`, …), the event log, the tests and
 the debugging harness are in [ui/README.md](ui/README.md).

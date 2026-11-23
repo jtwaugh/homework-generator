@@ -54,6 +54,10 @@ export function monthCost(now = new Date()) {
   return { total: weeks.reduce((s, w) => s + (w.costUSD || 0), 0), weeks: weeks.length, label: now.toLocaleString(undefined, { month: "long" }) };
 }
 
+// "research sonnet $0.12 → outline opus $0.80": which model did each part of this turn (server stage routing).
+const tier = (model = "") => ["opus", "sonnet", "haiku", "fable"].find((k) => model.includes(k)) || model.replace(/^claude-/, "");
+export const stagesLine = (m) => (m.stages || []).length > 1 || (m.stages || [])[0]?.model ? esc(m.stages.map((x) => `${x.stage}${x.auto ? "*" : ""} ${tier(x.model)} ${fmtUSD(x.costUSD)}`).join(" → ")) : "";
+
 // One-line footer under each Claude turn in the chat.
 export function costFooter(m) {
   const u = m.usage;
@@ -61,7 +65,7 @@ export function costFooter(m) {
   const tools = m.tools || [];
   const searches = u.webSearches || tools.filter((t) => t.name === "WebSearch").length;
   const cas = tools.filter((t) => /cas$/.test(t.name)).length;
-  const bits = [fmtUSD(turnCost(m)), fmtDur(u.durationMs), searches ? `${searches} search${searches > 1 ? "es" : ""}` : "", cas ? `CAS×${cas}` : ""].filter(Boolean);
+  const bits = [fmtUSD(turnCost(m)), fmtDur(u.durationMs), searches ? `${searches} search${searches > 1 ? "es" : ""}` : "", cas ? `CAS×${cas}` : "", stagesLine(m)].filter(Boolean);
   return `<button class="cost-foot link" data-open="cost" title="API-equivalent cost of this turn. Click for the cost panel">${bits.join(" · ")}</button>`;
 }
 
@@ -89,7 +93,7 @@ function panelHtml() {
   const split = wc.total ? Math.round((wc.research / wc.total) * 100) : 0;
   return `
     <div class="row"><h2>Cost</h2><span class="spacer"></span><form method="dialog"><button class="ghost">✕</button></form></div>
-    <p class="hint">You're on a Claude subscription, so these are API-equivalent figures from the Claude CLI, not charges. Research is an estimate (web searches at $0.01, the page-fetch summarizer, and research results read as input).${S.budget ? ` Each turn stops at $${S.budget} (HW_BUDGET_USD).` : ""}</p>
+    <p class="hint">${S.auth?.mode === "api-key" ? "You're using an API key (no Claude subscription found), so these are real charges to your API account, as reported by the Claude CLI." : "You're on a Claude subscription, so these are API-equivalent figures from the Claude CLI, not charges."} Research is an estimate (web searches at $0.01, the page-fetch summarizer, and research results read as input).${S.budget ? ` Each turn stops at $${S.budget} (HW_BUDGET_USD).` : ""}</p>
     <div class="cost-cards">
       <div class="card"><div class="k">This week</div><div class="big">${fmtUSD(wc.total)}</div><div class="muted small">${wc.turns} turn${wc.turns === 1 ? "" : "s"}</div></div>
       <div class="card"><div class="k">Research vs writing <span class="est">est.</span></div>
@@ -111,6 +115,6 @@ onRender(function costBadge() {
   const wc = weekCost(), mc = monthCost();
   b.hidden = !app.week && !mc.total;
   b.textContent = app.week ? fmtUSD(wc.total) : `${mc.label.slice(0, 3)} ${fmtUSD(mc.total)}`;
-  b.title = `API-equivalent cost: ${fmtUSD(wc.total)} this week, ${fmtUSD(mc.total)} in ${mc.label}. Click for details.`;
+  b.title = `${S.auth?.mode === "api-key" ? "API cost (billed)" : "API-equivalent cost"}: ${fmtUSD(wc.total)} this week, ${fmtUSD(mc.total)} in ${mc.label}. Click for details.`;
   if ($("#cost-dlg").open) $("#cost-dlg").innerHTML = panelHtml();
 });

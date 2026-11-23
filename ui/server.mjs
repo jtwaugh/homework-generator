@@ -13,6 +13,8 @@ import { randomUUID, createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { tagProblems, needsTags, TAG_MODEL } from "./lib/tagger.mjs";
 import { loadCorpus, saveCorpus, searchCorpus, formatHits, addProblems, patchProblem, dateFromName, tokenize, attachTex } from "./lib/corpus.mjs";
+import { buildBrief, briefText, saveRulings, loadRulings } from "./lib/preflight.mjs";
+import { claudeAuth, claudeEnv } from "./lib/auth.mjs";
 
 const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
 // HW_ROOT / HW_DATA point the app at another copy of the files (dev/sandbox.mjs makes one for tests).
@@ -38,6 +40,55 @@ const GUESS_MODEL = process.env.HW_GUESS_MODEL || "claude-sonnet-5-5";
 const GOLD_COUNT = Math.max(1, Number(process.env.HW_GOLD_FILES) || 3);
 const BUDGET = process.env.HW_BUDGET_USD ? String(Number(process.env.HW_BUDGET_USD)) : null;
 const ALLOWED_TOOLS = "WebSearch,WebFetch,mcp__hw__cas,mcp__hw__corpus_search,mcp__hw__corpus_add";
+
+// ---------- stage routing: the cheapest model that does each part well ----------
+// Taste-critical work (choosing and vetting problems, the checkpoint) stays on the main model. Research, writing
+// out an approved outline, answer checking and compile fixes go to cheaper models, escalating one tier on failure.
+const MODELS = { opus: DEFAULT_MODEL, sonnet: process.env.HW_SONNET_MODEL || "claude-sonnet-5-5", haiku: process.env.HW_HAIKU_MODEL || "claude-haiku-5-5" };
+const NEXT_TIER = { [MODELS.haiku]: MODELS.sonnet, [MODELS.sonnet]: MODELS.opus };
+export const STAGES = {
+  research: { model: process.env.HW_RESEARCH_MODEL || MODELS.sonnet, tools: "WebSearch,WebFetch", allowed: "WebSearch,WebFetch,mcp__hw__corpus_search", effort: "medium", why: "web research for sections the corpus can't fill" },
+  outline: { model: null, tools: "WebSearch,WebFetch", allowed: ALLOWED_TOOLS, why: "choose, adapt and vet problems; write the checkpoint" },
+  final: { model: process.env.HW_WRITE_MODEL || MODELS.sonnet, tools: "", allowed: "mcp__hw__cas,mcp__hw__corpus_search", effort: "medium", why: "write the approved outline out as .tex + status + manifest" },
+  fix: { model: process.env.HW_FIX_MODEL || MODELS.haiku, tools: "", allowed: "mcp__hw__cas", effort: "low", why: "compile/lint fixes" },
+  verify: { model: process.env.HW_CHECK_MODEL || MODELS.haiku, tools: "", allowed: "mcp__hw__cas", effort: "low", why: "check every answer with sympy" },
+};
+const DRY_STAGES = process.env.HW_DRY_STAGES === "1";
+// HW_STAGES_OFF=research,verify turns the extra stages off (e.g. to compare cost).
+const STAGES_OFF = new Set((process.env.HW_STAGES_OFF || "").split(",").map((x) => x.trim()).filter(Boolean));
+// Which stage handles a teacher message. Outline edits stay on the main model; anything after the final is a rewrite.
+export function stageFor(kind, week) {
+  if (kind === "start" || kind === "revise" || kind === "reply") return "outline";
+  if (kind === "approve" || kind === "revise-final") return "final";
+  if (kind === "fix") return "fix";
+  return week.messages.some((m) => m.role === "assistant" && /```(latex|tex)\n/.test(m.text || "")) ? "final" : "outline";
+}
+export function modelFor(stage, week) {
+  const base = STAGES[stage].model || week.model || DEFAULT_MODEL;
+  // A second fix in a row means the cheap model didn't manage it: go up a tier.
+  if (stage === "fix") {
+    const lastUsers = week.messages.filter((m) => m.role === "user").slice(-2);
+    if (lastUsers.length === 2 && lastUsers.every((m) => m.kind === "fix")) return NEXT_TIER[base] || base;
+  }
+  return base;
+}
+const hasBlock = (t) => /```(latex|tex)\n/.test(t || "");
+// "**Assumptions**" list items from a checkpoint (one ruling each).
+export function assumptionsOf(text) {
+  const i = text.search(/\*\*Assumptions:?\*\*|^#+\s*Assumptions/im);
+  if (i < 0) return [];
+  const rest = text.slice(i).split("\n").slice(1);
+  const out = [];
+  for (const l of rest) { if (/^\s*[-*]\s+/.test(l)) out.push(l.replace(/^\s*[-*]\s+/, "").trim()); else if (out.length && (!l.trim() || /^\s*(\*\*|#)/.test(l))) break; else if (/^\s*(\*\*|#)/.test(l)) break; }
+  return out.filter((t) => t.length > 8).slice(0, 20);
+}
+const isCheckpointText = (t) => /judgment calls|removed in audit|sourced ideas/i.test(t || "");
+function mergeUsage(a, b) {
+  if (!a) return b; if (!b) return a;
+  const models = { ...a.models };
+  for (const [k, v] of Object.entries(b.models || {})) { const o = models[k]; models[k] = o ? Object.fromEntries(Object.keys(v).map((f) => [f, (o[f] || 0) + (v[f] || 0)])) : v; }
+  return { costUSD: (a.costUSD || 0) + (b.costUSD || 0), durationMs: (a.durationMs || 0) + (b.durationMs || 0), numTurns: (a.numTurns || 0) + (b.numTurns || 0), webSearches: (a.webSearches || 0) + (b.webSearches || 0), models };
+}
 
 for (const d of [WEEKS, BUILD, BACKUPS, CLAUDE_CWD, MCP_DIR, DEBUG, NOTES, LOGS]) fs.mkdirSync(d, { recursive: true });
 
@@ -188,9 +239,11 @@ async function buildSystemPrompt() {
     `<file name="curriculum_ladder.md">\n${ladder}\n</file>`,
     ...gold,
     "\n\n# How this app works (overrides the parts of the workflow it covers)",
-    "- You are running inside a local app, not a chat. The teacher's weekly_status.md is in the first user message.",
+    "- You are running inside a local app, not a chat. The teacher's weekly_status.md is in the first user message, followed by the app's brief: decisions already made, standing rulings, a section plan and how well the corpus covers each section, and research notes for the sections it couldn't cover.",
+    "- There is no opening question round in this app. Never reply with only questions, and never stop before the checkpoint. Whenever the workflow says to ask the teacher (missing fields, unit confirmations, definitions for a new unit, edge cases), make the most conservative reasonable choice, use it, and list it in the checkpoint: under **Assumptions** (one line each) for choices you made, and under **Needs your call** (at most 5) for the ones the teacher should rule on. For a new unit's definitions, use the standard precise definition in Wu's style, state it in the checkpoint, and avoid its edge cases. The checkpoint is the teacher's only chance to correct you, so make it complete.",
+    "- Treat the brief's decisions and standing rulings as the teacher's answers. Never ask about them again.",
     "- Tools: web search, web fetch, and the app's own tools `cas`, `corpus_search` and `corpus_add`. There is no bash tool. The app compiles your .tex with Tectonic and will send you any errors or overfull-box warnings. In the final step, write \"not compiled (the app will compile it)\".",
-    "- Use `cas` (Python with sympy) to verify every answer key entry in the final: substitute solutions back, check for extraneous roots, confirm factorizations. Batch the problems into a few calls that print one line per problem. In the final reply say how many answers you checked with the CAS.",
+    "- A separate checker re-verifies every answer with sympy after the final, and sends you any failures. Still use `cas` while vetting candidates for the checkpoint, and to verify every answer key entry in the final: substitute solutions back, check for extraneous roots, confirm factorizations. Batch the problems into a few calls that print one line per problem. In the final reply say how many answers you checked with the CAS.",
     "- Problem corpus: the teacher's cache of problems from past sets, earlier research and favorites. The first message includes the best matches for this week. Draw from the corpus first, and adapt rather than copy problems marked used (especially recent ones). Use `corpus_search` for more. Web search only for sections where the corpus has fewer than 3 suitable candidates. Whenever you find good problems on the web, call `corpus_add` with them, including ones you won't use this week. In the checkpoint, say which problems came from the corpus (by id) and which came from the web.",
     "- In the final step put the complete .tex in exactly one ```latex fenced block, and the complete updated weekly_status.md in exactly one ```markdown fenced block. The app extracts both.",
     "- After the .tex and status blocks, add one ```json fenced block: a problem manifest, an array with one object per \\item in the set, in the order they appear in the .tex: {\"part\": 1, \"n\": 3, \"answer\": \"...\", \"units\": [\"U14\"], \"source\": \"corpus:<id>\" or \"web:<url>\" or \"new\", \"casVerified\": true}. Don't repeat the problem text: the app reads it from the .tex. The app saves it to the corpus when the teacher saves the set.",
@@ -201,6 +254,7 @@ async function buildSystemPrompt() {
 // ---------- running claude ----------
 
 const running = new Map(); // key (weekId or "dag-guess") -> child process
+const stopped = new Set(); // weeks whose teacher pressed Stop during a multi-stage message
 const progress = new Map(); // weekId -> { text, tools, startedAt } for the turn in flight
 let debugLogged = fs.existsSync(path.join(DEBUG, "result-event.json"));
 
@@ -220,10 +274,8 @@ function summarizeUsage(ev) {
 // Spawn `claude -p` with stream-json output. Collects text, tool calls (with result sizes) and usage.
 function spawnClaude({ key, args, prompt, cwd, onEvent = () => {} }) {
   return new Promise((resolve) => {
-    // Strip API-key variables so the CLI uses the logged-in Claude account.
-    const env = { ...process.env };
-    delete env.ANTHROPIC_API_KEY;
-    delete env.ANTHROPIC_AUTH_TOKEN;
+    // The logged-in Claude subscription; ANTHROPIC_API_KEY only if there is none and HW_ALLOW_API_KEY=1 (lib/auth.mjs).
+    const env = claudeEnv();
 
     const t0 = Date.now();
     const model = args[args.indexOf("--model") + 1];
@@ -234,7 +286,7 @@ function spawnClaude({ key, args, prompt, cwd, onEvent = () => {} }) {
 
     const texts = []; // complete assistant text blocks, in order
     const tools = []; // {id, name, input, at, ms, chars, ok, preview}
-    let buf = "", stderr = "", resultError = null, usage = null;
+    let buf = "", stderr = "", resultError = null, usage = null, structured = null, sawThinkingDelta = false;
 
     const onLine = (line) => {
       let ev;
@@ -242,10 +294,13 @@ function spawnClaude({ key, args, prompt, cwd, onEvent = () => {} }) {
       if (ev.type === "stream_event" && !ev.parent_tool_use_id) {
         const e = ev.event;
         if (e.type === "content_block_delta" && e.delta?.type === "text_delta") onEvent({ type: "text", text: e.delta.text });
+        if (e.type === "content_block_delta" && e.delta?.type === "thinking_delta" && e.delta.thinking) { sawThinkingDelta = true; onEvent({ type: "thinking", text: e.delta.thinking }); }
         if (e.type === "content_block_start" && e.content_block?.type === "text" && texts.length) onEvent({ type: "text", text: "\n\n" });
       } else if (ev.type === "assistant" && !ev.parent_tool_use_id) {
         for (const b of ev.message.content || []) {
           if (b.type === "text" && b.text) texts.push(b.text);
+          // Without --include-partial-messages the thinking only arrives here, whole.
+          if (b.type === "thinking" && b.thinking && !sawThinkingDelta) onEvent({ type: "thinking", text: b.thinking + "\n\n" });
           if (b.type === "tool_use") {
             const t = { id: b.id, name: b.name, input: b.input, at: Date.now(), textIndex: texts.length };
             tools.push(t);
@@ -266,6 +321,7 @@ function spawnClaude({ key, args, prompt, cwd, onEvent = () => {} }) {
       } else if (ev.type === "result") {
         if (!debugLogged) { debugLogged = true; fsp.writeFile(path.join(DEBUG, "result-event.json"), JSON.stringify(ev, null, 2)).catch(() => {}); }
         usage = summarizeUsage(ev);
+        structured = ev.structured_output ?? null;
         logEvent("claude", "result", { key, costUSD: usage?.costUSD, turns: usage?.numTurns, webSearches: usage?.webSearches, error: ev.is_error ? short(ev.result || ev.subtype, 300) : undefined });
         if (ev.is_error) resultError = ev.result || ev.subtype || "Claude returned an error";
       }
@@ -282,7 +338,7 @@ function spawnClaude({ key, args, prompt, cwd, onEvent = () => {} }) {
       running.delete(key);
       logEvent("claude", "exit", { key, code, ms: Date.now() - t0, chars: texts.join("").length, tools: tools.length, error: resultError ? short(resultError, 300) : undefined });
       const text = texts.join("\n\n");
-      const out = { text, usage, tools: tools.map(({ at, ...t }) => t) };
+      const out = { text, usage, structured, tools: tools.map(({ at, ...t }) => t) };
       if (resultError || (code !== 0 && !text)) resolve({ ...out, ok: false, error: resultError || stderr.trim() || `claude exited with code ${code}` });
       else resolve({ ...out, ok: true });
     });
@@ -295,20 +351,22 @@ async function mcpConfigFor(weekId) {
   return file;
 }
 
-async function runClaude(week, prompt, systemPrompt, onEvent) {
+async function runClaude(week, prompt, systemPrompt, onEvent, stage = "outline") {
+  const st = STAGES[stage];
   const args = [
     "-p",
     "--output-format", "stream-json",
     "--verbose",
     "--include-partial-messages",
-    "--model", week.model || DEFAULT_MODEL,
-    "--tools", "WebSearch,WebFetch",
-    "--allowedTools", ALLOWED_TOOLS,
+    "--model", modelFor(stage, week),
+    "--tools", st.tools,
+    "--allowedTools", st.allowed,
     "--mcp-config", await mcpConfigFor(week.id),
     "--strict-mcp-config",
     "--disable-slash-commands",
   ];
   if (BUDGET) args.push("--max-budget-usd", BUDGET);
+  if (st.effort) args.push("--effort", st.effort);
   if (week.started) args.push("--resume", week.sessionId);
   else args.push("--session-id", week.sessionId, "--system-prompt", systemPrompt);
   return spawnClaude({ key: week.id, args, prompt, cwd: CLAUDE_CWD, onEvent });
@@ -350,6 +408,116 @@ async function compileTex(text) {
 }
 
 // ---------- corpus: preload + save manifest ----------
+
+// ---------- stages that run outside the week's session ----------
+
+async function weekBrief(overrides = {}) {
+  const [status, ladder] = await Promise.all([read(STATUS_FILE), read(LADDER_FILE)]);
+  return buildBrief({ status, ladder, corpus: loadCorpus(), dataDir: DATA, overrides });
+}
+
+const RESEARCH_SCHEMA = {
+  type: "object", required: ["problems"],
+  properties: {
+    problems: { type: "array", items: { type: "object", required: ["section", "tex"], properties: {
+      section: { type: "string", description: "section key from the plan" }, tex: { type: "string", description: "original problem LaTeX, no \\item" },
+      answer: { type: "string" }, units: { type: "array", items: { type: "string" } }, url: { type: "string" }, idea: { type: "string", description: "the source's idea and what you changed" },
+      fromSnippet: { type: "boolean" } } } },
+    rejected: { type: "array", items: { type: "object", properties: { url: { type: "string" }, reason: { type: "string" } } } },
+    searchUnavailable: { type: "boolean" },
+  },
+};
+
+// Research only the sections the corpus can't fill. Fresh session, cheaper model, structured output; the problems go
+// into the corpus as candidates and the outline stage gets them as notes. Escalates one tier if the output is unusable.
+async function runResearch(week, brief, onEvent) {
+  const secs = brief.sections.filter((s) => brief.needsResearch.includes(s.key));
+  if (!secs.length) return null;
+  const instr = await read(INSTRUCTIONS_FILE);
+  const rules = statusSection(instr, "## Hard gates") + "\n" + statusSection(instr, "## Vetting rubric for researched ideas") + "\n" + statusSection(instr, "## Variables") + "\n" + statusSection(instr, "**Research (every week).**".replace(/\*/g, ""));
+  const prompt = [
+    "You research problem ideas for a 5th grader's rigorous algebra homework (Wu style). Find good sources, open them, and write ORIGINAL problems based on their ideas. Do not ask questions; there is no one to answer them.",
+    `Allowed units: ${brief.allowedUnits.join(", ")}. Everything else is off limits.`,
+    "", "## Rules (from the teacher's instructions)", instr.includes("## Hard gates") ? rules : instr,
+    "", "## Sections to research (the corpus is thin here)",
+    ...secs.map((x) => `- key ${x.key}: ${x.title} [${x.units.join(", ")}] — ${x.kind}, need about ${x.target} problems; corpus has ${x.usable}.`),
+    "", "Before searching, call corpus_search once per section to see what exists, so you don't duplicate it.",
+    "Budget: about 3 searches per routine section, up to 6 for a rich one. Give 1.5x the needed count per section, each with its answer, its source URL and one line on the idea and what you changed. Mark fromSnippet if you could not open the page.",
+    "Return only the structured result.",
+  ].join("\n");
+  let model = STAGES.research.model;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--model", model, "--tools", STAGES.research.tools, "--allowedTools", STAGES.research.allowed,
+      "--mcp-config", await mcpConfigFor(week.id), "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence",
+      "--effort", STAGES.research.effort, "--json-schema", JSON.stringify(RESEARCH_SCHEMA)];
+    if (BUDGET) args.push("--max-budget-usd", BUDGET);
+    const r = await spawnClaude({ key: week.id, args, prompt, cwd: CLAUDE_CWD, onEvent: (e) => e.type !== "text" && onEvent(e) });
+    const probs = r.structured?.problems;
+    if (r.ok && Array.isArray(probs) && (probs.length || r.structured.searchUnavailable)) {
+      const today = new Date().toISOString().slice(0, 10);
+      const saved = addProblems(loadCorpus(), probs.map((x) => ({ tex: x.tex, answer: x.answer, units: x.units, status: "candidate", tags: ["research"],
+        context: secs.find((s) => s.key === x.section)?.title || "", source: { kind: "web", url: x.url, note: x.idea, date: today, week: week.id, fromSnippet: !!x.fromSnippet } })));
+      logEvent("stage", "research-done", { week: week.id, model, problems: probs.length, added: saved.added.length });
+      return { model, usage: r.usage, tools: r.tools, result: r.structured, saved };
+    }
+    logEvent("stage", "research-retry", { week: week.id, model, error: r.error || "no structured problems" });
+    if (!NEXT_TIER[model]) return { model, usage: r.usage, tools: r.tools, error: r.error || "research returned nothing" };
+    model = NEXT_TIER[model];
+  }
+}
+function researchNotes(res) {
+  if (!res) return "";
+  if (res.error) return `\n\n## Research notes\nThe research step failed (${res.error}). Do your own research for the thin sections.`;
+  const r = res.result;
+  return "\n\n## Research notes (from the app's research step; already vetted once, re-vet before adopting; saved to the corpus as candidates)\n" +
+    (r.searchUnavailable ? "Web search was unavailable.\n" : "") +
+    r.problems.map((x) => `- [${x.section}] ${x.tex.replace(/\s*\n\s*/g, " ")}${x.answer ? ` (answer: ${x.answer})` : ""} — ${x.url || "no url"}${x.fromSnippet ? " (from snippet)" : ""}${x.idea ? ` · ${x.idea}` : ""}`).join("\n") +
+    (r.rejected?.length ? "\nRejected: " + r.rejected.map((x) => `${x.url}: ${x.reason}`).join("; ") : "");
+}
+
+const VERIFY_SCHEMA = {
+  type: "object", required: ["checked", "failures"],
+  properties: {
+    checked: { type: "number" },
+    failures: { type: "array", items: { type: "object", required: ["problem", "reason"], properties: { problem: { type: "string", description: "e.g. P2.3" }, reason: { type: "string" }, expected: { type: "string" } } } },
+    unchecked: { type: "array", items: { type: "string" }, description: "problems that can't be checked by computation (proofs, graphs)" },
+  },
+};
+// Independent answer check: a cheap model turns the manifest into one sympy script, runs it with `cas`, and reports.
+export async function runVerify(week, text, onEvent) {
+  const tex = extractBlocks(text, "latex")[0] || extractBlocks(text, "tex")[0];
+  if (!tex) return null;
+  const manifest = extractBlocks(text, "json").reverse().find((b) => { try { return Array.isArray(JSON.parse(b)); } catch { return false; } }) || "[]";
+  const prompt = [
+    "Check the answer key of this homework set by computation. Write ONE Python program (sympy) that, for every problem with a computable answer, re-derives the answer from the printed problem and compares it with the manifest. Print one line per problem: 'P<part>.<n> ok' or 'P<part>.<n> FAIL <why>'. Run it with the cas tool (fix and re-run if it crashes). Do not trust the manifest; work from the problem text. Then return the structured result: failures only for real mismatches.",
+    "", "## Manifest", manifest, "", "## The set", "```latex", tex, "```",
+  ].join("\n");
+  let model = STAGES.verify.model;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--model", model, "--tools", "", "--allowedTools", STAGES.verify.allowed,
+      "--mcp-config", await mcpConfigFor(week.id), "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence",
+      "--effort", STAGES.verify.effort, "--json-schema", JSON.stringify(VERIFY_SCHEMA)];
+    const r = await spawnClaude({ key: week.id, args, prompt, cwd: CLAUDE_CWD, onEvent: (e) => e.type !== "text" && onEvent(e) });
+    const usedCas = r.tools.some((t) => /cas$/.test(t.name) && t.ok);
+    if (r.ok && r.structured && Array.isArray(r.structured.failures) && usedCas) {
+      logEvent("stage", "verify-done", { week: week.id, model, checked: r.structured.checked, failures: r.structured.failures.length });
+      return { model, usage: r.usage, tools: r.tools, ...r.structured };
+    }
+    logEvent("stage", "verify-retry", { week: week.id, model, error: r.error || (usedCas ? "bad output" : "did not run the CAS") });
+    if (!NEXT_TIER[model]) return { model, usage: r.usage, tools: r.tools, error: r.error || "checker failed" };
+    model = NEXT_TIER[model];
+  }
+}
+
+// What each stage would do for a message, without running anything (logged; returned by HW_DRY_STAGES=1).
+function planStages(kind, week, brief) {
+  const stage = stageFor(kind, week);
+  const out = [];
+  if (kind === "start") out.push({ stage: "research", model: STAGES.research.model, skip: !brief.needsResearch.length, why: brief.needsResearch.length ? `corpus thin for ${brief.needsResearch.join(", ")}` : "corpus covers every section" });
+  out.push({ stage, model: modelFor(stage, week), why: STAGES[stage].why });
+  if (stage === "final" || stage === "fix") out.push({ stage: "verify", model: STAGES.verify.model, why: STAGES.verify.why });
+  return out;
+}
 
 async function corpusPreload() {
   const [status, ladder] = await Promise.all([read(STATUS_FILE), read(LADDER_FILE)]);
@@ -509,6 +677,7 @@ async function handle(req, res) {
       tectonic: !!findTectonic(),
       model: DEFAULT_MODEL,
       cas: casAvailable(),
+      auth: claudeAuth(),
       budget: BUDGET ? +BUDGET : null,
       corpusSize: loadCorpus().length,
     });
@@ -563,6 +732,12 @@ async function handle(req, res) {
       return send(res, 200, { items: hits.map((h) => ({ ...h.p, score: +h.score.toFixed(2) })) });
     }
     return send(res, 200, { items });
+  }
+  if (m === "GET" && p === "/api/brief") {
+    // ?off=promote:U19,promote:U21 rejects those promotions.
+    const overrides = Object.fromEntries((url.searchParams.get("off") || "").split(",").filter(Boolean).map((k) => [k, false]));
+    const b = await weekBrief(overrides);
+    return send(res, 200, { ...b, stagesPlan: planStages("start", { messages: [], model: DEFAULT_MODEL }, b), text: briefText(b) });
   }
   if (m === "GET" && p === "/api/corpus/preload") {
     const x = await corpusPreload();
@@ -658,37 +833,105 @@ async function handle(req, res) {
       await saveWeek(week);
       return send(res, 200, { ok: true, corpus });
     }
-    if (m === "POST" && action === "/stop") { running.get(id)?.kill("SIGTERM"); return send(res, 200, { ok: true }); }
+    if (m === "POST" && action === "/stop") { stopped.add(id); running.get(id)?.kill("SIGTERM"); return send(res, 200, { ok: true }); }
     if (m === "POST" && action === "/message") {
       if (running.has(id)) return send(res, 409, { error: "Claude is already working on this week" });
-      const { text, kind } = await body(req);
+      const { text, kind, overrides } = await body(req);
       const week = await loadWeek(id);
       const sys = week.started ? null : await buildSystemPrompt();
       const userMsg = { role: "user", text, kind: kind || "chat", at: new Date().toISOString() };
-      let prompt = text;
+      const stage = stageFor(userMsg.kind, week);
+      let prompt = text, brief = null;
       if (kind === "start") {
+        brief = await weekBrief(overrides || {});
+        const corpus = loadCorpus(), byId = new Map(corpus.map((x) => [x.id, x]));
+        const ids = [...new Set(brief.sections.flatMap((x) => x.corpusIds.slice(0, 10)))];
         const pre = await corpusPreload();
-        userMsg.preload = { count: pre.hits.length, units: pre.units, ids: pre.hits.map((h) => h.p.id) };
-        prompt += `\n\n## Best corpus matches for this week (units ${pre.units.join(", ") || "none"}; ${loadCorpus().length} problems in the corpus)\n${formatHits(pre.hits)}`;
+        for (const h of pre.hits) if (ids.length < 40 && !ids.includes(h.p.id)) ids.push(h.p.id);
+        const hits = ids.map((i) => byId.get(i)).filter(Boolean).map((x) => ({ p: x, why: { recent: (x.usedOn || []).some((d) => Date.now() - Date.parse(d) < 42 * 864e5) } }));
+        userMsg.preload = { count: hits.length, units: brief.allowedUnits, ids };
+        userMsg.brief = { decisions: brief.decisions, sections: brief.sections.map(({ corpusIds, ...x }) => x), needsResearch: brief.needsResearch };
+        prompt += `\n\n# Brief from the app (settled before you were called)\n${briefText(brief)}\n\n## Corpus problems for this week (${corpus.length} in the corpus; search for more with corpus_search)\n${formatHits(hits)}`;
+      }
+      if (DRY_STAGES) {
+        const plan = planStages(userMsg.kind, week, brief || (await weekBrief(overrides || {})));
+        logEvent("stage", "dry-run", { week: id, kind, plan });
+        return send(res, 200, { dryRun: true, plan, promptChars: prompt.length, prompt: clip(prompt, 20000) });
       }
       week.messages.push(userMsg);
       await saveWeek(week);
 
       res.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" });
-      const live = { text: "", tools: [], startedAt: Date.now() };
+      // trace: everything in the order it happened: {k:"stage"|"think"|"say"|"tool", ...}. Tools are referenced by id.
+      const live = { text: "", tools: [], trace: [], startedAt: Date.now() };
+      const addTrace = (k, text) => { const last = live.trace.at(-1); if (last?.k === k) last.text += text; else live.trace.push({ k, text }); };
       progress.set(id, live);
       let clientGone = false;
       res.on("close", () => (clientGone = true));
       const emit = (e) => {
-        if (e.type === "text") live.text += e.text;
-        if (e.type === "tool") live.tools.push({ id: e.tool.id, name: e.tool.name, input: e.tool.input, textAt: live.text.length });
+        if (e.type === "text") { live.text += e.text; addTrace("say", e.text); }
+        if (e.type === "thinking") addTrace("think", e.text);
+        if (e.type === "stage") live.trace.push({ k: "stage", stage: e.stage, model: e.model, at: Date.now() - live.startedAt });
+        if (e.type === "tool") { live.tools.push({ id: e.tool.id, name: e.tool.name, input: e.tool.input, textAt: live.text.length }); live.trace.push({ k: "tool", id: e.tool.id }); }
         if (e.type === "tool_result") { const t = live.tools.find((x) => x.id === e.tool.id); if (t) Object.assign(t, { ok: e.tool.ok, chars: e.tool.chars, ms: e.tool.ms }); }
         if (!clientGone) res.write(JSON.stringify(e.tool ? { type: e.type, name: e.tool.name } : e) + "\n");
       };
-      const result = await runClaude(week, prompt, sys, emit);
+      stopped.delete(id);
+      const stages = []; // [{stage, model, costUSD, ...}] for this message, in order
+      let usage = null, tools = [];
+      const account = (st, model, r, extra = {}) => { stages.push({ stage: st, model, costUSD: r?.usage?.costUSD || 0, ...extra }); usage = mergeUsage(usage, r?.usage); tools = tools.concat(r?.tools || []); };
+      const say = (st, model) => emit({ type: "stage", stage: st, model });
+
+      // 1. Research (start only, and only for sections the corpus can't fill).
+      if (brief?.needsResearch.length && !STAGES_OFF.has("research")) {
+        say("research", STAGES.research.model);
+        const r = await runResearch(week, brief, emit);
+        account("research", r.model, r, { sections: brief.needsResearch, problems: r.result?.problems?.length || 0, error: r.error });
+        prompt += researchNotes(r);
+      }
+      // 2. The routed turn in the week's session.
+      let model = modelFor(stage, week);
+      say(stage, model);
+      let result = await runClaude(week, prompt, sys, emit, stage);
+      account(stage, model, result);
+      let preamble;
+      if (result.text || result.ok) week.started = true;
+      // 3. Safety net: an outline turn must end at the checkpoint, never at a list of questions.
+      if (result.ok && stage === "outline" && !hasBlock(result.text) && !isCheckpointText(result.text) && !stopped.has(id)) {
+        logEvent("stage", "auto-continue", { week: id });
+        preamble = result.text;
+        emit({ type: "text", text: "\n\n---\n\n" });
+        say("outline", model);
+        const r2 = await runClaude(week, "Nobody can answer questions in this app. For every question above, take the most conservative reasonable default yourself, list it under **Assumptions** (or **Needs your call** if the teacher must rule), and send the full checkpoint now.", null, emit, "outline");
+        account("outline", model, r2, { auto: true });
+        if (r2.text || r2.ok) result = { ...r2, text: r2.text || result.text };
+      }
+      // 4. Final-type turns: independent answer check, then one fix turn for real mismatches.
+      let verify;
+      if (result.ok && (stage === "final" || stage === "fix") && hasBlock(result.text) && !stopped.has(id) && !STAGES_OFF.has("verify")) {
+        say("verify", STAGES.verify.model);
+        const v = await runVerify(week, result.text, emit);
+        if (v) {
+          account("verify", v.model, v, { checked: v.checked, failures: v.failures?.length, error: v.error });
+          verify = { model: v.model, checked: v.checked, failures: v.failures || [], unchecked: v.unchecked || [], error: v.error };
+          if (v.failures?.length) {
+            const fixModel = modelFor("final", week);
+            say("final", fixModel);
+            emit({ type: "text", text: "\n\n---\n\n" });
+            const r3 = await runClaude(week, "An independent sympy check of the answer key found these problems:\n" + v.failures.map((f) => `- ${f.problem}: ${f.reason}${f.expected ? ` (expected ${f.expected})` : ""}`).join("\n") + "\nCheck each with cas. Fix the real errors (answer key or problem), ignore false alarms, and resend the full .tex, status and manifest. Say in one line per item what you did.", null, emit, "final");
+            account("final", fixModel, r3, { auto: true, reason: "verify" });
+            if (r3.ok && hasBlock(r3.text)) { preamble = result.text; result = r3; verify.fixed = true; }
+          }
+        }
+      }
+      // 5. On approval, the checkpoint's assumptions become standing rulings.
+      if (kind === "approve") {
+        const cp = [...week.messages].reverse().find((m) => m.role === "assistant" && isCheckpointText(m.text));
+        const add = assumptionsOf(cp?.text || "").map((t) => ({ text: t, week: id }));
+        if (add.length) { try { saveRulings(DATA, add); } catch (e) { logEvent("stage", "rulings-error", { error: e.message }); } }
+      }
       if (result.text || result.ok) {
-        week.started = true;
-        week.messages.push({ role: "assistant", text: result.text, at: new Date().toISOString(), error: result.ok ? undefined : result.error, usage: result.usage || undefined, tools: result.tools });
+        week.messages.push({ role: "assistant", text: result.text, at: new Date().toISOString(), error: result.ok ? undefined : result.error, usage: usage || undefined, tools, trace: live.trace, stage, model, stages, ...(preamble ? { preamble } : {}), ...(verify ? { verify } : {}) });
       } else {
         week.messages.pop(); // nothing happened; let the teacher retry
         week.lastError = result.error;
@@ -722,6 +965,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     .listen(PORT, "127.0.0.1", () => {
       console.log(`Homework UI: http://localhost:${PORT}  (event log: ${LOG_FILE})`);
       if (!findTectonic()) console.log("Note: Tectonic not found; PDF compile is disabled until you run `brew install tectonic`.");
+      const auth = claudeAuth();
+      console.log(auth.mode === "subscription" ? `Claude: subscription (${auth.plan || "logged in"})` : `Claude: ${auth.mode}`);
+      if (auth.note) console.log("Note: " + auth.note);
       if (!casAvailable()) console.log("Note: CAS unavailable. Run: uv venv ui/data/venv && uv pip install --python ui/data/venv sympy");
     });
 }
