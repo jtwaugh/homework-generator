@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { searchCorpus, splitTex, problemId, addProblems, attachTex, shapeSim, coverage } from "../lib/corpus.mjs";
 import { buildBrief, briefText } from "../lib/preflight.mjs";
 import { decideAuth } from "../lib/auth.mjs";
+import { hashPassword, verifyPassword, validHash, rateLimiter, parseCookies } from "../lib/login.mjs";
 import { stageFor, modelFor, assumptionsOf, STAGES } from "../server.mjs";
 import { parseTopics, serializeTopics, historyTopics } from "../public/topics.js";
 import { computeStates } from "../public/dag.js";
@@ -159,6 +160,22 @@ test("auth: subscription wins; API key only when none is found and HW_ALLOW_API_
   assert.equal(decideAuth(none, key).mode, "none");
   assert.match(decideAuth(none, key).note, /HW_ALLOW_API_KEY=1/);
   assert.equal(decideAuth(none, { HW_ALLOW_API_KEY: "1" }).mode, "none");
+});
+
+test("login: scrypt hash verifies only the right password; rate limit blocks and resets", () => {
+  const h = hashPassword("correct horse battery");
+  assert.ok(validHash(h));
+  assert.ok(verifyPassword("correct horse battery", h));
+  assert.ok(!verifyPassword("correct horse batter", h));
+  assert.ok(!verifyPassword("anything", "not-a-hash"));
+  assert.notEqual(hashPassword("x".repeat(10)), hashPassword("x".repeat(10)));
+  const rl = rateLimiter({ perClient: 3, overall: 5, windowMs: 1000 });
+  for (let i = 0; i < 3; i++) rl.fail("a", 0);
+  assert.ok(rl.blocked("a", 10)); assert.ok(!rl.blocked("b", 10));
+  assert.ok(!rl.blocked("a", 2000));
+  rl.fail("b", 3000); rl.fail("c", 3000); rl.fail("d", 3000); rl.fail("e", 3000); rl.fail("f", 3000);
+  assert.ok(rl.blocked("g", 3001));
+  assert.deepEqual(parseCookies("a=1; hw_session=x%2By"), { a: "1", hw_session: "x+y" });
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

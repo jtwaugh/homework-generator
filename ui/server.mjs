@@ -15,6 +15,7 @@ import { tagProblems, needsTags, TAG_MODEL } from "./lib/tagger.mjs";
 import { loadCorpus, saveCorpus, searchCorpus, formatHits, addProblems, patchProblem, dateFromName, tokenize, attachTex } from "./lib/corpus.mjs";
 import { buildBrief, briefText, saveRulings, loadRulings } from "./lib/preflight.mjs";
 import { claudeAuth, claudeEnv } from "./lib/auth.mjs";
+import { createLogin, validHash } from "./lib/login.mjs";
 
 const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
 // HW_ROOT / HW_DATA point the app at another copy of the files (dev/sandbox.mjs makes one for tests).
@@ -34,6 +35,9 @@ const VENV_PY = path.join(DATA, "venv", "bin", "python");
 // Claude runs in an empty directory so it picks up no CLAUDE.md or project files.
 const CLAUDE_CWD = path.join(DATA, "claude-cwd");
 const PORT = Number(process.env.PORT || 4747);
+// HW_HOST=0.0.0.0 to listen beyond this machine (for hosting); that requires HW_PASSWORD_HASH (see lib/login.mjs).
+const HOST = process.env.HW_HOST || "127.0.0.1";
+const PASSWORD_HASH = (process.env.HW_PASSWORD_HASH || "").trim();
 const DEFAULT_MODEL = process.env.HW_MODEL || "claude-opus-5-5";
 const GUESS_MODEL = process.env.HW_GUESS_MODEL || "claude-sonnet-5-5";
 // Past sets sent with every run as style examples (older ones are in the corpus). Each adds ~2k tokens to every turn.
@@ -682,6 +686,7 @@ async function handle(req, res) {
       model: DEFAULT_MODEL,
       cas: casAvailable(),
       auth: claudeAuth(),
+      login: !!PASSWORD_HASH,
       budget: BUDGET ? +BUDGET : null,
       corpusSize: loadCorpus().length,
     });
@@ -959,16 +964,22 @@ async function handle(req, res) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const loopback = /^(127\.\d+\.\d+\.\d+|::1|localhost)$/.test(HOST);
+  if (PASSWORD_HASH && !validHash(PASSWORD_HASH)) { console.error("HW_PASSWORD_HASH isn't a hash from `node ui/scripts/hash-password.mjs`."); process.exit(1); }
+  if (!loopback && !PASSWORD_HASH) { console.error(`Refusing to listen on ${HOST} without a login. Set HW_PASSWORD_HASH (node ui/scripts/hash-password.mjs).`); process.exit(1); }
+  const login = createLogin({ hash: PASSWORD_HASH, dataDir: DATA, trustProxy: process.env.HW_TRUST_PROXY === "1" });
   http
-    .createServer((req, res) => {
+    .createServer(async (req, res) => {
       const t0 = Date.now();
+      try { if (await login.gate(req, res)) return; } catch (e) { if (!res.headersSent) send(res, 500, { error: e.message }); return; }
       const u = req.url.split("?")[0];
       // Static files and the log endpoints themselves would drown everything else out.
       if (u.startsWith("/api/") && u !== "/api/log" && u !== "/api/logs") res.on("finish", () => logEvent("http", `${req.method} ${u}`, { status: res.statusCode, ms: Date.now() - t0 }));
       handle(req, res).catch((e) => { logEvent("server", "error", { path: u, error: e.stack || e.message }); if (!res.headersSent) send(res, 500, { error: e.message }); else res.end(); });
     })
-    .listen(PORT, "127.0.0.1", () => {
-      console.log(`Homework UI: http://localhost:${PORT}  (event log: ${LOG_FILE})`);
+    .listen(PORT, HOST, () => {
+      console.log(`Homework UI: http://${loopback ? "localhost" : HOST}:${PORT}  (event log: ${LOG_FILE})`);
+      console.log(login.enabled ? "Login: password required" : "Login: off (local only)");
       if (!findTectonic()) console.log("Note: Tectonic not found; PDF compile is disabled until you run `brew install tectonic`.");
       const auth = claudeAuth();
       console.log(auth.mode === "subscription" ? `Claude: subscription (${auth.plan || "logged in"})` : `Claude: ${auth.mode}`);

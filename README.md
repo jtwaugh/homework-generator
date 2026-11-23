@@ -70,6 +70,80 @@ no opted-in key.
 The walkthrough of the screens, every option (`PORT`, `HW_MODEL`, `HW_BUDGET_USD`, …), the event log, the tests and
 the debugging harness are in [ui/README.md](ui/README.md).
 
+## Host it for someone else
+
+The app is a long-running Node process that starts `claude` and `tectonic` and writes into its folder, so it needs a
+real machine: a small Linux VM (1 GB RAM is plenty) or an always-on computer at home. Serverless hosts such as
+Vercel won't work.
+
+**1. Install the same tools as above** on the server: Node 22, the `claude` CLI (`npm install -g
+@anthropic-ai/claude-code`; it doesn't need to be logged in when you use an API key), Tectonic, and optionally the
+sympy venv. Then clone the repo.
+
+**2. Make a password hash.** On the server, run
+
+```
+node ui/scripts/hash-password.mjs
+```
+
+and type a password of at least 10 characters. It prints a line like `scrypt$16384$8$1$…`. The server stores only this
+hash, never the password itself.
+
+**3. Put the settings in an env file** that only you can read, e.g. `/etc/homework.env` (`chmod 600`):
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+HW_ALLOW_API_KEY=1
+HW_PASSWORD_HASH=scrypt$16384$8$1$...
+HW_TRUST_PROXY=1
+HW_BUDGET_USD=3
+HW_STUDENT=Sam
+```
+
+If you `export` these in a shell instead, wrap the hash in single quotes: it contains `$`.
+
+**4. Run it behind HTTPS.** Leave the app listening on `127.0.0.1` (the default) and put
+[Caddy](https://caddyserver.com) in front of it. Caddy gets a certificate for your domain automatically. The whole
+`/etc/caddy/Caddyfile`:
+
+```
+homework.example.com {
+    reverse_proxy 127.0.0.1:4747
+}
+```
+
+`HW_TRUST_PROXY=1` tells the app it is behind a proxy, so it rate-limits logins per real client IP and marks the login
+cookie `Secure`. Only set it when a proxy really is in front.
+
+**5. Keep it running** with systemd, e.g. `/etc/systemd/system/homework.service`:
+
+```
+[Unit]
+Description=Homework generator
+After=network.target
+
+[Service]
+User=hw
+WorkingDirectory=/home/hw/homework-generator
+EnvironmentFile=/etc/homework.env
+ExecStart=/usr/bin/node ui/server.mjs
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+then `sudo systemctl enable --now homework`. The startup log (`journalctl -u homework`) should show
+`Claude: api-key` and `Login: password required`.
+
+**How the login works.** With `HW_PASSWORD_HASH` set, every page and API call needs a session. You get one by
+entering the password at `/login`. Sessions last 30 days and survive restarts. **Log out** in the header ends yours.
+After 8 wrong passwords from one address (or 40 in total) the app refuses logins for 15 minutes. To change the
+password, make a new hash and restart; to log everyone out, also delete `ui/data/sessions.json`. Without a hash
+there's no login, and the server refuses to listen on anything but localhost (`HW_HOST=0.0.0.0` is only allowed
+with a password). Use a strong password: anyone who logs in can spend your API credit, and Claude's `cas` tool
+runs Python on the server.
+
 ## Add your own homework data
 
 1. **Put your past sets in the repo root** as `hw_M_D_YYYY.tex`, e.g. `hw_9_24_2026.tex`. The date in the name orders

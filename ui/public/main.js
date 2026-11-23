@@ -17,6 +17,7 @@ document.addEventListener("click", (e) => {
   const o = e.target.closest("[data-open]"); if (!o) return;
   ({ cost: openCost, history: openHistory, dag: openDag, corpus: openCorpus })[o.dataset.open]?.();
 });
+$("#logout").onclick = () => fetch("/api/logout", { method: "POST" }).finally(() => location.replace("/login"));
 // clicking a dialog's backdrop closes it
 for (const d of document.querySelectorAll("dialog")) d.addEventListener("mousedown", (e) => { if (e.target === d) d.close(); });
 

@@ -27,6 +27,7 @@ if (typeof window !== "undefined") addEventListener("pagehide", flushLog);
 export async function api(path, opts = {}) {
   const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts, body: opts.body && JSON.stringify(opts.body) });
   const j = await r.json().catch(() => ({}));
+  if (r.status === 401 && j.error === "login required") { location.href = "/login"; throw new Error("login required"); }
   if (!r.ok) {
     log("api-error", { method: opts.method || "GET", path, status: r.status, error: j.error || r.statusText });
     throw Object.assign(new Error(j.error || r.statusText), { status: r.status });
