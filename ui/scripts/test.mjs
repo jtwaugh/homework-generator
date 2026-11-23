@@ -11,7 +11,7 @@ import { decideAuth } from "../lib/auth.mjs";
 import { hashPassword, verifyPassword, validHash, rateLimiter, parseCookies } from "../lib/login.mjs";
 import { stageFor, modelFor, assumptionsOf, STAGES } from "../server.mjs";
 import { parseTopics, serializeTopics, historyTopics } from "../public/topics.js";
-import { computeStates, statusText, lessonPlan } from "../public/dag.js";
+import { computeStates, statusText, lessonPlan, planGraph, curvePath } from "../public/dag.js";
 import { S, lintTex, nextSetDate } from "../public/lib.js";
 import { parseTags } from "../lib/tagger.mjs";
 import { openDb } from "../lib/db.mjs";
@@ -88,6 +88,35 @@ test("lesson plan from the course's structured plan: sections in layout order, M
   assert.deepEqual(g.map((x) => x.title), ["Ordered units", "Middle block", "Other units"]);
   assert.deepEqual(g.flatMap((x) => x.units.map((u) => [u.id, u.status])), [["U01", "TAUGHT"], ["U02", "FUTURE"], ["M1", "CURRENT"], ["U03", "FUTURE"]]);
   assert.deepEqual(g[1].units[0].missing, ["U02"]); assert.equal(g[0].units[1].guide, "Say 'rate of change'.");
+});
+test("lesson plan DAG: layers by longest chain of needs, implied needs flagged, long edges routed, ready units", () => {
+  const mk = (key, needs) => ({ key, name: key, about: "", needs, stance: "", notes: "" });
+  const plan = { layout: [{ heading: "Units", items: ["U01", "U02", "U03", "U04", "M1", "U05"].map((unit) => ({ unit })) }],
+    units: [mk("U01", []), mk("U02", ["U01"]), mk("U03", ["U02"]), mk("U04", ["U01", "U03", "U99"]), mk("M1", ["U01"]), mk("U05", ["U04", "U05"])] };
+  const g = planGraph(lessonPlan(plan, "TAUGHT: U01\nCURRENT: U02\nFUTURE: everything else"));
+  const n = Object.fromEntries(g.nodes.map((x) => [x.id, x]));
+  assert.deepEqual(["U01", "U02", "U03", "U04", "M1", "U05"].map((k) => n[k].layer), [0, 1, 2, 3, 1, 4], "unknown and self needs ignored");
+  const e = (a, b) => g.edges.find((x) => x.from === a && x.to === b);
+  assert.ok(e("U01", "U04").implied, "U01 is reached through U03"); assert.ok(!e("U03", "U04").implied);
+  assert.equal(e("U01", "U04").pts, undefined, "implied edges are not routed");
+  assert.equal(e("U01", "M1").pts.length, 2); assert.equal(e("U03", "U04").pts.length, 2);
+  assert.ok(n.U03.ready, "needs only U02, which is current"); assert.ok(!n.U04.ready); assert.ok(!n.U01.ready, "taught units are not 'ready'");
+  for (const x of g.nodes) for (const y of g.nodes) if (x !== y && x.layer === y.layer) assert.ok(x.x + x.w <= y.x || y.x + y.w <= x.x, `${x.id} overlaps ${y.id}`);
+  assert.match(curvePath(e("U01", "M1").pts), /^M[\d.,-]+ C/);
+  const cyc = planGraph(lessonPlan({ layout: [], units: [mk("U01", ["U02"]), mk("U02", ["U01"])] }, ""));
+  assert.equal(cyc.nodes.length, 2, "a cycle does not hang the layout");
+});
+test("lesson plan DAG: a long edge passes through a dummy slot per skipped layer", () => {
+  const mk = (key, needs) => ({ key, name: key, about: "", needs, stance: "", notes: "" });
+  const g = planGraph(lessonPlan({ layout: [], units: [mk("U01", []), mk("U02", ["U01"]), mk("U03", ["U02"]), mk("U04", ["U03", "U02"]), mk("M1", ["U01", "U02"]), mk("M2", ["U01", "U03"])] }, ""));
+  const e = g.edges.find((x) => x.from === "U01" && x.to === "M2");
+  assert.ok(e.implied);
+  const long = planGraph(lessonPlan({ layout: [], units: [mk("U01", []), mk("U02", ["U01"]), mk("U03", ["U02"]), mk("M1", ["U03"]), mk("M2", ["U01", "M1"]), mk("M3", ["U02"])] }, ""));
+  const m3 = long.edges.find((x) => x.from === "U02" && x.to === "M3");
+  assert.equal(m3.pts.length, 2, "adjacent layers: straight route");
+  const u2m1 = planGraph(lessonPlan({ layout: [], units: [mk("U01", []), mk("U02", ["U01"]), mk("U03", ["U02"]), mk("M1", ["U03", "U09"]), mk("F1", ["U01"]), mk("M4", ["M1", "F1"])] }, ""));
+  const f = u2m1.edges.find((x) => x.from === "F1" && x.to === "M4");
+  assert.equal(f.pts.length, 2 + 2 * 2, "F1 (layer 1) to M4 (layer 4) passes two dummy slots");
 });
 test("topic chips round-trip through weekly_status text", () => {
   const chips = [{ text: "Systems of linear inequalities", id: "U14" }, { text: "harder line questions", id: null }, { text: "Substitution", id: "m:e12" }];

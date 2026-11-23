@@ -52,8 +52,119 @@ export function lessonPlan(plan, statusMd) {
   return groups.filter((g) => g.units.length);
 }
 
+// The lesson plan's latent DAG: units as nodes, "Needs" as edges (need → unit), laid out in layers (Sugiyama
+// style). A unit's layer is its longest chain of needs; edges implied by others (U17 → M2 when U17 already needs
+// U15 → U16 → U17) are flagged `implied` and left out of the layout; long edges route through invisible dummy
+// slots so the barycenter sweeps can untangle them. Needs naming units not in the plan are ignored, and a cycle
+// is broken rather than looped on. `ready` marks a unit not yet started whose needs are all taught or current.
+// Returns { nodes: [{id, unit, x, y, w, h, layer, ready}], edges: [{from, to, implied, pts}] } where pts is the
+// route (source bottom, through dummies, to target top) for non-implied edges.
+export const PLAN_NODE = { w: 210, h: 58, gx: 34, gy: 74, dummy: 18 };
+export function planGraph(groups) {
+  const units = groups.flatMap((g) => g.units), byId = new Map(units.map((u) => [u.id, u]));
+  const needs = new Map(units.map((u) => [u.id, [...new Set(u.needs)].filter((n) => byId.has(n) && n !== u.id)]));
+  // layers by longest path, breaking cycles at the back edge
+  const layer = new Map(), visiting = new Set();
+  const depth = (id) => {
+    if (layer.has(id)) return layer.get(id);
+    if (visiting.has(id)) return -1;
+    visiting.add(id);
+    const d = 1 + Math.max(-1, ...needs.get(id).map(depth));
+    visiting.delete(id); layer.set(id, d); return d;
+  };
+  units.forEach((u) => depth(u.id));
+  for (const [id, ns] of needs) needs.set(id, ns.filter((n) => layer.get(n) < layer.get(id)));
+  // transitive reduction: a need is implied when another need of the same unit already reaches it
+  const anc = new Map();
+  const ancestors = (id) => {
+    if (anc.has(id)) return anc.get(id);
+    const s = new Set(); anc.set(id, s);
+    for (const n of needs.get(id)) { s.add(n); for (const a of ancestors(n)) s.add(a); }
+    return s;
+  };
+  const edges = [];
+  for (const u of units) for (const n of needs.get(u.id)) {
+    edges.push({ from: n, to: u.id, implied: needs.get(u.id).some((m) => m !== n && ancestors(m).has(n)) });
+  }
+  // layer rows, with a dummy slot per intermediate layer of each long kept edge
+  const nL = Math.max(0, ...layer.values()) + 1;
+  const rows = Array.from({ length: nL }, () => []);
+  units.forEach((u, i) => rows[layer.get(u.id)].push({ id: u.id, ord: i }));
+  const up = new Map(), down = new Map(), link = (a, b) => { (down.get(a) || down.set(a, []).get(a)).push(b); (up.get(b) || up.set(b, []).get(b)).push(a); };
+  for (const e of edges) {
+    if (e.implied) continue;
+    let prev = e.from; e.via = [];
+    for (let l = layer.get(e.from) + 1; l < layer.get(e.to); l++) {
+      const d = `~${e.from}>${e.to}@${l}`; rows[l].push({ id: d, dummy: true, ord: Infinity }); e.via.push(d); link(prev, d); prev = d;
+    }
+    link(prev, e.to);
+  }
+  // order within rows: plan order, then barycenter sweeps down and up
+  const pos = new Map();
+  const index = () => rows.forEach((r) => r.forEach((n, i) => pos.set(n.id, i)));
+  rows.forEach((r) => r.sort((a, b) => a.ord - b.ord)); index();
+  const bary = (n, nb) => { const ps = (nb.get(n.id) || []).map((x) => pos.get(x)); return ps.length ? ps.reduce((a, b) => a + b, 0) / ps.length : pos.get(n.id); };
+  for (let it = 0; it < 6; it++) {
+    const downSweep = it % 2 === 0;
+    for (let k = 1; k < nL; k++) {
+      const l = downSweep ? k : nL - 1 - k, nb = downSweep ? up : down;
+      const b = new Map(rows[l].map((n) => [n.id, bary(n, nb)]));
+      rows[l].sort((x, y) => b.get(x.id) - b.get(y.id) || pos.get(x.id) - pos.get(y.id));
+      rows[l].forEach((n, i) => pos.set(n.id, i));
+    }
+  }
+  // coordinates: each row centred on the widest, then sweeps that pull every slot toward the mean centre of its
+  // neighbours in the row above (or below) while keeping the order and the gaps, so long edges run straighter
+  const { w, h, gx, gy, dummy } = PLAN_NODE;
+  const width = (r) => r.reduce((s, n) => s + (n.dummy ? dummy : w), 0) + gx * Math.max(0, r.length - 1);
+  const maxW = Math.max(0, ...rows.map(width)), at = new Map();
+  rows.forEach((r, l) => {
+    let x = (maxW - width(r)) / 2;
+    for (const n of r) { const nw = n.dummy ? dummy : w; at.set(n.id, { x, y: l * (h + gy), w: nw }); x += nw + gx; }
+  });
+  const centre = (id) => at.get(id).x + at.get(id).w / 2;
+  for (let it = 0; it < 8; it++) {
+    const downSweep = it % 2 === 0;
+    for (let k = 1; k < nL; k++) {
+      const r = rows[downSweep ? k : nL - 1 - k], nb = downSweep ? up : down;
+      if (!r.length) continue;
+      const want = r.map((n) => { const ns = nb.get(n.id) || []; return ns.length ? ns.reduce((s, x) => s + centre(x), 0) / ns.length : centre(n.id); });
+      const half = r.map((n) => at.get(n.id).w / 2), sep = (i) => half[i - 1] + gx + half[i];
+      // the closest centres to `want` that keep the gaps: average a left-to-right and a right-to-left clamp
+      const L = [...want], R = [...want];
+      for (let i = 1; i < r.length; i++) L[i] = Math.max(want[i], L[i - 1] + sep(i));
+      for (let i = r.length - 2; i >= 0; i--) R[i] = Math.min(want[i], R[i + 1] - sep(i + 1));
+      r.forEach((n, i) => { at.get(n.id).x = (L[i] + R[i]) / 2 - half[i]; });
+    }
+  }
+  const minX = Math.min(...[...at.values()].map((p) => p.x));
+  for (const p of at.values()) p.x -= minX;
+  const ok = (id) => ["TAUGHT", "CURRENT"].includes(byId.get(id).status);
+  const nodes = units.map((u) => ({ id: u.id, unit: u, ...at.get(u.id), h, layer: layer.get(u.id),
+    ready: ["NEXT", "FUTURE"].includes(u.status) && needs.get(u.id).every(ok) }));
+  const mid = (id) => { const p = at.get(id); return p.x + p.w / 2; };
+  for (const e of edges) {
+    if (e.implied) continue;
+    const s = at.get(e.from), t = at.get(e.to);
+    e.pts = [[mid(e.from), s.y + h], ...e.via.flatMap((d) => [[mid(d), at.get(d).y], [mid(d), at.get(d).y + h]]), [mid(e.to), t.y]];
+    delete e.via;
+  }
+  return { nodes, edges };
+}
 
-export const keyOf = (board, id) => (board === "methods" ? "m:" + id : id);
+// SVG path through route points: vertical-tangent curves between layers, straight runs through dummy slots.
+export function curvePath(pts) {
+  const r = (v) => Math.round(v * 10) / 10;
+  let d = `M${r(pts[0][0])},${r(pts[0][1])}`;
+  for (let i = 1; i < pts.length; i++) {
+    const [x0, y0] = pts[i - 1], [x1, y1] = pts[i];
+    if (x0 === x1 && i % 2 === 0) d += ` L${r(x1)},${r(y1)}`;
+    else { const m = (y0 + y1) / 2; d += ` C${r(x0)},${r(m)} ${r(x1)},${r(m)} ${r(x1)},${r(y1)}`; }
+  }
+  return d;
+}
+
+export const keyOf =(board, id) => (board === "methods" ? "m:" + id : id);
 
 // Right-angle route for an edge, following the board's `bends` format (see ui/scripts/import-dag.mjs):
 //   ['v', d1]          down d1 from the source's bottom centre, across to the target's centre x, down to its top
@@ -160,7 +271,9 @@ export function ladderHints(statusMd, ladderToWu, guess, overrides) {
 
 // ---------- view ----------
 
-const D = { data: null, version: null, mode: "content", sel: null, view: null, poll: null, side: "info", dragging: null };
+const PLAN_VIEW_KEY = "hw.planView";
+const D = { data: null, version: null, mode: "content", sel: null, view: null, poll: null, side: "info", dragging: null, planView: "linear", graph: null };
+try { if (localStorage.getItem(PLAN_VIEW_KEY) === "dag") D.planView = "dag"; } catch {}
 Object.defineProperty(D, "board", { get: () => (D.mode === "methods" ? "methods" : "content"), enumerable: true });
 const MODE_LABEL = { content: "Content", methods: "Methods", plan: "Lesson plan" };
 const STATUS_LABEL = { TAUGHT: "Taught", CURRENT: "Current", NEXT: "Next", FUTURE: "Future" };
@@ -172,7 +285,8 @@ function bbox(dag) {
   return { x: x0 - 40, y: y0 - 40, w: x1 - x0 + 80, h: y1 - y0 + 80 };
 }
 
-const curDag = () => D.data?.[D.board];
+const planDag = () => D.mode === "plan" && D.planView === "dag";
+const curDag = () => (planDag() ? D.graph : D.data?.[D.board]);
 const statesNow = () => computeStates(curDag(), D.board, D.data.guess, D.data.overrides, D.data.content);
 
 function svgHtml() {
@@ -251,7 +365,7 @@ function planHtml() {
   return `<div class="plan">${groups.map((g) => `
     <section class="plan-group">${g.title ? `<h3>${esc(g.title)}</h3>` : ""}
       <ol class="plan-list">${g.units.map((u) => `
-        <li class="plan-unit s-${u.status}" data-unit="${u.id}">
+        <li class="plan-unit s-${u.status}" data-unit="${u.id}" title="Show ${u.id} in the DAG">
           <span class="chip s-${u.status}${u.note && u.status === "TAUGHT" ? " partial" : ""}${u.missing.length ? " warn" : ""}">${u.id}</span>
           <div class="plan-body">
             <div class="plan-title"><b>${esc(u.name)}</b> <span class="st s-${u.status}">${STATUS_LABEL[u.status]}</span>${u.stance ? ` <span class="muted small">${esc(u.stance)}</span>` : ""}</div>
@@ -264,15 +378,83 @@ function planHtml() {
     </section>`).join("")}</div>`;
 }
 
+// The lesson plan as its DAG. Selecting a unit lights up everything it rests on (ancestors) and everything that
+// rests on it (descendants), and dims the rest; implied edges are drawn only for the selected unit.
+function planClosure(g, id, dir) {
+  const out = new Set(), next = (x) => g.edges.filter((e) => (dir === "up" ? e.to === x : e.from === x)).map((e) => (dir === "up" ? e.from : e.to));
+  const walk = (x) => { for (const y of next(x)) if (!out.has(y)) { out.add(y); walk(y); } };
+  walk(id); return out;
+}
+function planSvgHtml() {
+  const g = D.graph, sel = g.nodes.some((n) => n.id === D.sel) ? D.sel : null;
+  const up = sel ? planClosure(g, sel, "up") : new Set(), down = sel ? planClosure(g, sel, "down") : new Set();
+  const byId = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
+  const ok = (id) => ["TAUGHT", "CURRENT"].includes(byId[id].unit.status);
+  const edges = g.edges.map((e) => {
+    const touches = sel && (e.from === sel || e.to === sel);
+    if (e.implied && !touches) return "";
+    const s = byId[e.from], t = byId[e.to];
+    const pts = e.pts || [[s.x + s.w / 2, s.y + s.h], [t.x + t.w / 2, t.y]];
+    const cls = !sel ? "" : (up.has(e.from) || e.from === sel) && (up.has(e.to) || e.to === sel) ? " anc" : (down.has(e.to) || e.to === sel) && (down.has(e.from) || e.from === sel) ? " desc" : " dim";
+    return `<path class="edge${ok(e.from) ? " lit" : ""}${e.implied ? " implied" : ""}${cls}" d="${curvePath(pts)}" marker-end="url(#parr${cls.trim() ? "-" + cls.trim() : ""})"/>`;
+  }).join("");
+  const nodes = g.nodes.map((n) => {
+    const u = n.unit, rel = !sel ? "" : n.id === sel ? " sel" : up.has(n.id) ? " anc" : down.has(n.id) ? " desc" : " dim";
+    return `<g class="node pnode ps-${u.status}${n.ready ? " ready" : ""}${u.missing.length ? " warn" : ""}${rel}" data-id="${n.id}" transform="translate(${n.x},${n.y})">
+      <title>${esc(u.id)} ${esc(u.name)}${u.needs.length ? ` · needs ${esc(u.needs.join(", "))}` : ""}</title>
+      <rect class="body" width="${n.w}" height="${n.h}" rx="10"/>
+      ${u.missing.length ? `<circle class="wdot" cx="${n.w - 4}" cy="4" r="5"/>` : ""}
+      <foreignObject x="10" y="7" width="${n.w - 20}" height="${n.h - 12}"><div xmlns="http://www.w3.org/1999/xhtml" class="nt"><b><span class="pid">${esc(u.id)}</span> ${esc(u.name)}</b><span>${esc(STATUS_LABEL[u.status])}${n.ready ? " · ready" : ""}</span></div></foreignObject>
+    </g>`;
+  }).join("");
+  const v = D.view;
+  const mk = (id, cls) => `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah${cls}"/></marker>`;
+  return `<svg class="dag-svg plan-dag" viewBox="${v.x} ${v.y} ${v.w} ${v.h}" xmlns="http://www.w3.org/2000/svg">
+    <defs>${mk("parr", "")}${mk("parr-anc", " anc")}${mk("parr-desc", " desc")}${mk("parr-dim", " dim")}</defs>
+    <g class="edges">${edges}</g><g class="nodes">${nodes}</g></svg>`;
+}
+
+function planPanel(id) {
+  const g = D.graph, n = g.nodes.find((x) => x.id === id);
+  if (!n) return '<p class="muted">Click a unit to see what it needs and what it opens up. Its prerequisites light up in green, the units that build on it in blue.</p>';
+  const u = n.unit, name = (k) => g.nodes.find((x) => x.id === k)?.unit.name || "";
+  const links = (ks) => `<div class="nls">${[...ks].map((k) => `<button class="link nl" data-goto-unit="${esc(k)}"><b>${esc(k)}</b> ${esc(name(k))}</button>`).join("")}</div>`;
+  const direct = g.edges.filter((e) => e.from === id).map((e) => e.to), all = planClosure(g, id, "down"), anc = planClosure(g, id, "up");
+  const known = new Set(g.nodes.map((x) => x.id)), unknown = u.needs.filter((k) => !known.has(k));
+  return `<div class="np">
+    <div class="k">Unit ${esc(u.id)}${u.stance ? ` · ${esc(u.stance)}` : ""}</div>
+    <h3 class="np-title">${esc(u.name)}</h3>
+    ${u.about ? `<p>${esc(u.about)}</p>` : ""}
+    <div class="np-state ps-${u.status}">${esc(STATUS_LABEL[u.status])}${n.ready ? " · ready: everything it needs is taught" : ""}</div>
+    ${u.note ? `<p class="plan-note small">${esc(u.note)}</p>` : ""}
+    ${u.guide ? `<p class="muted small plan-guide">${esc(u.guide)}</p>` : ""}
+    ${u.missing.length ? `<p class="bad-text small">${u.missing.map(esc).join(", ")} not taught yet</p>` : ""}
+    <h4>Needs</h4>${u.needs.length ? links(u.needs.filter((k) => known.has(k))) : '<p class="muted small">Nothing: it can start any time.</p>'}
+    ${unknown.length ? `<p class="muted small">Also lists ${unknown.map(esc).join(", ")}, not in this version.</p>` : ""}
+    ${anc.size > u.needs.length ? `<p class="muted small">${anc.size} units in all lie under it.</p>` : ""}
+    <h4>Needed by</h4>${direct.length ? links(direct) : '<p class="muted small">No unit builds on it directly.</p>'}
+    ${all.size > direct.length ? `<p class="muted small">${all.size} units in all build on it.</p>` : ""}
+  </div>`;
+}
+
+function planLegendHtml() {
+  return `<div class="dag-legend">
+    <span class="lg ps-TAUGHT"></span>taught <span class="lg ps-CURRENT"></span>current <span class="lg ps-NEXT"></span>next <span class="lg ps-FUTURE"></span>future <span class="lg ps-FUTURE ready"></span>ready (needs all taught)
+    <span class="sep"></span><span class="lg-edge"></span>needed for <span class="lg-edge implied"></span>implied by a longer chain (shown for the selected unit)
+    <span class="sep"></span><span class="wdot-lg"></span>a need is not taught yet</div>`;
+}
+
 // ---------- page ----------
 
 function headHtml() {
   const job = D.data?.job, running = job?.running;
   if (D.mode === "plan") {
     const us = lessonPlan(D.data?.plan || S.ladder, S.status).flatMap((g) => g.units), n = (s) => us.filter((u) => u.status === s).length;
+    const ready = planDag() && D.graph ? D.graph.nodes.filter((x) => x.ready).length : 0;
     return `<h2>Progress map <span class="muted">· Lesson plan</span></h2>
-      <span class="dag-count"><b>${n("TAUGHT")} of ${us.length} taught</b> · ${n("CURRENT")} current${n("NEXT") ? ` · ${n("NEXT")} next` : ""}</span>
-      <span class="spacer"></span><span class="muted small">Statuses from weekly_status.md · change them on Create Homework</span>${versionPicker()}`;
+      <span class="dag-count"><b>${n("TAUGHT")} of ${us.length} taught</b> · ${n("CURRENT")} current${n("NEXT") ? ` · ${n("NEXT")} next` : ""}${ready ? ` · ${ready} ready` : ""}</span>
+      <div class="seg plan-view">${["linear", "dag"].map((v) => `<button data-plan-view="${v}" class="${D.planView === v ? "on" : ""}">${{ linear: "Linear", dag: "DAG" }[v]}</button>`).join("")}</div>
+      <span class="spacer"></span><span class="muted small">Statuses from weekly_status.md · change them on Create Homework</span>${versionPicker()}${planDag() ? '<button class="ghost" data-act="fit" title="Fit to screen">⤢</button>' : ""}`;
   }
   const c = counts(curDag(), statesNow()), count = `<span class="dag-count"><b>${c.done} of ${c.total} done</b>${c.partial ? ` · ${c.partial} partly` : ""} · ${c.ready} ready</span>`;
   return `<h2>Progress map <span class="muted">· ${esc(MODE_LABEL[D.mode])}</span></h2>
@@ -301,6 +483,17 @@ function syncSidebar() {
 function drawAll() {
   const d = $("#p-dag");
   syncSidebar();
+  if (D.mode === "plan" && D.planView === "dag") {
+    const groups = lessonPlan(D.data?.plan || S.ladder, S.status);
+    D.graph = planGraph(groups);
+    if (!D.graph.nodes.length) { d.innerHTML = `<div class="dag-head row">${headHtml()}</div>${planHtml()}`; return; }
+    D.view ||= bbox(D.graph);
+    d.innerHTML = `<div class="dag-head row">${headHtml()}</div>
+      <div class="dag-main"><div class="dag-canvas">${planSvgHtml()}</div>
+        <aside class="dag-side"><div class="side-body">${planPanel(D.sel)}</div></aside></div>
+      ${planLegendHtml()}`;
+    return;
+  }
   if (D.mode === "plan") { d.innerHTML = `<div class="dag-head row">${headHtml()}</div>${planHtml()}`; return; }
   if (!D.data) { d.innerHTML = `<p class="muted">Loading…</p>`; return; }
   if (!curDag()) { d.innerHTML = `<div class="row dag-head"><h2>Progress map</h2></div><p class="err">ui/data/wu_dag.json is missing.</p>`; return; }
@@ -311,7 +504,7 @@ function drawAll() {
       <div class="side-body">${D.side === "info" ? (D.sel ? nodePanel(D.sel) : '<p class="muted">Click a block to see where the student stands on it.</p>') : notesPanel()}</div></aside></div>
     ${legendHtml()}`;
 }
-function drawSvgOnly() { const c = $("#p-dag .dag-canvas"); if (c) c.innerHTML = svgHtml(); }
+function drawSvgOnly() { const c = $("#p-dag .dag-canvas"); if (c) c.innerHTML = planDag() ? planSvgHtml() : svgHtml(); }
 
 const dagUrl = () => (D.version ? `/api/dag?version=${D.version}` : "/api/dag");
 async function load() {
@@ -337,7 +530,7 @@ export function focusNode(k) {
 }
 
 export async function openDag(btn) {
-  if (btn?.dataset.dag && btn.dataset.dag !== D.mode) { const wasBoard = D.board; D.mode = btn.dataset.dag; if (D.board !== wasBoard) { D.sel = null; D.view = null; } }
+  if (btn?.dataset.dag && btn.dataset.dag !== D.mode) { const wasBoard = D.board, wasPlan = planDag(); D.mode = btn.dataset.dag; if (D.board !== wasBoard || planDag() !== wasPlan) { D.sel = null; D.view = null; } }
   if (!D.data) drawAll();
   await load();
 }
@@ -363,6 +556,16 @@ export function initDag() {
   d.addEventListener("click", async (e) => {
     const t = e.target;
     const sd = t.closest("[data-side]"); if (sd) { D.side = sd.dataset.side; return drawAll(); }
+    const pv = t.closest("[data-plan-view]");
+    if (pv) {
+      if (pv.dataset.planView === D.planView) return;
+      D.planView = pv.dataset.planView; D.sel = null; D.view = null;
+      try { localStorage.setItem(PLAN_VIEW_KEY, D.planView); } catch {}
+      log("plan-view", { view: D.planView }); return drawAll();
+    }
+    const pu = t.closest(".plan-unit[data-unit]");
+    if (pu) { D.planView = "dag"; D.sel = pu.dataset.unit; D.view = null; try { localStorage.setItem(PLAN_VIEW_KEY, "dag"); } catch {} log("plan-view", { view: "dag", from: pu.dataset.unit }); return drawAll(); }
+    const gu = t.closest("[data-goto-unit]"); if (gu) { D.sel = gu.dataset.gotoUnit; log("dag-select", { board: "plan", id: D.sel }); return drawAll(); }
     const a = t.closest("[data-act]");
     if (a?.dataset.act === "fit") { D.view = bbox(curDag()); return drawSvgOnly(); }
     if (a?.dataset.act === "guess") { try { await api("/api/dag/guess", { method: "POST" }); } catch (err) { alert(err.message); } return load(); }
