@@ -24,8 +24,25 @@ export function flushLog() {
 }
 if (typeof window !== "undefined") addEventListener("pagehide", flushLog);
 
+// The server's build of these files, from the first response. A different one later means a deploy happened
+// after this page loaded: its prompts and checks may be out of date, so it stops sending until reloaded.
+let build = null;
+function stale() {
+  if (document.getElementById("stale-page")) return;
+  const d = document.createElement("div");
+  d.id = "stale-page";
+  d.className = "err";
+  d.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:1000;padding:8px;text-align:center";
+  d.innerHTML = 'The app was updated. <button class="small-btn">Reload the page</button> to keep working.';
+  d.querySelector("button").onclick = () => location.reload();
+  document.body.append(d);
+}
 export async function api(path, opts = {}) {
+  if (document.getElementById("stale-page") && (opts.method || "GET") !== "GET") throw new Error("The app was updated. Reload the page to keep working.");
   const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts, body: opts.body && JSON.stringify(opts.body) });
+  const b = r.headers.get("X-Client-Build");
+  if (b && build && b !== build) stale();
+  build ||= b;
   const j = await r.json().catch(() => ({}));
   if (r.status === 401 && j.error === "login required") { location.href = "/login"; throw new Error("login required"); }
   if (!r.ok) {
