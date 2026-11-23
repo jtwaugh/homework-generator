@@ -14,11 +14,12 @@ import { fileURLToPath } from "node:url";
 import { tagProblems, needsTags, TAG_MODEL } from "./lib/tagger.mjs";
 import { loadCorpus, saveCorpus, searchCorpus, formatHits, addProblems, patchProblem, dateFromName, tokenize, attachTex, problemId, nearDuplicates, sameAnswer } from "./lib/corpus.mjs";
 import { ctx, loadCorpusDb, saveStatus, latestStatus, statusHistory, recordAssignment, setActiveEnrollment } from "./lib/store.mjs";
-import { closeDb, getSetting, setSetting } from "./lib/db.mjs";
+import { closeDb, getSetting, setSetting, tx } from "./lib/db.mjs";
 import * as Cur from "./lib/curriculum.mjs";
 import * as Prog from "./lib/progress.mjs";
 import { buildBrief, briefText, statusDigest } from "./lib/preflight.mjs";
 import { applyWeekUpdate, weekUpdateInputs, checkStatusUpload } from "./public/statusmd.js";
+import { exportBoardMd, parseBoardMd } from "./public/progressmd.js";
 import { claudeAuth } from "./lib/auth.mjs";
 import { runAgent, makeClient, addUserTurn } from "./lib/agent.mjs";
 import { CHAT_MODEL, corpusChatSystem, citedIds } from "./lib/corpuschat.mjs";
@@ -239,7 +240,7 @@ async function readLadder(c = C()) {
   if (file == null || sha(file) === exported) { await writeLikeOriginal(LADDER_FILE, md); setSetting(c.db, "ladder_export_hash", sha(md)); return md; }
   if (getSetting(c.db, "ladder_drift_hash") !== sha(file)) {
     const d = Cur.createDraft(c.db, c.curriculumId, { origin: "edit", note: "curriculum_ladder.md edited by hand" });
-    Cur.editDraft(c.db, d, [{ op: "setLadder", md: file }]);
+    Cur.editDraft(c.db, d, [{ op: "setLadder", md: file }], { source: "file" });
     setSetting(c.db, "ladder_drift_hash", sha(file));
     logEvent("curriculum", "ladder-drift", { draft: Cur.getVersion(c.db, d).seq });
   }
@@ -1117,8 +1118,27 @@ async function handle(req, res) {
       content: Cur.graphFor(c.db, vid, "content"), methods: Cur.graphFor(c.db, vid, "methods"), guess: st.guess, overrides: st.overrides || {},
       job: job && { ...job, elapsed: job.startedAt ? Date.now() - job.startedAt : 0 }, notes: await noteFiles(), guessModel: GUESS_MODEL, runs: st.runs.map(runSummary),
       version: { id: ver.id, seq: ver.seq, status: ver.status, enrolled: c.versionId }, versions: Cur.listVersions(c.db, c.curriculumId).map((v) => ({ id: v.id, seq: v.seq, status: v.status })),
-      plan: Cur.planFor(c.db, vid),
+      plan: Cur.planFor(c.db, vid), comments: Cur.commentsFor(c.db, c.curriculumId),
+      curriculum: { id: c.curriculumId, title: c.db.prepare("SELECT title FROM curriculum WHERE id = ?").get(c.curriculumId)?.title || c.curriculumId },
     });
+  }
+  // the curriculum's edit history (Progress map › History): draft edits, imports, publishes, discards, comments
+  if (m === "GET" && p === "/api/dag/history") { const c = C(); return send(res, 200, { edits: Cur.editHistory(c.db, c.curriculumId) }); }
+  // comments on nodes: {key, text} to add, {text} to change; they belong to the key, so any version can take them
+  if (m === "POST" && p === "/api/comments") {
+    const { key, text } = await body(req);
+    const c = C();
+    try { Cur.addComment(c.db, c.curriculumId, String(key || ""), text); } catch (e) { return send(res, 400, { error: e.message }); }
+    return send(res, 200, { comments: Cur.commentsFor(c.db, c.curriculumId) });
+  }
+  const cmm = p.match(/^\/api\/comments\/(\d+)$/);
+  if (cmm && (m === "PATCH" || m === "DELETE")) {
+    const c = C();
+    try {
+      if (m === "PATCH") Cur.updateComment(c.db, c.curriculumId, Number(cmm[1]), (await body(req)).text);
+      else Cur.deleteComment(c.db, c.curriculumId, Number(cmm[1]));
+    } catch (e) { return send(res, /no such/.test(e.message) ? 404 : 400, { error: e.message }); }
+    return send(res, 200, { comments: Cur.commentsFor(c.db, c.curriculumId) });
   }
   const rm = p.match(/^\/api\/dag\/runs\/(\d+)$/);
   if (m === "GET" && rm) {
@@ -1131,6 +1151,27 @@ async function handle(req, res) {
     if (!/^[A-Za-z0-9:_-]{1,40}$/.test(id || "") || !Cur.keysOf(c.db, c.versionId).has(id)) return send(res, 400, { error: "bad node id" });
     if (state != null && !Prog.STATES.includes(state)) return send(res, 400, { error: "bad state" });
     return send(res, 200, { overrides: Prog.setOverride(c.db, c.enrollmentId, id, state, note || "") });
+  }
+  // Content / Methods boards as Markdown (public/progressmd.js): a deterministic export and import of the
+  // teacher's states, at the enrolled version. An import with any error changes nothing.
+  if (m === "GET" && p === "/api/dag/export") {
+    const c = C(), board = url.searchParams.get("board");
+    if (!["content", "methods"].includes(board)) return send(res, 400, { error: "board must be content or methods" });
+    const st = dagState(c);
+    const text = exportBoardMd({ board, dag: Cur.graphFor(c.db, c.versionId, board), guess: st.guess, overrides: st.overrides, student: c.studentName || "" });
+    const who = (c.studentName || "student").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || "student";
+    res.writeHead(200, { "Content-Type": "text/markdown; charset=utf-8", "Content-Disposition": `attachment; filename="${board}_${who}_${new Date().toISOString().slice(0, 10)}.md"` });
+    return res.end(text);
+  }
+  if (m === "POST" && p === "/api/dag/import") {
+    const { board, text } = await body(req);
+    if (!["content", "methods"].includes(board)) return send(res, 400, { error: "board must be content or methods" });
+    const c = C(), st = dagState(c);
+    const { changes, errors } = parseBoardMd(text, { board, dag: Cur.graphFor(c.db, c.versionId, board), guess: st.guess, overrides: st.overrides });
+    if (errors.length) return send(res, 400, { error: `Not imported: ${errors.slice(0, 5).join("; ")}${errors.length > 5 ? ` (and ${errors.length - 5} more)` : ""}.`, errors });
+    tx(c.db, () => { for (const x of changes) Prog.recordEvent(c.db, c.enrollmentId, { key: x.key, state: x.state ?? "cleared", note: "imported", source: "teacher" }); });
+    logEvent("server", "dag-import", { board, changed: changes.length });
+    return send(res, 200, { overrides: dagState(c).overrides, changed: changes.length });
   }
 
   // ---- students and enrollments ----

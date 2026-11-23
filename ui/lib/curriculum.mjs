@@ -174,6 +174,7 @@ export function discardDraft(db, v) {
   const ver = getVersion(db, v);
   if (ver?.status !== "draft") throw new Error("not a draft");
   tx(db, () => {
+    logEdit(db, ver, { op: "discard", summary: `Discarded draft v${ver.seq}` });
     db.prepare("DELETE FROM lineage WHERE to_version = ?").run(v);
     db.prepare("DELETE FROM node WHERE created_in_version = ?").run(v);
     db.prepare("DELETE FROM curriculum_version WHERE id = ?").run(v);
@@ -199,15 +200,17 @@ function writeLineage(db, ver, oldKey, relation, into = [], note = "") {
 //   addEdge / removeEdge {from, to, kind, extra?}
 //   orderUnits {section, keys}                    the units of one lesson plan section, in their new order
 //   setCovers {covers: {U05: [...]}} · setPlanText {text} · setGated {gated: [{terms, unit}]} · setLadder {md}
-export function editDraft(db, v, ops) {
+export function editDraft(db, v, ops, { source = "app" } = {}) {
   const ver = requireDraft(db, v);
   const keys = [];
+  const logIt = (e) => logEdit(db, ver, { source, ...e });
   tx(db, () => {
     for (const o of ops) {
       if (o.op === "upsertNode") {
         const layer = o.layer || layerOfKey(o.key || "");
         const key = o.key || (layer === "unit" ? nextUnitKey(db, ver.curriculum_id) : newKey(layer));
         const old = db.prepare("SELECT * FROM node_revision WHERE version_id = ? AND node_key = ?").get(v, key);
+        const before = old ? snapshot(db, v, key) : null;
         const f = o.fields || {};
         if (layer === "unit") {
           const ex = old ? P(old.extra_json, {}) : {};
@@ -218,16 +221,43 @@ export function editDraft(db, v, ops) {
           if (f.needs) { db.prepare("DELETE FROM edge WHERE version_id = ? AND from_key = ? AND kind = 'needs'").run(v, key); f.needs.forEach((n, i) => insEdge(db, v, { ord: i, from: key, to: n, kind: "needs" })); }
           syncLayout(db, v);
         } else {
-          const { title, detail, kind, x, y, w, h, restsOn, ...extra } = f;
+          const { title, detail, kind, x, y, w, h, restsOn, uses, proves, ...extra } = f;
+          if (o.check) checkBlock(db, v, layer, key, { title: title ?? old?.title, kind: kind ?? old?.kind, uses, proves, restsOn });
           const ex = old ? P(old.extra_json, {}) : {};
           insRev(db, v, { key, layer, ord: old?.ord ?? nextOrd(db, v, "node_revision", "AND layer = ?", layer), title: title ?? old?.title ?? "", detail: detail ?? old?.detail ?? "", kind: kind ?? old?.kind ?? (layer === "methods" ? "method" : "theorem"),
             x: x ?? old?.x ?? 0, y: y ?? old?.y ?? 0, w: w ?? old?.w ?? 230, h: h ?? old?.h ?? 88, extra: { ...ex, ...extra }, external_ref: old?.external_ref ?? null });
           if (restsOn) { db.prepare("DELETE FROM edge WHERE version_id = ? AND from_key = ? AND kind = 'rests_on'").run(v, key); restsOn.forEach((c, i) => insEdge(db, v, { ord: i, from: key, to: c, kind: "rests_on" })); }
+          // incoming board edges: a key in both lists is a "needed to prove" edge; edges that stay keep their bends
+          if (uses || proves) {
+            const want = { uses_to_prove: [...new Set(proves || [])] };
+            want.uses = [...new Set(uses || [])].filter((k) => !want.uses_to_prove.includes(k));
+            for (const kd of ["uses", "uses_to_prove"]) {
+              if (kd === "uses" ? !uses : !proves) continue;
+              const have = db.prepare("SELECT from_key FROM edge WHERE version_id = ? AND to_key = ? AND kind = ?").all(v, key, kd).map((r) => r.from_key);
+              for (const k of have) if (!want[kd].includes(k)) db.prepare("DELETE FROM edge WHERE version_id = ? AND from_key = ? AND to_key = ? AND kind = ?").run(v, k, key, kd);
+              for (const k of want[kd]) if (!have.includes(k)) {
+                db.prepare("DELETE FROM edge WHERE version_id = ? AND from_key = ? AND to_key = ? AND kind IN ('uses','uses_to_prove')").run(v, k, key);
+                insEdge(db, v, { ord: nextOrd(db, v, "edge"), from: k, to: key, kind: kd });
+              }
+            }
+          }
+          // a moved block's hand-drawn bends no longer fit: its edges fall back to plain elbows
+          if (old && ((x != null && x !== old.x) || (y != null && y !== old.y))) db.prepare("UPDATE edge SET extra_json = '{}' WHERE version_id = ? AND kind IN ('uses','uses_to_prove') AND (from_key = ? OR to_key = ?)").run(v, key, key);
         }
         ensureNode(db, ver.curriculum_id, key, layer, v);
         keys.push(key);
+        const after = snapshot(db, v, key);
+        const changes = before ? diffSnap(before, after) : [];
+        const moved = before && (before.x !== after.x || before.y !== after.y);
+        if (!before) logIt({ layer, key, op: "add", summary: `Added “${after.title}”`, detail: { after: stripPos(after) } });
+        else if (changes.length) logIt({ layer, key, op: "edit", summary: `Edited “${after.title}”: ${changes.map((c) => FIELD_LABEL[c.field] || c.field).join(", ")}`, detail: { changes } });
+        else if (moved) logIt({ layer, key, op: "move", summary: `Moved “${after.title}”`, coalesce: true });
       } else if (o.op === "removeNode" || o.op === "lineage") {
         const into = o.into || [];
+        const t = titleIn(db, o.op === "removeNode" ? v : ver.parent_id ?? v, o.key) || o.key;
+        const intoT = into.map((k) => `“${titleIn(db, v, k) || k}”`).join(", ");
+        const what = !into.length || o.relation === "retired" ? "retired" : `${o.relation === "split" || into.length > 1 ? "split into" : o.relation === "replaced" ? "replaced by" : "merged into"} ${intoT}`;
+        logIt({ layer: layerOfKey(o.key), key: o.key, op: o.op === "removeNode" ? "remove" : "lineage", summary: o.op === "removeNode" ? `Removed “${t}”: ${what}` : `Said what happened to “${t}”: ${what}`, detail: { relation: o.relation || "retired", into, before: o.op === "removeNode" ? stripPos(snapshot(db, v, o.key)) : null } });
         const persisting = keysOf(db, v);
         for (const k of into) if (!persisting.has(k) || k === o.key) throw new Error(`${o.key}: successor ${k} is not in the draft`);
         if (o.op === "removeNode") {
@@ -246,22 +276,157 @@ export function editDraft(db, v, ops) {
         // A key created in this draft never existed in a published version: nothing to record.
         if (db.prepare("SELECT 1 FROM node_revision WHERE version_id = ? AND node_key = ?").get(ver.parent_id ?? -1, o.key)) writeLineage(db, ver, o.key, o.relation || "retired", into, o.note || "");
         else db.prepare("DELETE FROM node WHERE curriculum_id = ? AND key = ? AND created_in_version = ?").run(ver.curriculum_id, o.key, v);
-      } else if (o.op === "addEdge") insEdge(db, v, { ord: nextOrd(db, v, "edge"), from: o.from, to: o.to, kind: o.kind, extra: o.extra });
-      else if (o.op === "removeEdge") db.prepare("DELETE FROM edge WHERE version_id = ? AND from_key = ? AND to_key = ? AND kind = ?").run(v, o.from, o.to, o.kind);
-      else if (o.op === "orderUnits") orderUnits(db, v, o.section, o.keys || []);
-      else if (o.op === "setCovers") setCovers(db, v, o.covers);
-      else if (o.op === "setPlanText") db.prepare("UPDATE curriculum_version SET plan_text = ? WHERE id = ?").run(o.text, v);
+      } else if (o.op === "addEdge" || o.op === "removeEdge") {
+        if (o.op === "addEdge") insEdge(db, v, { ord: nextOrd(db, v, "edge"), from: o.from, to: o.to, kind: o.kind, extra: o.extra });
+        else db.prepare("DELETE FROM edge WHERE version_id = ? AND from_key = ? AND to_key = ? AND kind = ?").run(v, o.from, o.to, o.kind);
+        logIt({ layer: layerOfKey(o.from), key: o.to, op: o.op === "addEdge" ? "link" : "unlink", summary: `${o.op === "addEdge" ? "Linked" : "Unlinked"} “${titleIn(db, v, o.from) || o.from}” → “${titleIn(db, v, o.to) || o.to}” (${o.kind})` });
+      } else if (o.op === "orderUnits") {
+        const sec = getVersion(db, v).meta.plan?.layout?.[o.section];
+        const was = (sec?.items || []).filter((it) => it.unit).map((it) => it.unit);
+        orderUnits(db, v, o.section, o.keys || []);
+        if (was.join() !== (o.keys || []).join()) logIt({ layer: "unit", key: null, op: "reorder", summary: `Reordered the units in “${sec?.heading || "the lesson plan"}”`, detail: { changes: [{ field: "order", before: was.join(", "), after: (o.keys || []).join(", ") }] } });
+      } else if (o.op === "setCovers") { setCovers(db, v, o.covers); logIt({ layer: "unit", op: "covers", summary: "Changed which blocks the units cover" }); }
+      else if (o.op === "setPlanText") { db.prepare("UPDATE curriculum_version SET plan_text = ? WHERE id = ?").run(o.text, v); logIt({ layer: "unit", op: "plan-text", summary: "Changed the lesson plan text" }); }
       else if (o.op === "setGated") {
         db.prepare("DELETE FROM gated_term WHERE version_id = ?").run(v);
         o.gated.forEach((g, grp) => g.terms.forEach((t, pos) => db.prepare("INSERT INTO gated_term VALUES (?,?,?,?,?)").run(v, grp, pos, t, g.unit)));
+        logIt({ layer: "unit", op: "gated", summary: "Changed the gated terms" });
       } else if (o.op === "setLadder") {
         const covers = coversFor(db, v);
         writePlan(db, v, parseLadder(o.md), { covers });
-      } else if (o.op === "setNote") db.prepare("UPDATE curriculum_version SET note = ? WHERE id = ?").run(o.note, v);
+        logIt({ layer: "unit", op: "ladder", summary: "Replaced the lesson plan from curriculum_ladder.md" });
+      } else if (o.op === "setNote") { db.prepare("UPDATE curriculum_version SET note = ? WHERE id = ?").run(o.note, v); if (o.note) logIt({ op: "note", summary: `Draft note: ${o.note}` }); }
       else throw new Error(`unknown op ${o.op}`);
     }
   });
   return { keys };
+}
+
+// ---------- edit log ----------
+// Every change to a curriculum (draft edits, imports, publishes, discards, comments) is one curriculum_edit row,
+// read back by editHistory for the Progress map's History dialog. Rows carry the version's seq, not its id, so a
+// discarded draft's edits stay readable. Consecutive drags of the same block collapse into one "Moved" row.
+export const BOARD_KINDS = { content: ["assumed", "definition", "theorem", "method"], methods: ["method", "word-problem"] };
+const FIELD_LABEL = { title: "title", name: "name", detail: "description", about: "description", kind: "kind", uses: "uses", proves: "needed to prove",
+  restsOn: "rests on", needs: "needs", stance: "stance", notes: "notes", section: "section" };
+
+export function titleIn(db, v, key) {
+  return db.prepare("SELECT title FROM node_revision WHERE version_id = ? AND node_key = ?").get(v, key)?.title || "";
+}
+// the latest title a key had in any version of the curriculum (for comments and removed keys)
+export function lastTitle(db, cur, key) {
+  return db.prepare("SELECT r.title, r.layer FROM node_revision r JOIN curriculum_version cv ON cv.id = r.version_id WHERE cv.curriculum_id = ? AND r.node_key = ? ORDER BY cv.seq DESC LIMIT 1").get(cur, key) || null;
+}
+
+// What a node looks like in one version, in the fields the editors show.
+function snapshot(db, v, key) {
+  const r = db.prepare("SELECT * FROM node_revision WHERE version_id = ? AND node_key = ?").get(v, key);
+  if (!r) return null;
+  const ex = P(r.extra_json, {});
+  const into = (kind) => db.prepare("SELECT from_key k FROM edge WHERE version_id = ? AND to_key = ? AND kind = ? ORDER BY ord").all(v, key, kind).map((e) => e.k);
+  const out = (kind) => db.prepare("SELECT to_key k FROM edge WHERE version_id = ? AND from_key = ? AND kind = ? ORDER BY ord").all(v, key, kind).map((e) => e.k);
+  if (r.layer === "unit") {
+    const sec = getVersion(db, v).meta.plan?.layout?.[ex.section ?? 0]?.heading ?? "";
+    return { title: r.title, name: r.title, about: r.detail, needs: out("needs"), stance: ex.stance || "", notes: ex.notes || "", section: sec };
+  }
+  const s = { title: r.title, detail: r.detail, kind: r.kind, uses: into("uses"), proves: into("uses_to_prove"), x: r.x, y: r.y };
+  if (r.layer === "methods") s.restsOn = out("rests_on");
+  return s;
+}
+const stripPos = (s) => { if (!s) return s; const { x, y, title, ...rest } = s; return s.name != null ? rest : { title, ...rest }; };
+function diffSnap(a, b) {
+  const show = (x) => (Array.isArray(x) ? x.join(", ") : String(x ?? ""));
+  return Object.keys(stripPos(b)).filter((f) => show(a[f]) !== show(b[f])).map((f) => ({ field: f, before: show(a[f]), after: show(b[f]) }));
+}
+
+export function logEdit(db, ver, { layer = null, key = null, op, summary, detail = {}, source = "app", coalesce = false }) {
+  const at = now();
+  if (coalesce) {
+    const last = db.prepare("SELECT * FROM curriculum_edit WHERE curriculum_id = ? ORDER BY id DESC LIMIT 1").get(ver.curriculum_id);
+    if (last && last.op === op && last.node_key === key && last.version_seq === ver.seq && Date.parse(at) - Date.parse(last.at) < 10 * 60e3) {
+      db.prepare("UPDATE curriculum_edit SET at = ? WHERE id = ?").run(at, last.id);
+      return;
+    }
+  }
+  db.prepare("INSERT INTO curriculum_edit(curriculum_id, version_seq, at, layer, node_key, op, summary, source, detail_json) VALUES (?,?,?,?,?,?,?,?,?)")
+    .run(ver.curriculum_id, ver.seq ?? null, at, layer, key, op, summary, source, J(detail));
+}
+
+// Newest first: the edit log plus each version's start and publish (versions predate the log).
+export function editHistory(db, cur, { limit = 500 } = {}) {
+  const rows = db.prepare("SELECT * FROM curriculum_edit WHERE curriculum_id = ? ORDER BY at DESC, id DESC LIMIT ?").all(cur, limit)
+    .map((r) => ({ id: r.id, at: r.at, seq: r.version_seq, layer: r.layer, key: r.node_key, op: r.op, summary: r.summary, source: r.source, detail: P(r.detail_json, {}) }));
+  for (const ver of listVersions(db, cur)) {
+    rows.push({ id: `v${ver.id}`, at: ver.created_at, seq: ver.seq, layer: null, key: null, op: "version", summary: `Started v${ver.seq} (${{ import: "whiteboard import", edit: "edits", migration: "first import" }[ver.origin] || ver.origin})${ver.note ? `: ${ver.note}` : ""}`, source: "app", detail: {} });
+    if (ver.published_at) rows.push({ id: `p${ver.id}`, at: ver.published_at, seq: ver.seq, layer: null, key: null, op: "publish", summary: `Published v${ver.seq}`, source: "app", detail: {} });
+  }
+  // Same instant: a draft starts before its edits, and is published after them.
+  const rank = (r) => (r.op === "version" ? 0 : r.op === "publish" ? 2 : 1);
+  return rows.sort((a, b) => b.at.localeCompare(a.at) || rank(b) - rank(a) || (typeof a.id === "number" && typeof b.id === "number" ? b.id - a.id : 0));
+}
+
+// ---------- comments ----------
+// Teacher comments on any node (content block, methods block or unit). They belong to the key, not to a version,
+// so they can be added or edited on a published version and follow the node into later versions. Claude never
+// sees them.
+export function commentsFor(db, cur) {
+  const out = {};
+  for (const r of db.prepare("SELECT * FROM node_comment WHERE curriculum_id = ? AND deleted_at IS NULL ORDER BY created_at, id").all(cur))
+    (out[r.node_key] ||= []).push({ id: r.id, text: r.text, at: r.created_at, updated: r.updated_at });
+  return out;
+}
+const commentVer = (db, cur) => ({ curriculum_id: cur, seq: null });
+const cleanComment = (text) => { const t = String(text ?? "").replace(/\r\n/g, "\n").trim(); if (!t) throw new Error("A comment can't be empty"); if (t.length > 4000) throw new Error("Keep a comment under 4000 characters"); return t; };
+const snippet = (t) => (t.length > 80 ? t.slice(0, 79) + "…" : t).replace(/\s+/g, " ");
+export function addComment(db, cur, key, text) {
+  const t = cleanComment(text), node = lastTitle(db, cur, key);
+  if (!node) throw new Error(`no node ${key}`);
+  return tx(db, () => {
+    const id = Number(db.prepare("INSERT INTO node_comment(curriculum_id, node_key, text, created_at) VALUES (?,?,?,?)").run(cur, key, t, now()).lastInsertRowid);
+    logEdit(db, commentVer(db, cur), { layer: node.layer, key, op: "comment", summary: `Commented on “${node.title}”: ${snippet(t)}`, detail: { comment: id, after: t } });
+    return id;
+  });
+}
+export function updateComment(db, cur, id, text) {
+  const t = cleanComment(text);
+  const r = db.prepare("SELECT * FROM node_comment WHERE id = ? AND curriculum_id = ? AND deleted_at IS NULL").get(id, cur);
+  if (!r) throw new Error("no such comment");
+  if (r.text === t) return;
+  const node = lastTitle(db, cur, r.node_key);
+  tx(db, () => {
+    db.prepare("UPDATE node_comment SET text = ?, updated_at = ? WHERE id = ?").run(t, now(), id);
+    logEdit(db, commentVer(db, cur), { layer: node?.layer, key: r.node_key, op: "comment-edit", summary: `Edited a comment on “${node?.title || r.node_key}”`, detail: { comment: id, changes: [{ field: "comment", before: r.text, after: t }] } });
+  });
+}
+export function deleteComment(db, cur, id) {
+  const r = db.prepare("SELECT * FROM node_comment WHERE id = ? AND curriculum_id = ? AND deleted_at IS NULL").get(id, cur);
+  if (!r) throw new Error("no such comment");
+  const node = lastTitle(db, cur, r.node_key);
+  tx(db, () => {
+    db.prepare("UPDATE node_comment SET deleted_at = ? WHERE id = ?").run(now(), id);
+    logEdit(db, commentVer(db, cur), { layer: node?.layer, key: r.node_key, op: "comment-delete", summary: `Deleted a comment on “${node?.title || r.node_key}”`, detail: { comment: id, before: r.text } });
+  });
+}
+
+// Edits from the board editors ({check: true}): a title, a kind the board knows, and links that name blocks of
+// the same board (rests-on: content blocks) without closing a loop.
+function checkBlock(db, v, layer, key, { title, kind, uses, proves, restsOn }) {
+  if (!String(title || "").trim()) throw new Error("A block needs a title");
+  if (kind && !BOARD_KINDS[layer]?.includes(kind)) throw new Error(`Kind must be one of ${BOARD_KINDS[layer].join(", ")}`);
+  const same = keysOf(db, v, layer), name = (k) => titleIn(db, v, k) || k;
+  const preds = [...(uses || []), ...(proves || [])];
+  for (const k of preds) {
+    if (k === key) throw new Error("A block can't use itself");
+    if (!same.has(k)) throw new Error(`${k}: no such ${layer} block in this version`);
+  }
+  if (restsOn) { const content = keysOf(db, v, "content"); for (const k of restsOn) if (!content.has(k)) throw new Error(`Rests on ${k}: no such content block`); }
+  if (!preds.length || !same.has(key)) return;
+  // a new incoming edge p → key closes a loop when key already reaches p
+  const down = new Set(), stack = [key];
+  const outOf = db.prepare("SELECT to_key k FROM edge WHERE version_id = ? AND from_key = ? AND kind IN ('uses','uses_to_prove')");
+  while (stack.length) for (const { k } of outOf.all(v, stack.pop())) if (!down.has(k)) { down.add(k); stack.push(k); }
+  const loop = preds.find((p) => down.has(p));
+  if (loop) throw new Error(`“${name(loop)}” already builds on “${name(key)}”, so it can't also come before it`);
 }
 
 // A new unit gets the next U number this curriculum has never used (the ladder format only knows U\d\d, M\d and
@@ -506,6 +671,7 @@ export function importBoard(db, cur, layer, graph, { note = "whiteboard import" 
   writeGraph(db, v, layer, graph, { keyOf, contentKeyOf: (id) => contentRefs.get(id) || id });
   setCovers(db, v, covers);
   const added = graph.nodes.filter((n) => !old.some((o) => o.key === map[n.id])).map((n) => ({ id: n.id, key: map[n.id], title: n.title }));
+  logEdit(db, getVersion(db, v), { layer, op: "import", source: "import", summary: `Re-imported the ${layer} board from the whiteboard: ${graph.nodes.length - added.length} matched, ${added.length} new, ${unmatchedOld.length} unmatched`, detail: { added: added.map((x) => x.key), unmatched: unmatchedOld } });
   return { draft: v, matched: graph.nodes.length - added.length, added, unmatchedOld: unmatchedOld.map((k) => ({ key: k, title: old.find((o) => o.key === k).title })) };
 }
 

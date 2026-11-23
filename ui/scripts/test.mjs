@@ -13,6 +13,7 @@ import { stageFor, modelFor, STAGES, appChecks } from "../server.mjs";
 import { checksFrom, stripChecks, formatChecks, normChecks } from "../lib/check.mjs";
 import { applyWeekUpdate, statusUpdateFrom, weekUpdateInputs, checkStatusUpload, promoteUnits } from "../public/statusmd.js";
 import { parseTopics, serializeTopics, historyTopics } from "../public/topics.js";
+import { exportBoardMd, parseBoardMd } from "../public/progressmd.js";
 import { computeStates, statusText, lessonPlan, planGraph, curvePath } from "../public/dag.js";
 import { S, lintTex, nextSetDate } from "../public/lib.js";
 import { parseTags } from "../lib/tagger.mjs";
@@ -281,6 +282,40 @@ test("status record: the app applies a finished week itself", () => {
   assert.equal(applyWeekUpdate(md, { promote: [], update: null }).split("## This week's input")[0], md.split("## This week's input")[0], "no update: only the input is cleared");
   assert.equal(promoteUnits("TAUGHT: U01\nCURRENT: (none)\nNEXT: U02", ["U02"]), "TAUGHT: U01\nCURRENT: U02\nNEXT: (none)");
 });
+{
+  const dag = { nodes: [{ id: "e1", kind: "definition", title: "Fractions" }, { id: "e2", kind: "theorem", title: "Cross\nmultiply" }, { id: "e3", kind: "word-problem", title: "Trains" }], edges: [] };
+  const guess = { nodes: { e1: { state: "done", confidence: 0.9 }, e2: { state: "partial", confidence: 0.5 } } };
+  const overrides = { e2: { state: "done" } };
+  const st = { board: "content", dag, guess, overrides };
+  const md = exportBoardMd({ ...st, student: "Sam", date: "2026-11-23" });
+  test("board md: export lists every node with its state and who set it", () => {
+    assert.match(md, /^# Content progress — Sam — 2026-11-23/);
+    assert.match(md, /^- e1 \[done\] Fractions — Claude 0\.9$/m);
+    assert.match(md, /^- e2 \[done\] Cross multiply — you$/m);
+    assert.match(md, /^## Word problems[\s\S]*- e3 \[not-yet\] Trains$/m);
+  });
+  test("board md: an export imported back changes nothing", () => assert.deepEqual(parseBoardMd(md, st), { changes: [], errors: [], read: 3 }));
+  test("board md: an edited state is a change; auto drops your setting", () => {
+    const r = parseBoardMd(md.replace("e1 [done]", "e1 [partly]").replace("e2 [done]", "e2 [auto]"), st);
+    assert.deepEqual(r.errors, []);
+    assert.deepEqual(r.changes, [{ key: "e1", state: "partial" }, { key: "e2", state: null }]);
+    assert.deepEqual(parseBoardMd("- e1 [auto]", st).changes, [], "auto on Claude's guess is a no-op");
+  });
+  test("board md: bad ids, states, word problems, repeats and empty files are refused", () => {
+    assert.match(parseBoardMd("- e9 [done]", st).errors[0], /e9 is not a content node/);
+    assert.match(parseBoardMd("- m:e1 [done]", st).errors[0], /did you mean e1/);
+    assert.match(parseBoardMd("- e1 [maybe]", st).errors[0], /not a state/);
+    assert.match(parseBoardMd("- e3 [done]", st).errors[0], /word problem/);
+    assert.match(parseBoardMd("- e1 [done]\n- e1 [partial]", st).errors[0], /listed twice/);
+    assert.match(parseBoardMd("# notes\nhello", st).errors[0], /no "- <id> \[state\]" lines/);
+  });
+  test("board md: methods ids carry m:", () => {
+    const m = { board: "methods", dag: { nodes: [{ id: "e46", kind: "method", title: "Solve" }], edges: [] }, guess: null, overrides: {} };
+    assert.match(exportBoardMd(m), /^- m:e46 \[not-yet\] Solve$/m);
+    assert.deepEqual(parseBoardMd("- m:e46 [done]", m).changes, [{ key: "m:e46", state: "done" }]);
+    assert.match(parseBoardMd("- e46 [done]", m).errors[0], /did you mean m:e46/);
+  });
+}
 test("status record: an older final's whole weekly_status.md is read as an update", () => {
   const base = "## Review priority\n1. a\n\n## Recent history\n- 11/1: x\n";
   const final = "```markdown\n## Unit statuses\nTAUGHT: U01\n\n## Review priority\n1. b\n2. a\n\n## Recent history\n- 11/1: x\n- 11/8: y\n```";
@@ -434,6 +469,49 @@ test("lesson plan editor: reordering a section's units moves their ladder lines 
   assert.deepEqual(parseLadder(Cur.ladderFor(db, v2)).units.map((u) => u.key), ["U02", "U03", "U01"]);
   assert.deepEqual(Cur.planFor(db, v2).units.map((u) => u.key), ["U02", "U03", "U01"]); // ord follows
   assert.equal(Cur.diffVersions(db, v1, v2).unitOrderChanged, true);
+});
+test("board editor: blocks and edges edit in the draft, loops are refused, every change lands in the history", () => {
+  const { db, v1 } = freshCurriculum();
+  const v2 = Cur.createDraft(db, "t");
+  const up = (layer, key, fields) => Cur.editDraft(db, v2, [{ op: "upsertNode", layer, key, check: true, fields }]).keys[0];
+  const k = up("content", null, { title: "Node G", kind: "definition", uses: ["e2"], x: 50, y: 50 });
+  assert.match(k, /^c:/);
+  assert.throws(() => up("content", "e1", { uses: [k] }), /already builds on/); // e1 → e2 → k → e1
+  assert.throws(() => up("content", "e1", { uses: ["e1"] }), /itself/);
+  assert.throws(() => up("content", null, { title: "" }), /title/);
+  assert.throws(() => up("content", null, { title: "X", kind: "unit" }), /Kind/);
+  assert.throws(() => up("methods", "m:e9", { restsOn: ["e99"] }), /e99/);
+  up("content", "e3", { proves: ["e1"], uses: ["e2"] });
+  const into = (key) => Cur.graphFor(db, v2, "content").edges.filter((e) => e.to === key).map((e) => `${e.from}${e.prove ? "!" : ""}`).sort();
+  assert.deepEqual(into("e3"), ["e1!", "e2"]);
+  up("content", "e3", { proves: [] });
+  assert.deepEqual(into("e3"), ["e2"]);
+  up("content", k, { x: 60 }); up("content", k, { x: 70 }); // two drags, one history row
+  Cur.editDraft(db, v2, [{ op: "removeNode", key: "e4", relation: "retired" }]);
+  const h = Cur.editHistory(db, "t");
+  assert.deepEqual(h.filter((r) => r.seq === 2).map((r) => r.op), ["remove", "move", "edit", "edit", "add", "version"]);
+  assert.match(h.find((r) => r.op === "edit").summary, /Edited “Node C”: needed to prove/);
+  assert.ok(h.some((r) => r.op === "publish" && r.seq === 1));
+  Cur.discardDraft(db, v2);
+  assert.equal(Cur.editHistory(db, "t")[0].op, "discard"); // a discarded draft's edits stay readable
+  assert.ok(Cur.editHistory(db, "t").some((r) => r.key === k));
+});
+test("comments: per node key, across versions, editable and soft-deleted, logged", () => {
+  const { db, v1 } = freshCurriculum();
+  const id = Cur.addComment(db, "t", "U01", "  Go slowly here  ");
+  assert.throws(() => Cur.addComment(db, "t", "U01", " "), /empty/);
+  assert.throws(() => Cur.addComment(db, "t", "zz", "x"), /no node/);
+  Cur.addComment(db, "t", "e1", "Check the proof");
+  assert.deepEqual(Object.keys(Cur.commentsFor(db, "t")).sort(), ["U01", "e1"]);
+  assert.equal(Cur.commentsFor(db, "t").U01[0].text, "Go slowly here");
+  Cur.updateComment(db, "t", id, "Go very slowly");
+  assert.ok(Cur.commentsFor(db, "t").U01[0].updated);
+  Cur.deleteComment(db, "t", id);
+  assert.ok(!("U01" in Cur.commentsFor(db, "t")));
+  assert.throws(() => Cur.updateComment(db, "t", id, "y"), /no such/);
+  const ops = Cur.editHistory(db, "t").filter((r) => r.op.startsWith("comment")).map((r) => r.op);
+  assert.deepEqual(ops, ["comment-delete", "comment-edit", "comment", "comment"]);
+  assert.match(Cur.editHistory(db, "t").find((r) => r.op === "comment" && r.key === "U01").summary, /First unit/);
 });
 test("hw.db: re-import matches by whiteboard id, then title; the rest are new or gone", () => {
   const old = [{ key: "e1", external_ref: "e1", title: "Linear equations" }, { key: "c:abc", external_ref: "e7", title: "Old title" }, { key: "e3", external_ref: "e3", title: "Gone" }];

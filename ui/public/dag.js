@@ -1,10 +1,13 @@
 // Wu DAG progress map: the content board and the methods board (snapshots of the whiteboards), coloured by
 // how far the student has got. States come from Claude's guess (from homework + uploaded notes) unless the teacher
 // overrides a node ("set by you"). Methods ids are namespaced "m:eNN" everywhere outside their own file.
-// The sidebar sub-items pick the mode: the content board, the methods board, or the lesson plan.
-// Every guess run (chain of thought, tool calls, cost, per-node evidence) is under History › Inference.
+// The sidebar sub-items pick the mode: the content board, the methods board, the lesson plan, or Inference.
+// Content, Methods and Lesson plan each have a deterministic Markdown export/import (progressmd.js, status.md);
+// Inference is the one place that pays Claude: drop files for it and run a guess. Every guess run (chain of thought, tool calls, cost, per-node evidence) is under History › Inference.
 // Pure helpers (edgePath, computeStates, ladderHints, statusText) are exported for ui/scripts/test.mjs.
 import { $, $$, esc, api, S, parseUnitStatuses, log } from "./lib.js";
+import { parseBoardMd } from "./progressmd.js";
+import { fmtUSD } from "./cost.js";
 
 export const LOW_CONFIDENCE = 0.6;
 const BOARD_LABEL = { content: "Content", methods: "Methods" };
@@ -272,12 +275,18 @@ export function ladderHints(statusMd, ladderToWu, guess, overrides) {
 // ---------- view ----------
 
 const PLAN_VIEW_KEY = "hw.planView";
+// editing: the page shows the course's draft and every view can change it (Edit board / Edit units).
+//   edit: the view id (board block id or unit key) whose form is open, or {board} / {section} for a new one
+//   remove: the view id whose retire-or-merge choice is open
+// cEdit: the comment being edited; openC: the linear plan unit whose comments are open.
 const D = { data: null, version: null, mode: "content", sel: null, view: null, poll: null, side: "info", dragging: null, planView: "linear", graph: null,
-  editing: false, edit: null, remove: null, editErr: "" }; // edit: a unit key, or {section} for a new unit; remove: a unit key
+  editing: false, edit: null, remove: null, editErr: "", cEdit: null, cErr: "", openC: null, hist: { filter: "all", data: null, err: "" } };
 try { if (localStorage.getItem(PLAN_VIEW_KEY) === "dag") D.planView = "dag"; } catch {}
 Object.defineProperty(D, "board", { get: () => (D.mode === "methods" ? "methods" : "content"), enumerable: true });
-const MODE_LABEL = { content: "Content", methods: "Methods", plan: "Lesson plan" };
+const MODE_LABEL = { content: "Content", methods: "Methods", plan: "Lesson plan", inference: "Inference" };
+const LAYER_LABEL = { content: "Content", methods: "Methods", unit: "Lesson plan" };
 const STATUS_LABEL = { TAUGHT: "Taught", CURRENT: "Current", NEXT: "Next", FUTURE: "Future" };
+const BOARD_KINDS = { content: ["assumed", "definition", "theorem", "method"], methods: ["method", "word-problem"] };
 
 function bbox(dag) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -289,17 +298,86 @@ function bbox(dag) {
 const planDag = () => D.mode === "plan" && D.planView === "dag";
 const curDag = () => (planDag() ? D.graph : D.data?.[D.board]);
 const statesNow = () => computeStates(curDag(), D.board, D.data.guess, D.data.overrides, D.data.content);
+// a view id (what the SVG and D.sel use) → the node's key in the curriculum
+const nodeKey = (id) => (D.mode === "plan" ? id : keyOf(D.board, id));
+const commentsOf = (key) => D.data?.comments?.[key] || [];
+const when = (at) => new Date(at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 
+// ---------- shared components (all three views) ----------
+
+// The comment count on a node, in either SVG.
+function cBadge(key, w) {
+  const n = commentsOf(key).length;
+  return n ? `<g class="cbadge" transform="translate(${w - 22},-8)"><title>${n} comment${n === 1 ? "" : "s"}</title><rect width="30" height="17" rx="8.5"/><text x="15" y="12.5">💬${n}</text></g>` : "";
+}
+
+// Comments on one node: the teacher's own notes. They belong to the node's key, not to a version, so any version
+// takes them and they follow the node into later versions. Claude never sees them.
+function commentsHtml(key) {
+  const cs = commentsOf(key);
+  const err = D.cErr ? ` <span class="err small">${esc(D.cErr)}</span>` : "";
+  return `<div class="cmts" data-ckey="${esc(key)}">
+    <h4>Comments${cs.length ? ` (${cs.length})` : ""}</h4>
+    ${cs.map((c) => D.cEdit === c.id
+      ? `<form class="cmt-form" data-cid="${c.id}"><textarea name="text" rows="3">${esc(c.text)}</textarea>
+          <div class="pe-row"><button class="small-btn primary" type="submit">Save</button> <button class="link" type="button" data-cmt="cancel">Cancel</button>${err}</div></form>`
+      : `<div class="cmt" data-cid="${c.id}"><div class="cmt-text">${esc(c.text)}</div>
+          <div class="cmt-meta muted small">${esc(when(c.updated || c.at))}${c.updated ? " · edited" : ""}<span class="cmt-acts"><button class="link" data-cmt="edit">Edit</button><button class="link" data-cmt="delete">Delete</button></span></div></div>`).join("")}
+    ${D.cEdit ? "" : `<form class="cmt-form"><textarea name="text" rows="2" placeholder="Add a comment: for you, not for Claude"></textarea>
+      <div class="pe-row"><button class="small-btn" type="submit">Add comment</button>${err}</div></form>`}
+  </div>`;
+}
+
+// A key picker: chips for the chosen nodes, an input that autocompletes the rest ("U03 — Linear equations"),
+// and a hidden input with the keys for the form. Used for unit needs and for board uses / proves / rests on.
+const kpChip = (k, label) => `<span class="kp-chip" data-k="${esc(k)}" title="${esc(k)}">${esc(label)}<button type="button" class="ghost" data-kp-del aria-label="Remove ${esc(label)}">✕</button></span>`;
+function pickerHtml(name, keys, opts, placeholder) {
+  const lab = new Map(opts.map((o) => [o.key, o.label]));
+  return `<div class="kp" data-name="${name}"><input type="hidden" name="${name}" value="${esc(keys.join(","))}" />
+    <span class="kp-chips">${keys.map((k) => kpChip(k, lab.get(k) || k)).join("")}</span>
+    <input class="kp-in" list="kp-${name}" placeholder="${esc(placeholder)}" autocomplete="off" />
+    <datalist id="kp-${name}">${opts.map((o) => `<option value="${esc(o.key)} — ${esc(o.label)}"></option>`).join("")}</datalist></div>`;
+}
+function kpAdd(kp, exact) {
+  const inp = $(".kp-in", kp), val = inp.value.trim(); if (!val) return false;
+  const opts = [...kp.querySelectorAll("datalist option")].map((o) => o.value);
+  const hit = opts.find((o) => o === val) || (!exact && (opts.find((o) => o.split(" — ")[0].toLowerCase() === val.toLowerCase()) || opts.filter((o) => o.toLowerCase().includes(val.toLowerCase())).reduce((a, o, i, all) => (all.length === 1 ? o : a), null)));
+  if (!hit) return false;
+  const [k, ...rest] = hit.split(" — "), hid = $("input[type=hidden]", kp), keys = hid.value ? hid.value.split(",") : [];
+  if (!keys.includes(k)) { keys.push(k); hid.value = keys.join(","); $(".kp-chips", kp).insertAdjacentHTML("beforeend", kpChip(k, rest.join(" — "))); }
+  inp.value = "";
+  return true;
+}
+
+// Retire a node, or merge it into another of the same kind (its links, tags and covers move there).
+function removeHtml(id, label, neededBy, others) {
+  return `<div class="plan-remove small" data-node="${esc(id)}">
+    <span>Remove ${esc(label)}?${neededBy.length ? ` ${neededBy.map(esc).join(", ")} build${neededBy.length === 1 ? "s" : ""} on it.` : ""}</span>
+    <button class="small-btn" data-pe="retire" title="Drop it; problems tagged with it go on the retag queue when the draft is published">Retire it</button>
+    <span class="muted">or merge into</span> <select class="pe-into">${others.map((o) => `<option value="${esc(o.key)}">${esc(o.label)}</option>`).join("")}</select>
+    <button class="small-btn" data-pe="merge" title="What builds on it, its tags and covers move to the one you pick">Merge</button>
+    <button class="link" data-pe="cancel">Cancel</button>${D.editErr ? ` <span class="err">${esc(D.editErr)}</span>` : ""}</div>`;
+}
+// Edit / Remove for the selected node in a side panel (boards and the lesson plan DAG).
+const editBarHtml = (id) => `<div class="np-edit" data-node="${esc(id)}"><button class="small-btn" data-pe="edit">✎ Edit</button><button class="small-btn" data-pe="remove">✕ Remove</button></div>`;
+const formButtons = (isNew, addLabel) => `<div class="pe-row"><button class="small-btn primary" type="submit">${isNew ? addLabel : "Save"}</button> <button class="link" type="button" data-pe="cancel">Cancel</button>
+  ${D.editErr ? `<span class="err small">${esc(D.editErr)}</span>` : ""}</div>`;
+
+// ---------- boards ----------
+
+function edgesHtml(dag, st, byId) {
+  const sel = D.sel;
+  return dag.edges.filter((e) => byId[e.from] && byId[e.to]).map((e) => {
+    const hot = sel && (e.from === sel || e.to === sel);
+    const lit = st[e.from].display === "done";
+    return `<path class="edge${e.prove ? " prove" : ""}${hot ? " hot" : ""}${lit ? " lit" : ""}" d="${edgePath(byId[e.from], byId[e.to], e.bends)}" marker-end="url(#arr${hot ? "-hot" : ""})"/>`;
+  }).join("");
+}
 function svgHtml() {
   const dag = curDag();
   const st = statesNow();
   const byId = Object.fromEntries(dag.nodes.map((n) => [n.id, n]));
   const sel = D.sel;
-  const edges = dag.edges.filter((e) => byId[e.from] && byId[e.to]).map((e) => {
-    const hot = sel && (e.from === sel || e.to === sel);
-    const lit = st[e.from].display === "done";
-    return `<path class="edge${e.prove ? " prove" : ""}${hot ? " hot" : ""}${lit ? " lit" : ""}" d="${edgePath(byId[e.from], byId[e.to], e.bends)}" marker-end="url(#arr${hot ? "-hot" : ""})"/>`;
-  }).join("");
   const nodes = dag.nodes.map((n) => {
     const s = st[n.id];
     return `<g class="node k-${n.kind} d-${s.display}${sel === n.id ? " sel" : ""}${s.by === "you" ? " by-you" : ""}" data-id="${n.id}" transform="translate(${n.x},${n.y})">
@@ -309,56 +387,110 @@ function svgHtml() {
       <rect class="band" width="${n.w}" height="7" rx="3"/>
       <foreignObject x="10" y="10" width="${n.w - 20}" height="${n.h - 14}"><div xmlns="http://www.w3.org/1999/xhtml" class="nt"><b>${esc(n.title)}</b>${n.detail ? `<span>${esc(n.detail)}</span>` : ""}</div></foreignObject>
       ${s.by === "you" ? `<g class="ubadge" transform="translate(12,-6)"><circle r="9"/><text y="4">✎</text></g>` : ""}
+      ${cBadge(keyOf(D.board, n.id), n.w)}
     </g>`;
   }).join("");
   const texts = (dag.texts || []).map((t) => `<text class="cap cap-${t.size}" x="${t.x}" y="${t.y + ({ title: 44, large: 30, body: 20 }[t.size] || 20)}">${esc(t.text)}</text>`).join("");
   const v = D.view;
-  return `<svg class="dag-svg" viewBox="${v.x} ${v.y} ${v.w} ${v.h}" xmlns="http://www.w3.org/2000/svg">
+  return `<svg class="dag-svg${D.editing ? " editing" : ""}" viewBox="${v.x} ${v.y} ${v.w} ${v.h}" xmlns="http://www.w3.org/2000/svg">
     <defs>
       <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
       <marker id="arr-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah hot"/></marker>
       <pattern id="hatch" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="10" class="hl"/></pattern>
-    </defs>${texts}<g class="edges">${edges}</g><g class="nodes">${nodes}</g></svg>`;
+    </defs>${texts}<g class="edges">${edgesHtml(dag, st, byId)}</g><g class="nodes">${nodes}</g></svg>`;
 }
 
 function legendHtml() {
-  const kinds = D.board === "methods" ? ["method", "word-problem"] : ["assumed", "definition", "theorem", "method"];
+  const kinds = BOARD_KINDS[D.board];
   return `<div class="dag-legend">
     <span class="lg d-done"></span>done <span class="lg d-partial"></span>partly <span class="lg d-ready"></span>ready next <span class="lg d-locked"></span>locked
     <span class="sep"></span>${kinds.map((k) => `<span class="lg-band k-${k}"></span>${esc(KIND_LABEL[k])}`).join(" ")}
     <span class="sep"></span><span class="lg-edge"></span>used for <span class="lg-edge prove"></span>${D.board === "methods" ? "sub-step" : "needed to prove"}
-    <span class="sep"></span><span class="qb u">✎</span>set by you</div>`;
+    <span class="sep"></span><span class="qb u">✎</span>set by you <span class="lg-c">💬</span>comments${D.editing ? '<span class="sep"></span>drag a block to move it' : ""}</div>`;
+}
+
+// The block form (both boards): what it is, and what it builds on. New blocks go in the middle of the view.
+function blockFormHtml(n) {
+  const board = D.board, dag = D.data[board], key = n ? keyOf(board, n.id) : "";
+  const into = (prove) => (n ? dag.edges.filter((e) => e.to === n.id && !!e.prove === prove).map((e) => keyOf(board, e.from)) : []);
+  const opts = dag.nodes.filter((x) => !n || x.id !== n.id).map((x) => ({ key: keyOf(board, x.id), label: x.title }));
+  const kind = n?.kind || BOARD_KINDS[board][board === "content" ? 2 : 0];
+  return `<form class="pe-form" data-layer="${board}" data-key="${esc(key)}"><div class="pe-fields">
+    <label>Title <input name="title" value="${esc(n?.title || "")}" required autocomplete="off" /></label>
+    <label>Description <textarea name="detail" rows="2">${esc(n?.detail || "")}</textarea></label>
+    <label>Kind <select name="kind">${BOARD_KINDS[board].map((k) => `<option value="${k}"${k === kind ? " selected" : ""}>${esc(KIND_LABEL[k])}</option>`).join("")}</select></label>
+    <div class="pe-lab">Uses ${pickerHtml("uses", into(false), opts, "Add a block it uses…")}</div>
+    <div class="pe-lab">${board === "methods" ? "Sub-steps" : "Needed to prove it"} ${pickerHtml("proves", into(true), opts, "Add a block…")}</div>
+    ${board === "methods" ? `<div class="pe-lab">Rests on (content) ${pickerHtml("restsOn", n?.restsOn || [], D.data.content.nodes.map((x) => ({ key: x.id, label: x.title })), "Add a content block…")}</div>` : ""}
+    ${formButtons(!n, "Add block")}
+  </div></form>`;
 }
 
 // The node panel: what the node is, and where the student stands on it. Nothing about how Claude got there.
+// While editing it also has Edit / Remove (or the form itself); comments are always there.
 function nodePanel(id) {
+  if (D.editing && D.edit?.board) return `<div class="np"><div class="k">New ${esc(BOARD_LABEL[D.board].toLowerCase())} block</div>${blockFormHtml(null)}</div>`;
   const dag = curDag(), n = dag.nodes.find((x) => x.id === id);
-  if (!n) return "";
+  if (!n) return `<p class="muted">${D.editing ? "Click a block to change it, drag it to move it, or add one with + Add block." : "Click a block to see where the student stands on it."}</p>`;
+  const key = keyOf(D.board, id);
+  const head = `<div class="k">${esc(BOARD_LABEL[D.board])} · ${esc(KIND_LABEL[n.kind] || n.kind)}${n.sections?.length ? ` · §${n.sections.join(", §")}` : ""}${D.editing ? ` · <code>${esc(key)}</code>` : ""}</div>`;
+  if (D.editing && D.edit === id) return `<div class="np">${head}${blockFormHtml(n)}</div>`;
   const t = statusText(dag, D.board, id, D.data.guess, D.data.overrides, D.data.content);
   const s = statesNow()[id];
-  const g = D.data.guess?.nodes?.[keyOf(D.board, id)];
+  const g = D.data.guess?.nodes?.[key];
   const btn = (v, label) => `<button class="${s.state === v && s.by === "you" ? "on" : ""}" data-set="${v}">${label}</button>`;
-  return `<div class="np">
-    <div class="k">${esc(BOARD_LABEL[D.board])} · ${esc(KIND_LABEL[n.kind] || n.kind)}${n.sections?.length ? ` · §${n.sections.join(", §")}` : ""}</div>
-    <h3 class="np-title">${esc(n.title)}</h3>
-    ${n.detail ? `<p>${esc(n.detail)}</p>` : ""}
-    <div class="np-state d-${t.display}">${esc(t.label)}</div>
+  const title = (k) => dag.nodes.find((x) => x.id === k)?.title || k;
+  const edits = D.editing ? editBarHtml(id) + (D.remove === id ? removeHtml(id, `“${n.title}”`, dag.edges.filter((e) => e.from === id).map((e) => `“${title(e.to)}”`),
+    dag.nodes.filter((x) => x.id !== id).map((x) => ({ key: keyOf(D.board, x.id), label: x.title }))) : "") : "";
+  const state = D.editing ? "" : `<div class="np-state d-${t.display}">${esc(t.label)}</div>
     <p class="np-note">${esc(t.note)}</p>
     ${t.missing.length ? `<div class="nls">${t.missing.map((x) => `<button class="link nl" data-goto-key="${esc(x.key)}">${esc(x.title)}</button>`).join("")}</div>` : ""}
     ${n.kind === "word-problem" ? "" : viewingOther() ? `<p class="muted small">Showing v${D.data.version.seq}; ${esc(S.student || "the student")} is on another version, so states can only be changed there.</p>` : `<h4>Change it</h4><div class="seg np-set">${btn("done", "Done")}${btn("partial", "Partly")}${btn("not-yet", "Not yet")}</div>
-    ${s.by === "you" ? `<button class="link" data-set="">use Claude's guess${g ? ` (${esc(g.state)})` : ""}</button>` : ""}`}
+    ${s.by === "you" ? `<button class="link" data-set="">use Claude's guess${g ? ` (${esc(g.state)})` : ""}</button>` : ""}`}`;
+  return `<div class="np">${head}
+    <h3 class="np-title">${esc(n.title)}</h3>
+    ${n.detail ? `<p>${esc(n.detail)}</p>` : ""}
+    ${edits}${state}
+    ${commentsHtml(key)}
   </div>`;
 }
 
-function notesPanel() {
-  const notes = D.data.notes || [];
-  return `<div class="np">
-    <h3>Notes for Claude</h3>
-    <p class="muted small">Claude reads every homework .tex in the project, the unit statuses and these notes when it guesses progress. PDFs and photos of notes work too.</p>
-    <label class="drop" id="dag-drop"><input type="file" multiple accept=".tex,.md,.txt,.pdf,.png,.jpg,.jpeg,.heic,.webp,.gif" hidden /><span>Drop files here or <u>choose files</u></span></label>
-    <ul class="notes">${notes.map((n) => `<li><a href="/notes/${encodeURIComponent(n.name)}" target="_blank" rel="noopener">${esc(n.name)}</a><small>${Math.ceil(n.size / 1024)} KB</small><button class="ghost" data-del-note="${esc(n.name)}" title="Delete">✕</button></li>`).join("") || '<li class="muted">No notes uploaded yet</li>'}</ul>
+// Progress map › Inference: unstructured evidence in, Claude's guess out. Files on the left; the guess now on
+// the maps on the right, with the full run log a click away in History › Inference.
+function inferenceHtml() {
+  const notes = D.data.notes || [], g = D.data.guess, runs = D.data.runs || [];
+  const last = runs.find((r) => r.id === g?.runId) || runs.find((r) => r.ok);
+  const tally = (board) => {
+    const ks = (D.data[board]?.nodes || []).map((n) => keyOf(board, n.id)), c = { done: 0, partial: 0, "not-yet": 0 };
+    for (const k of ks) c[g?.nodes?.[k]?.state || "not-yet"] = (c[g?.nodes?.[k]?.state || "not-yet"] || 0) + 1;
+    return `<li><b>${BOARD_LABEL[board]}</b> ${c.done} done · ${c.partial} partly · ${c["not-yet"]} not yet <button class="link" data-dag-go="${board}">open</button></li>`;
+  };
+  return `<div class="inf-map">
+    <section class="np">
+      <h3>Files for Claude</h3>
+      <p class="muted small">Drop anything here: photos or PDFs of notes, worksheets, .tex, .md or .txt. When you guess, Claude reads these, every homework .tex in the project and the unit statuses, and guesses what is done on both boards. Each run costs money.</p>
+      <label class="drop big" id="dag-drop"><input type="file" multiple accept=".tex,.md,.txt,.pdf,.png,.jpg,.jpeg,.heic,.webp,.gif" hidden /><span>Drop files here or <u>choose files</u></span></label>
+      <ul class="notes">${notes.map((n) => `<li><a href="/notes/${encodeURIComponent(n.name)}" target="_blank" rel="noopener">${esc(n.name)}</a><small>${Math.ceil(n.size / 1024)} KB</small><button class="ghost" data-del-note="${esc(n.name)}" title="Delete">✕</button></li>`).join("") || '<li class="muted">No files uploaded yet</li>'}</ul>
+    </section>
+    <section class="np">
+      <h3>Last guess</h3>
+      ${last ? `<p class="muted small">${new Date(last.at).toLocaleString()} · ${esc(last.model || "")} · ${fmtUSD(last.costUSD)}${last.files ? ` · ${last.files} files` : ""}</p>
+        ${last.summary ? `<p>${esc(last.summary)}</p>` : ""}` : '<p class="muted small">No guess yet.</p>'}
+      ${g ? `<ul class="inf-tally">${tally("content")}${tally("methods")}</ul>
+        <p class="muted small">Your own settings on a board (set by you, or imported from .md) win over the guess.</p>` : ""}
+      <p><button class="link" data-page="history" data-hist="inference">All runs, reasoning and cost in History › Inference →</button></p>
+    </section>
   </div>`;
 }
+
+// ---------- lesson plan ----------
+// Edits go to the course's draft (created from the latest published version on the first edit), never to a
+// published version: the student keeps using theirs until the draft is published on Courses and they're upgraded.
+const planUnits = () => D.data?.plan?.units || [];
+const unitSections = () => (D.data?.plan?.layout || []).map((s, i) => ({ i, heading: s.heading })).filter((s) => !/^gated/i.test(s.heading));
+const sectionOf = (key) => (D.data?.plan?.layout || []).findIndex((s) => (s.items || []).some((i) => i.unit === key));
+const unitOpts = (except) => planUnits().filter((x) => x.key !== except).map((x) => ({ key: x.key, label: x.name }));
+const cToggle = (id) => { const n = commentsOf(id).length; return `<button class="ghost cmt-tog${D.openC === id ? " on" : ""}" data-cmt-toggle="${esc(id)}" title="${n ? `${n} comment${n === 1 ? "" : "s"}` : "Add a comment"}">💬${n ? ` ${n}` : ""}</button>`; };
 
 function planHtml() {
   const groups = lessonPlan(D.data?.plan || S.ladder, S.status);
@@ -375,27 +507,18 @@ function planHtml() {
             ${u.note ? `<div class="plan-note small">${esc(u.note)}</div>` : ""}
             ${u.guide ? `<div class="muted small plan-guide">${esc(u.guide)}</div>` : ""}
             ${u.needs.length ? `<div class="muted small">Needs ${u.needs.map(esc).join(", ")}${u.missing.length ? ` · <span class="bad-text">${u.missing.map(esc).join(", ")} not taught yet</span>` : ""}</div>` : ""}
+            ${D.openC === u.id ? commentsHtml(u.id) : ""}
           </div>
+          <span class="plan-acts">${cToggle(u.id)}</span>
         </li>`).join("")}</ol>
     </section>`).join("")}</div>`;
 }
 
-// ---------- lesson plan editing ----------
-// Edits go to the course's draft (created from the latest published version on the first edit), never to a
-// published version: the student keeps using theirs until the draft is published on Courses and they're upgraded.
-const planUnits = () => D.data?.plan?.units || [];
-const unitSections = () => (D.data?.plan?.layout || []).map((s, i) => ({ i, heading: s.heading })).filter((s) => !/^gated/i.test(s.heading));
-
 function unitRowHtml(u) {
   const neededBy = planUnits().filter((x) => x.needs.includes(u.id)).map((x) => x.key);
-  const confirm = D.remove === u.id ? `<div class="plan-remove small">
-      <span>Remove ${esc(u.id)}?${neededBy.length ? ` ${neededBy.map(esc).join(", ")} need${neededBy.length === 1 ? "s" : ""} it.` : ""}</span>
-      <button class="small-btn" data-pe="retire" title="Drop it; problems tagged with it go on the retag queue when the draft is published">Retire it</button>
-      <span class="muted">or merge into</span> <select class="pe-into">${planUnits().filter((x) => x.key !== u.id).map((x) => `<option value="${esc(x.key)}">${esc(x.key)} ${esc(x.name)}</option>`).join("")}</select>
-      <button class="small-btn" data-pe="merge" title="Units that need it, its tags and gated terms move to the one you pick">Merge</button>
-      <button class="link" data-pe="cancel">Cancel</button>${D.editErr ? ` <span class="err">${esc(D.editErr)}</span>` : ""}</div>` : "";
-  const drag = !D.edit && !D.remove;
-  return `<li class="plan-unit s-${u.status}" data-edit-unit="${esc(u.id)}"${drag ? ` draggable="true" title="Drag to reorder"` : ""}>
+  const confirm = D.remove === u.id ? removeHtml(u.id, u.id, neededBy, unitOpts(u.id).map((o) => ({ key: o.key, label: `${o.key} ${o.label}` }))) : "";
+  const drag = !D.edit && !D.remove && D.openC !== u.id;
+  return `<li class="plan-unit s-${u.status}" data-edit-unit="${esc(u.id)}" data-node="${esc(u.id)}"${drag ? ` draggable="true" title="Drag to reorder"` : ""}>
     ${drag ? '<span class="grip" aria-hidden="true">⋮⋮</span>' : ""}<span class="chip s-${u.status}">${esc(u.id)}</span>
     <div class="plan-body">
       <div class="plan-title"><b>${esc(u.name)}</b>${u.stance ? ` <span class="muted small">${esc(u.stance)}</span>` : ""}</div>
@@ -403,29 +526,27 @@ function unitRowHtml(u) {
       ${u.guide ? `<div class="muted small plan-guide">${esc(u.guide)}</div>` : ""}
       ${u.needs.length ? `<div class="muted small">Needs ${u.needs.map(esc).join(", ")}</div>` : ""}
       ${confirm}
+      ${D.openC === u.id ? commentsHtml(u.id) : ""}
     </div>
-    <span class="plan-acts"><button class="ghost" data-pe="edit" title="Edit ${esc(u.id)}">✎</button><button class="ghost" data-pe="remove" title="Remove ${esc(u.id)}">✕</button></span>
+    <span class="plan-acts">${cToggle(u.id)}<button class="ghost" data-pe="edit" title="Edit ${esc(u.id)}">✎</button><button class="ghost" data-pe="remove" title="Remove ${esc(u.id)}">✕</button></span>
   </li>`;
 }
 
+// The unit form, in the linear list and in the lesson plan DAG's side panel.
 function unitFormHtml(u, section) {
   const secs = unitSections();
-  return `<li class="plan-unit plan-form"><form class="pe-form" data-key="${esc(u?.key || "")}">
+  return `<form class="pe-form" data-layer="unit" data-key="${esc(u?.key || "")}">
     <span class="chip">${esc(u?.key || "new")}</span>
     <div class="pe-fields">
       <label>Name <input name="name" value="${esc(u?.name || "")}" required autocomplete="off" /></label>
       <label>What it covers <textarea name="about" rows="2">${esc(u?.about || "")}</textarea></label>
-      <div class="pe-row">
-        <label>Needs <input name="needs" value="${esc((u?.needs || []).join(", "))}" placeholder="e.g. U03, U04" autocomplete="off" list="pe-units" /></label>
-        <label>Stance <input name="stance" value="${esc(u?.stance || "")}" placeholder="Formal / Informal…" list="pe-stances" autocomplete="off" /></label>
-      </div>
+      <div class="pe-lab">Needs ${pickerHtml("needs", u?.needs || [], unitOpts(u?.key), "Add a unit it needs…")}</div>
+      <label>Stance <input name="stance" value="${esc(u?.stance || "")}" placeholder="Formal / Informal…" list="pe-stances" autocomplete="off" /></label>
       <label>Notes for the homework <input name="notes" value="${esc(u?.notes || "")}" autocomplete="off" /></label>
       ${secs.length ? `<label>Section <select name="section">${secs.map((s) => `<option value="${s.i}"${s.i === section ? " selected" : ""}>${esc(s.heading)}</option>`).join("")}</select></label>` : ""}
-      <datalist id="pe-units">${planUnits().map((x) => `<option value="${esc(x.key)}">${esc(x.name)}</option>`).join("")}</datalist>
       <datalist id="pe-stances"><option value="Formal"></option><option value="Informal"></option></datalist>
-      <div class="pe-row"><button class="small-btn primary" type="submit">${u ? "Save" : "Add unit"}</button> <button class="link" type="button" data-pe="cancel">Cancel</button>
-        ${D.editErr ? `<span class="err small">${esc(D.editErr)}</span>` : ""}</div>
-    </div></form></li>`;
+      ${formButtons(!u, "Add unit")}
+    </div></form>`;
 }
 
 function planEditHtml(groups) {
@@ -436,29 +557,38 @@ function planEditHtml(groups) {
   for (const g of groups) if (g.section == null) shown.push(g);
   if (!shown.length) shown.push({ title: "", section: 0, units: groups.flatMap((g) => g.units) });
   const adding = (si) => D.edit && typeof D.edit === "object" && D.edit.section === si;
+  const form = (u, si) => `<li class="plan-unit plan-form">${unitFormHtml(u, si)}</li>`;
   return `<div class="plan editing">${shown.map((g) => `
     <section class="plan-group">${g.title ? `<h3>${esc(g.title)}</h3>` : ""}
-      <ol class="plan-list"${g.section != null ? ` data-section="${g.section}"` : ""}>${g.units.map((u) => (D.edit === u.id ? unitFormHtml(byKey.get(u.id), g.section) : unitRowHtml(u))).join("")}
-        ${adding(g.section) ? unitFormHtml(null, g.section) : g.section != null ? `<li class="plan-add"><button class="link" data-pe="add" data-section="${g.section}">+ Add a unit${g.title ? ` to ${esc(g.title)}` : ""}</button></li>` : ""}
+      <ol class="plan-list"${g.section != null ? ` data-section="${g.section}"` : ""}>${g.units.map((u) => (D.edit === u.id ? form(byKey.get(u.id), g.section) : unitRowHtml(u))).join("")}
+        ${adding(g.section) ? form(null, g.section) : g.section != null ? `<li class="plan-add"><button class="link" data-pe="add" data-section="${g.section}">+ Add a unit${g.title ? ` to ${esc(g.title)}` : ""}</button></li>` : ""}
       </ol>
     </section>`).join("")}</div>`;
 }
 
-async function planEdit(ops, what) {
+// Every edit, from any of the three views, goes through here.
+async function draftEdit(ops, what) {
+  let r = null;
   try {
-    await api("/api/versions/draft", { method: "POST", body: { ops } });
-    log("plan-edit", what);
+    r = await api("/api/versions/draft", { method: "POST", body: { ops } });
+    log("dag-edit", { mode: D.mode, ...what });
     D.edit = null; D.remove = null; D.editErr = "";
     D.data = await api(dagUrl());
-  } catch (e) { D.editErr = e.message; }
+  } catch (e) {
+    D.editErr = e.message;
+    // keep what was typed: show the error in the open form instead of redrawing it
+    const row = $("#p-dag .pe-form .pe-row:last-of-type");
+    if (row) { row.querySelector(".err")?.remove(); row.insertAdjacentHTML("beforeend", `<span class="err small">${esc(e.message)}</span>`); return null; }
+  }
   drawAll();
+  return r;
 }
 
 async function startEditing() {
   let draft = D.data?.versions?.find((v) => v.status === "draft")?.id;
-  if (!draft) draft = (await api("/api/versions/draft", { method: "POST", body: { ops: [], note: "lesson plan edits" } })).draft;
-  Object.assign(D, { editing: true, edit: null, remove: null, editErr: "", planView: "linear", version: draft, sel: null, view: null });
-  log("plan-edit-mode", { on: true, draft });
+  if (!draft) draft = (await api("/api/versions/draft", { method: "POST", body: { ops: [], note: "edits in the app" } })).draft;
+  Object.assign(D, { editing: true, edit: null, remove: null, editErr: "", version: draft });
+  log("dag-edit-mode", { on: true, draft, mode: D.mode });
   await load();
 }
 
@@ -489,6 +619,7 @@ function planSvgHtml() {
       <rect class="body" width="${n.w}" height="${n.h}" rx="10"/>
       ${u.missing.length ? `<circle class="wdot" cx="${n.w - 4}" cy="4" r="5"/>` : ""}
       <foreignObject x="10" y="7" width="${n.w - 20}" height="${n.h - 12}"><div xmlns="http://www.w3.org/1999/xhtml" class="nt"><b><span class="pid">${esc(u.id)}</span> ${esc(u.name)}</b><span>${esc(STATUS_LABEL[u.status])}${n.ready ? " · ready" : ""}</span></div></foreignObject>
+      ${cBadge(u.id, n.w - (u.missing.length ? 12 : 0))}
     </g>`;
   }).join("");
   const v = D.view;
@@ -499,16 +630,20 @@ function planSvgHtml() {
 }
 
 function planPanel(id) {
+  if (D.editing && D.edit && typeof D.edit === "object") return `<div class="np"><div class="k">New unit</div>${unitFormHtml(null, D.edit.section)}</div>`;
   const g = D.graph, n = g.nodes.find((x) => x.id === id);
-  if (!n) return '<p class="muted">Click a unit to see what it needs and what it opens up. Its prerequisites light up in green, the units that build on it in blue.</p>';
+  if (!n) return `<p class="muted">${D.editing ? "Click a unit to change or remove it, or add one with + Add unit." : "Click a unit to see what it needs and what it opens up. Its prerequisites light up in green, the units that build on it in blue."}</p>`;
   const u = n.unit, name = (k) => g.nodes.find((x) => x.id === k)?.unit.name || "";
+  if (D.editing && D.edit === id) return `<div class="np"><div class="k">Unit ${esc(u.id)}</div>${unitFormHtml(planUnits().find((x) => x.key === id), sectionOf(id))}</div>`;
   const links = (ks) => `<div class="nls">${[...ks].map((k) => `<button class="link nl" data-goto-unit="${esc(k)}"><b>${esc(k)}</b> ${esc(name(k))}</button>`).join("")}</div>`;
   const direct = g.edges.filter((e) => e.from === id).map((e) => e.to), all = planClosure(g, id, "down"), anc = planClosure(g, id, "up");
   const known = new Set(g.nodes.map((x) => x.id)), unknown = u.needs.filter((k) => !known.has(k));
+  const edits = D.editing ? editBarHtml(id) + (D.remove === id ? removeHtml(id, u.id, direct, unitOpts(id).map((o) => ({ key: o.key, label: `${o.key} ${o.label}` }))) : "") : "";
   return `<div class="np">
     <div class="k">Unit ${esc(u.id)}${u.stance ? ` · ${esc(u.stance)}` : ""}</div>
     <h3 class="np-title">${esc(u.name)}</h3>
     ${u.about ? `<p>${esc(u.about)}</p>` : ""}
+    ${edits}
     <div class="np-state ps-${u.status}">${esc(STATUS_LABEL[u.status])}${n.ready ? " · ready: everything it needs is taught" : ""}</div>
     ${u.note ? `<p class="plan-note small">${esc(u.note)}</p>` : ""}
     ${u.guide ? `<p class="muted small plan-guide">${esc(u.guide)}</p>` : ""}
@@ -518,6 +653,7 @@ function planPanel(id) {
     ${anc.size > u.needs.length ? `<p class="muted small">${anc.size} units in all lie under it.</p>` : ""}
     <h4>Needed by</h4>${direct.length ? links(direct) : '<p class="muted small">No unit builds on it directly.</p>'}
     ${all.size > direct.length ? `<p class="muted small">${all.size} units in all build on it.</p>` : ""}
+    ${commentsHtml(u.id)}
   </div>`;
 }
 
@@ -525,39 +661,58 @@ function planLegendHtml() {
   return `<div class="dag-legend">
     <span class="lg ps-TAUGHT"></span>taught <span class="lg ps-CURRENT"></span>current <span class="lg ps-NEXT"></span>next <span class="lg ps-FUTURE"></span>future <span class="lg ps-FUTURE ready"></span>ready (needs all taught)
     <span class="sep"></span><span class="lg-edge"></span>needed for <span class="lg-edge implied"></span>implied by a longer chain (shown for the selected unit)
-    <span class="sep"></span><span class="wdot-lg"></span>a need is not taught yet</div>`;
+    <span class="sep"></span><span class="wdot-lg"></span>a need is not taught yet <span class="lg-c">💬</span>comments</div>`;
 }
 
 // ---------- page ----------
 
-function headHtml() {
+// The header: which curriculum and version this is, then the view's own controls; Edit history sits top right.
+function titleHtml() {
+  const v = D.data?.version, cur = D.data?.curriculum?.title || S.curriculum || "";
+  const ver = v ? `v${v.seq}${v.status === "draft" ? " · draft" : ""}${v.id === v.enrolled ? ` · ${S.student || "the student"}'s version` : ""}` : "";
+  return `<div class="dag-title"><div class="eyebrow">Progress map › ${esc(MODE_LABEL[D.mode])}</div>
+    <h2>${esc(cur || "Progress map")}${ver ? ` <span class="dag-ver${v.status === "draft" ? " draft" : ""}">${esc(ver)}</span>` : ""}</h2></div>`;
+}
+const planViewSeg = () => `<div class="seg plan-view">${["linear", "dag"].map((v) => `<button data-plan-view="${v}" class="${D.planView === v ? "on" : ""}">${{ linear: "Linear", dag: "DAG" }[v]}</button>`).join("")}</div>`;
+const fitBtn = () => (D.mode !== "plan" || planDag() ? '<button class="ghost" data-act="fit" title="Fit to screen">⤢</button>' : "");
+
+function headBodyHtml() {
   const job = D.data?.job, running = job?.running;
-  if (D.mode === "plan" && D.editing) {
-    const us = planUnits();
-    return `<h2>Progress map <span class="muted">· Lesson plan</span></h2>
-      <span class="dag-count"><b>Editing draft v${D.data.version.seq}</b> · ${us.length} unit${us.length === 1 ? "" : "s"}</span>
+  if (D.editing) {
+    const n = D.mode === "plan" ? planUnits().length : curDag()?.nodes.length || 0, what = D.mode === "plan" ? "unit" : "block";
+    return `<span class="dag-count"><b>Editing draft v${D.data.version.seq}</b> · ${n} ${what}${n === 1 ? "" : "s"}</span>
+      ${D.mode === "plan" ? planViewSeg() : ""}
+      <button class="secondary" data-act="add-node">+ Add ${what}</button>
       <span class="spacer"></span><span class="muted small">Publish the draft on <button class="link" data-page="courses">Courses</button> to use it</span>
-      <button class="primary" data-act="plan-done">Done</button>`;
+      ${fitBtn()}<button class="primary" data-act="edit-done">Done</button>`;
   }
   if (D.mode === "plan") {
     const us = lessonPlan(D.data?.plan || S.ladder, S.status).flatMap((g) => g.units), n = (s) => us.filter((u) => u.status === s).length;
     const ready = planDag() && D.graph ? D.graph.nodes.filter((x) => x.ready).length : 0;
-    return `<h2>Progress map <span class="muted">· Lesson plan</span></h2>
-      <span class="dag-count"><b>${n("TAUGHT")} of ${us.length} taught</b> · ${n("CURRENT")} current${n("NEXT") ? ` · ${n("NEXT")} next` : ""}${ready ? ` · ${ready} ready` : ""}</span>
-      <div class="seg plan-view">${["linear", "dag"].map((v) => `<button data-plan-view="${v}" class="${D.planView === v ? "on" : ""}">${{ linear: "Linear", dag: "DAG" }[v]}</button>`).join("")}</div>
+    return `<span class="dag-count"><b>${n("TAUGHT")} of ${us.length} taught</b> · ${n("CURRENT")} current${n("NEXT") ? ` · ${n("NEXT")} next` : ""}${ready ? ` · ${ready} ready` : ""}</span>
+      ${planViewSeg()}
       <span class="spacer"></span><span class="muted small">Statuses from the app's status record · change them on Create Homework</span>
       <button class="ghost" data-act="status-export" title="Download the whole status record (unit statuses, review priority, standing conventions, history) as Markdown">Export status.md</button>
-      <button class="ghost" data-act="status-upload" title="Replace the status record with an edited status.md (the old one stays in the history)">Upload status.md</button>${versionPicker()}${planDag() ? '<button class="ghost" data-act="fit" title="Fit to screen">⤢</button>' : ""}
-      <button class="secondary" data-act="plan-edit" title="Add, change or remove units in the course's draft">Edit units</button>`;
+      <button class="ghost" data-act="status-upload" title="Replace the status record with an edited status.md (the old one stays in the history)">Import status.md</button>${versionPicker()}${fitBtn()}
+      <button class="secondary" data-act="edit" title="Add, change or remove units in the course's draft">Edit units</button>`;
+  }
+  if (D.mode === "inference") {
+    return `<span class="spacer"></span>
+      ${running ? `<span class="muted small"><span class="spin"></span> Claude is reading the homework and notes… ${Math.round((job.elapsed || 0) / 1000)}s${job.tools?.length ? ` · read ${job.tools.length} file${job.tools.length > 1 ? "s" : ""}` : ""}</span><button class="secondary" data-act="stop-guess">Stop</button>`
+        : `${job?.error ? `<span class="bad-text small" title="${esc(job.error)}">Last guess failed</span>` : ""}<button class="primary" data-act="guess" title="One ${esc(D.data.guessModel || "")} run over every homework file and these files, for both boards">${D.data.guess ? "Guess again" : "Guess progress"}</button>`}`;
   }
   const c = counts(curDag(), statesNow()), count = `<span class="dag-count"><b>${c.done} of ${c.total} done</b>${c.partial ? ` · ${c.partial} partly` : ""} · ${c.ready} ready</span>`;
-  return `<h2>Progress map <span class="muted">· ${esc(MODE_LABEL[D.mode])}</span></h2>
-    ${count}
+  const name = D.board === "methods" ? "methods.md" : "content.md";
+  return `${count}
     <span class="spacer"></span>
-    ${viewingOther() ? `<span class="muted small">Viewing v${D.data.version.seq}, read through the course's lineage</span>` : running ? `<span class="muted small"><span class="spin"></span> Claude is reading the homework and notes… ${Math.round((job.elapsed || 0) / 1000)}s${job.tools?.length ? ` · read ${job.tools.length} file${job.tools.length > 1 ? "s" : ""}` : ""}</span><button class="secondary" data-act="stop-guess">Stop</button>`
-      : `${job?.error ? `<span class="bad-text small" title="${esc(job.error)}">Last guess failed</span>` : ""}<button class="primary" data-act="guess" title="One ${esc(D.data.guessModel || "")} run over every homework file and your notes, for both boards">${D.data.guess ? "Guess again" : "Guess progress"}</button>`}
-    ${versionPicker()}<button class="ghost" data-act="fit" title="Fit to screen">⤢</button>`;
+    ${viewingOther() ? `<span class="muted small">Viewing v${D.data.version.seq}, read through the course's lineage</span>` : `${running ? `<span class="muted small"><span class="spin"></span> Claude is guessing…</span>` : ""}
+      <button class="ghost" data-act="board-export" title="Download every block on this board with its state as Markdown">Export ${name}</button>
+      <button class="ghost" data-act="board-import" title="Set states from an edited ${name}: each changed line becomes your setting, auto goes back to Claude's guess">Import ${name}</button>`}
+    ${versionPicker()}${fitBtn()}
+    <button class="secondary" data-act="edit" title="Add, change, link, move or remove blocks in the course's draft">Edit board</button>`;
 }
+const headHtml = () => `<div class="dag-head row">${titleHtml()}${headBodyHtml()}
+  <button class="ghost dag-hist" data-act="history" title="Every change to this curriculum: edits, imports, publishes and comments">↺ Edit history</button></div>`;
 
 // Which version of the course to show. The student's own (enrolled) version is the default and the only one
 // where states can be changed; any other shows their progress read through the course's lineage.
@@ -577,29 +732,31 @@ function syncSidebar() {
 function drawAll() {
   const d = $("#p-dag");
   syncSidebar();
-  if (D.editing && (D.mode !== "plan" || (D.data?.version && D.data.version.status !== "draft"))) Object.assign(D, { editing: false, edit: null, remove: null, editErr: "" });
+  if (D.editing && D.data?.version && D.data.version.status !== "draft") Object.assign(D, { editing: false, edit: null, remove: null, editErr: "" });
   if (D.mode === "plan" && D.planView === "dag") {
     const groups = lessonPlan(D.data?.plan || S.ladder, S.status);
     D.graph = planGraph(groups);
-    if (!D.graph.nodes.length) { d.innerHTML = `<div class="dag-head row">${headHtml()}</div>${planHtml()}`; return; }
+    if (!D.graph.nodes.length) { d.innerHTML = `${headHtml()}${D.editing && D.edit ? `<div class="plan">${planPanel(null)}</div>` : planHtml()}`; return; }
     D.view ||= bbox(D.graph);
-    d.innerHTML = `<div class="dag-head row">${headHtml()}</div>
+    d.innerHTML = `${headHtml()}
       <div class="dag-main"><div class="dag-canvas">${planSvgHtml()}</div>
         <aside class="dag-side"><div class="side-body">${planPanel(D.sel)}</div></aside></div>
       ${planLegendHtml()}`;
     return;
   }
-  if (D.mode === "plan") { d.innerHTML = `<div class="dag-head row">${headHtml()}</div>${planHtml()}`; return; }
+  if (D.mode === "plan") { d.innerHTML = `${headHtml()}${planHtml()}`; return; }
   if (!D.data) { d.innerHTML = `<p class="muted">Loading…</p>`; return; }
-  if (!curDag()) { d.innerHTML = `<div class="row dag-head"><h2>Progress map</h2></div><p class="err">ui/data/wu_dag.json is missing.</p>`; return; }
+  if (D.mode === "inference") { if (D.editing) Object.assign(D, { editing: false, edit: null, remove: null, editErr: "", version: null }); d.innerHTML = `${headHtml()}${inferenceHtml()}`; return; }
+  if (!curDag()) { d.innerHTML = `<div class="row dag-head">${titleHtml()}</div><p class="err">ui/data/wu_dag.json is missing.</p>`; return; }
   D.view ||= bbox(curDag());
-  d.innerHTML = `<div class="dag-head row">${headHtml()}</div>
+  d.innerHTML = `${headHtml()}
     <div class="dag-main"><div class="dag-canvas">${svgHtml()}</div>
-      <aside class="dag-side"><div class="tabs">${["info", "notes"].map((t) => `<button class="tab${D.side === t ? " on" : ""}" data-side="${t}">${{ info: "Node", notes: `Notes (${(D.data.notes || []).length})` }[t]}</button>`).join("")}</div>
-      <div class="side-body">${D.side === "info" ? (D.sel ? nodePanel(D.sel) : '<p class="muted">Click a block to see where the student stands on it.</p>') : notesPanel()}</div></aside></div>
+      <aside class="dag-side"><div class="side-body">${nodePanel(D.sel)}</div></aside></div>
     ${legendHtml()}`;
 }
 function drawSvgOnly() { const c = $("#p-dag .dag-canvas"); if (c) c.innerHTML = planDag() ? planSvgHtml() : svgHtml(); }
+// someone is typing in a form on the page: background refreshes leave it alone
+const typing = () => !!document.activeElement?.closest?.("#p-dag form");
 
 const dagUrl = () => (D.version ? `/api/dag?version=${D.version}` : "/api/dag");
 async function load() {
@@ -612,7 +769,7 @@ function startPoll() {
   if (D.data.job?.running) D.poll = setInterval(async () => {
     D.data = await api(dagUrl());
     if (!D.data.job?.running) clearInterval(D.poll);
-    if (!$("#p-dag").hidden) drawAll();
+    if (!$("#p-dag").hidden && !typing()) drawAll();
   }, 2000);
 }
 
@@ -625,7 +782,7 @@ export function focusNode(k) {
 }
 
 export async function openDag(btn) {
-  if (btn?.dataset.dag && btn.dataset.dag !== D.mode) { const wasBoard = D.board, wasPlan = planDag(); D.mode = btn.dataset.dag; if (D.board !== wasBoard || planDag() !== wasPlan) { D.sel = null; D.view = null; } }
+  if (btn?.dataset.dag && btn.dataset.dag !== D.mode) { const wasBoard = D.board, wasPlan = planDag(); D.mode = btn.dataset.dag; Object.assign(D, { edit: null, remove: null, editErr: "", cEdit: null }); if (D.board !== wasBoard || planDag() !== wasPlan) { D.sel = null; D.view = null; } }
   if (!D.data) drawAll();
   await load();
 }
@@ -634,6 +791,77 @@ async function setNode(key, state) {
   const r = await api("/api/dag", { method: "PUT", body: { id: key, state: state || null } });
   D.data.overrides = r.overrides;
   drawAll();
+}
+
+async function commentCall(path, method, body) {
+  try {
+    const r = await api(path, { method, body });
+    D.data.comments = r.comments; D.cEdit = null; D.cErr = "";
+    log("dag-comment", { method, path });
+  } catch (e) { D.cErr = e.message; }
+  drawAll();
+}
+
+// ---------- edit history (the dialog behind the header's top-right button) ----------
+const HIST_FILTERS = { all: ["All", () => true], content: ["Content", (r) => r.layer === "content"], methods: ["Methods", (r) => r.layer === "methods"],
+  unit: ["Lesson plan", (r) => r.layer === "unit"], comments: ["Comments", (r) => r.op.startsWith("comment")], versions: ["Versions", (r) => ["version", "publish", "discard", "import"].includes(r.op)] };
+const OP_ICON = { add: "+", edit: "✎", move: "↔", remove: "✕", lineage: "→", link: "⟶", unlink: "⤫", reorder: "⇅", covers: "⊂", "plan-text": "¶", gated: "⊘", ladder: "¶", note: "✎",
+  comment: "💬", "comment-edit": "💬", "comment-delete": "💬", version: "◇", publish: "✓", discard: "🗑", import: "⇩" };
+function histDetailHtml(r) {
+  const d = r.detail || {}, field = (f) => esc({ detail: "description", about: "what it covers", proves: "needed to prove", restsOn: "rests on" }[f] || f);
+  const rows = (d.changes || []).map((c) => `<tr><th>${field(c.field)}</th><td class="he-b">${esc(c.before) || '<span class="muted">—</span>'}</td><td class="he-arrow">→</td><td class="he-a">${esc(c.after) || '<span class="muted">—</span>'}</td></tr>`);
+  const snap = (s) => Object.entries(s || {}).filter(([, v]) => (Array.isArray(v) ? v.length : v !== "" && v != null)).map(([f, v]) => `<tr><th>${field(f)}</th><td colspan="3">${esc(Array.isArray(v) ? v.join(", ") : v)}</td></tr>`);
+  const body = rows.length ? rows : d.after && typeof d.after === "object" ? snap(d.after) : d.before && typeof d.before === "object" ? snap(d.before) : [];
+  let quote = typeof d.after === "string" ? d.after : typeof d.before === "string" ? d.before : "";
+  if (quote && r.summary.includes(quote)) quote = ""; // the summary already says it
+  if (!body.length && !quote) return "";
+  return `<details class="he-more"><summary>details</summary>${body.length ? `<table class="he-t">${body.join("")}</table>` : ""}${quote ? `<blockquote>${esc(quote)}</blockquote>` : ""}</details>`;
+}
+function histHtml() {
+  const h = D.hist, title = D.data?.curriculum?.title || "this curriculum";
+  const [, keep] = HIST_FILTERS[h.filter] || HIST_FILTERS.all, shown = (h.data || []).filter(keep);
+  const here = (r) => r.key && (r.layer === "unit" ? planUnits().some((u) => u.key === r.key) : r.layer === "methods" ? D.data?.methods?.nodes.some((n) => "m:" + n.id === r.key) : D.data?.content?.nodes.some((n) => n.id === r.key));
+  const days = [];
+  for (const r of shown) { const day = new Date(r.at).toLocaleDateString([], { weekday: "short", year: "numeric", month: "short", day: "numeric" }); if (days.at(-1)?.day !== day) days.push({ day, rows: [] }); days.at(-1).rows.push(r); }
+  const list = h.err ? `<p class="err">${esc(h.err)}</p>` : !h.data ? '<p class="muted">Loading…</p>' : !shown.length ? '<p class="muted">Nothing here yet.</p>' : days.map((g) => `
+    <h3 class="he-day">${esc(g.day)}</h3>
+    <ol class="he-list">${g.rows.map((r) => `<li class="he op-${esc(r.op)}">
+      <time>${esc(new Date(r.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }))}</time>
+      <span class="he-ic" aria-hidden="true">${OP_ICON[r.op] || "·"}</span>
+      <div class="he-main"><div class="he-sum">${esc(r.summary)}
+        ${here(r) ? ` <button class="link small" data-hist-go="${esc(r.key)}" data-layer="${esc(r.layer)}">show</button>` : ""}</div>
+        <div class="he-tags">${r.layer ? `<span class="he-tag l-${esc(r.layer)}">${esc(LAYER_LABEL[r.layer] || r.layer)}</span>` : ""}${r.seq ? `<span class="he-tag">v${r.seq}</span>` : ""}${r.source && r.source !== "app" ? `<span class="he-tag src">${esc({ file: "curriculum_ladder.md edited", import: "whiteboard" }[r.source] || r.source)}</span>` : ""}</div>
+        ${histDetailHtml(r)}</div></li>`).join("")}</ol>`).join("");
+  return `<div class="row he-head"><div><div class="eyebrow">Edit history</div><h2>${esc(title)}</h2></div><span class="spacer"></span><button class="ghost" data-hist-close title="Close">✕</button></div>
+    <p class="muted small">Every change to the course: edits on the content board, the methods board and the lesson plan, whiteboard imports, drafts started, published and discarded, and comments. Newest first.</p>
+    <div class="seg he-filters">${Object.entries(HIST_FILTERS).map(([k, [label, f]]) => `<button data-hist-filter="${k}" class="${h.filter === k ? "on" : ""}">${label}${h.data ? ` <span class="muted">${h.data.filter(f).length}</span>` : ""}</button>`).join("")}</div>
+    <div class="he-scroll">${list}</div>`;
+}
+async function openHistory() {
+  const dlg = $("#dag-hist-dlg");
+  D.hist.err = "";
+  dlg.innerHTML = histHtml();
+  if (!dlg.open) dlg.showModal();
+  try { D.hist.data = (await api("/api/dag/history")).edits; } catch (e) { D.hist.err = e.message; }
+  log("dag-history", { entries: D.hist.data?.length ?? null });
+  dlg.innerHTML = histHtml();
+}
+function initHistory() {
+  const dlg = $("#dag-hist-dlg"); if (!dlg) return;
+  dlg.addEventListener("click", (e) => {
+    if (e.target === dlg) return dlg.close(); // the backdrop
+    const f = e.target.closest("[data-hist-filter]"); if (f) { D.hist.filter = f.dataset.histFilter; log("dag-history-filter", { filter: D.hist.filter }); dlg.innerHTML = histHtml(); return; }
+    if (e.target.closest("[data-hist-close]")) return dlg.close();
+    const go = e.target.closest("[data-hist-go]");
+    if (go) {
+      dlg.close();
+      const k = go.dataset.histGo;
+      if (go.dataset.layer === "unit") { Object.assign(D, { mode: "plan", planView: "dag", sel: k, view: null }); try { localStorage.setItem(PLAN_VIEW_KEY, "dag"); } catch {} }
+      else focusNode(k);
+      log("dag-history-go", { key: k });
+      drawAll();
+    }
+  });
 }
 
 async function upload(files) {
@@ -665,56 +893,121 @@ function uploadStatus() {
   inp.click();
 }
 
+// Set this board's states from an edited content.md / methods.md (progressmd.js). The page parses it first to
+// say what will change; the server parses it again and refuses the whole file on any error.
+function importBoard() {
+  const board = D.board;
+  const inp = Object.assign(document.createElement("input"), { type: "file", accept: ".md,.markdown,.txt,text/markdown,text/plain" });
+  inp.onchange = async () => {
+    const f = inp.files[0]; if (!f) return;
+    const text = await f.text();
+    const { changes, errors } = parseBoardMd(text, { board, dag: D.data[board], guess: D.data.guess, overrides: D.data.overrides });
+    if (errors.length) return alert(`${f.name} was not imported:\n${errors.slice(0, 8).join("\n")}${errors.length > 8 ? `\n(and ${errors.length - 8} more)` : ""}`);
+    if (!changes.length) return alert(`${f.name} matches the ${BOARD_LABEL[board].toLowerCase()} board already. Nothing to change.`);
+    const auto = changes.filter((x) => x.state == null).length;
+    if (!confirm(`Set ${changes.length} block${changes.length === 1 ? "" : "s"} on the ${BOARD_LABEL[board].toLowerCase()} board from ${f.name}${auto ? ` (${auto} back to Claude's guess)` : ""}?`)) return;
+    try { const r = await api("/api/dag/import", { method: "POST", body: { board, text } }); D.data.overrides = r.overrides; }
+    catch (err) { return alert(err.message); }
+    log("dag-import", { board, name: f.name, changed: changes.length });
+    drawAll();
+  };
+  inp.click();
+}
+
+const focusForm = () => $("#p-dag .pe-form input[name=name], #p-dag .pe-form input[name=title]")?.focus();
+const listKeys = (f, n) => (f.elements[n]?.value || "").split(",").filter(Boolean);
+
 export function initDag() {
   const d = $("#p-dag");
+  initHistory();
   d.addEventListener("click", async (e) => {
     const t = e.target;
-    const sd = t.closest("[data-side]"); if (sd) { D.side = sd.dataset.side; return drawAll(); }
+    const go = t.closest("[data-dag-go]"); if (go) { D.mode = go.dataset.dagGo; D.sel = null; D.view = null; log("dag-mode", { mode: D.mode }); return drawAll(); }
     const pv = t.closest("[data-plan-view]");
     if (pv) {
       if (pv.dataset.planView === D.planView) return;
-      D.planView = pv.dataset.planView; D.sel = null; D.view = null;
+      Object.assign(D, { planView: pv.dataset.planView, sel: null, view: null, edit: null, remove: null, editErr: "" });
       try { localStorage.setItem(PLAN_VIEW_KEY, D.planView); } catch {}
       log("plan-view", { view: D.planView }); return drawAll();
     }
+    // key pickers
+    const kd = t.closest("[data-kp-del]");
+    if (kd) { const kp = kd.closest(".kp"), chip = kd.closest(".kp-chip"), hid = $("input[type=hidden]", kp); hid.value = hid.value.split(",").filter((k) => k && k !== chip.dataset.k).join(","); chip.remove(); return; }
+    // comments: before anything that reacts to a click on the node around them
+    const ct = t.closest("[data-cmt-toggle]");
+    if (ct) { D.openC = D.openC === ct.dataset.cmtToggle ? null : ct.dataset.cmtToggle; D.cEdit = null; D.cErr = ""; drawAll(); if (D.openC) $(`#p-dag .cmts[data-ckey="${CSS.escape(D.openC)}"] textarea`)?.focus(); return; }
+    if (t.closest(".cmts")) {
+      const c = t.closest("[data-cmt]"); if (!c) return;
+      const id = Number(c.closest("[data-cid]")?.dataset.cid);
+      D.cErr = "";
+      if (c.dataset.cmt === "edit") { D.cEdit = id; drawAll(); return $("#p-dag .cmt-form[data-cid] textarea")?.focus(); }
+      if (c.dataset.cmt === "cancel") { D.cEdit = null; return drawAll(); }
+      if (c.dataset.cmt === "delete") return commentCall(`/api/comments/${id}`, "DELETE");
+      return;
+    }
     const pe = t.closest("[data-pe]");
     if (pe && D.editing) {
-      const act = pe.dataset.pe, key = pe.closest("[data-edit-unit]")?.dataset.editUnit;
+      const act = pe.dataset.pe, id = pe.closest("[data-node]")?.dataset.node;
       D.editErr = "";
-      if (act === "edit") { D.edit = key; D.remove = null; }
+      if (act === "edit") { D.edit = id; D.remove = null; }
       else if (act === "add") { D.edit = { section: Number(pe.dataset.section) }; D.remove = null; }
-      else if (act === "remove") { D.remove = key; D.edit = null; }
+      else if (act === "remove") { D.remove = id; D.edit = null; }
       else if (act === "cancel") { D.edit = null; D.remove = null; }
-      else if (act === "retire") return planEdit([{ op: "removeNode", key, relation: "retired" }], { op: "remove", key, relation: "retired" });
-      else if (act === "merge") { const into = pe.parentElement.querySelector(".pe-into")?.value; if (into) return planEdit([{ op: "removeNode", key, relation: "merged", into: [into] }], { op: "remove", key, relation: "merged", into }); }
+      else if (act === "retire") { if (D.sel === id) D.sel = null; return draftEdit([{ op: "removeNode", key: nodeKey(id), relation: "retired" }], { op: "remove", key: nodeKey(id), relation: "retired" }); }
+      else if (act === "merge") { const into = pe.parentElement.querySelector(".pe-into")?.value; if (into) { if (D.sel === id) D.sel = D.mode === "plan" ? into : into.replace(/^m:/, ""); return draftEdit([{ op: "removeNode", key: nodeKey(id), relation: "merged", into: [into] }], { op: "remove", key: nodeKey(id), relation: "merged", into }); } }
       drawAll();
-      if (act === "edit" || act === "add") $("#p-dag .pe-form input[name=name]")?.focus();
+      if (act === "edit" || act === "add") focusForm();
       return;
     }
     const pu = t.closest(".plan-unit[data-unit]");
     if (pu) { D.planView = "dag"; D.sel = pu.dataset.unit; D.view = null; try { localStorage.setItem(PLAN_VIEW_KEY, "dag"); } catch {} log("plan-view", { view: "dag", from: pu.dataset.unit }); return drawAll(); }
-    const gu = t.closest("[data-goto-unit]"); if (gu) { D.sel = gu.dataset.gotoUnit; log("dag-select", { board: "plan", id: D.sel }); return drawAll(); }
+    const gu = t.closest("[data-goto-unit]"); if (gu) { D.sel = gu.dataset.gotoUnit; Object.assign(D, { edit: null, remove: null, cEdit: null }); log("dag-select", { board: "plan", id: D.sel }); return drawAll(); }
     const a = t.closest("[data-act]");
-    if (a?.dataset.act === "plan-edit") { try { await startEditing(); } catch (err) { alert(err.message); } return; }
-    if (a?.dataset.act === "plan-done") { Object.assign(D, { editing: false, edit: null, remove: null, editErr: "", version: null }); log("plan-edit-mode", { on: false }); return load(); }
+    if (a?.dataset.act === "history") return openHistory();
+    if (a?.dataset.act === "edit") { try { await startEditing(); } catch (err) { alert(err.message); } return; }
+    if (a?.dataset.act === "edit-done") { Object.assign(D, { editing: false, edit: null, remove: null, editErr: "", version: null }); log("dag-edit-mode", { on: false }); return load(); }
+    if (a?.dataset.act === "add-node") {
+      Object.assign(D, { edit: D.mode === "plan" ? { section: unitSections()[0]?.i ?? 0 } : { board: D.board }, remove: null, editErr: "", side: "info" });
+      if (D.mode !== "plan") D.sel = null;
+      drawAll(); return focusForm();
+    }
     if (a?.dataset.act === "fit") { D.view = bbox(curDag()); return drawSvgOnly(); }
     if (a?.dataset.act === "status-export") { log("status-export", {}); location.href = "/api/status/export"; return; }
     if (a?.dataset.act === "status-upload") return uploadStatus();
+    if (a?.dataset.act === "board-export") { log("dag-export", { board: D.board }); location.href = `/api/dag/export?board=${D.board}`; return; }
+    if (a?.dataset.act === "board-import") return importBoard();
     if (a?.dataset.act === "guess") { try { await api("/api/dag/guess", { method: "POST" }); } catch (err) { alert(err.message); } return load(); }
     if (a?.dataset.act === "stop-guess") { await api("/api/dag/guess/stop", { method: "POST" }); return setTimeout(load, 500); }
     const s = t.closest("[data-set]"); if (s && D.sel) return setNode(keyOf(D.board, D.sel), s.dataset.set);
     const gk = t.closest("[data-goto-key]"); if (gk) { focusNode(gk.dataset.gotoKey); return drawAll(); }
     const dn = t.closest("[data-del-note]"); if (dn) { if (!confirm(`Delete ${dn.dataset.delNote}?`)) return; const r = await api(`/api/notes/${encodeURIComponent(dn.dataset.delNote)}`, { method: "DELETE" }); D.data.notes = r.notes; return drawAll(); }
   });
-  d.addEventListener("submit", (e) => {
-    const f = e.target.closest(".pe-form"); if (!f) return;
+  d.addEventListener("submit", async (e) => {
     e.preventDefault();
+    const cf = e.target.closest(".cmt-form");
+    if (cf) {
+      const text = cf.elements.text.value.trim(); if (!text) return;
+      return cf.dataset.cid ? commentCall(`/api/comments/${cf.dataset.cid}`, "PATCH", { text }) : commentCall("/api/comments", "POST", { key: cf.closest(".cmts").dataset.ckey, text });
+    }
+    const f = e.target.closest(".pe-form"); if (!f) return;
+    // text left in a picker's input counts if it names a node
+    for (const kp of $$(".kp", f)) if ($(".kp-in", kp).value.trim() && !kpAdd(kp)) { D.editErr = `“${$(".kp-in", kp).value.trim()}”: pick one from the list`; return drawAll(); }
     const v = (n) => f.elements[n]?.value.trim() ?? "";
-    const fields = { name: v("name").replace(/\.$/, ""), about: v("about").replace(/\s+/g, " "), needs: v("needs").toUpperCase().split(/[\s,]+/).filter(Boolean), stance: v("stance").replace(/\.$/, ""), notes: v("notes") };
-    if (f.elements.section) fields.section = Number(f.elements.section.value);
-    const key = f.dataset.key || undefined;
-    planEdit([{ op: "upsertNode", layer: "unit", key, check: true, fields }], { op: key ? "edit" : "add", key });
+    const key = f.dataset.key || undefined, layer = f.dataset.layer;
+    if (layer === "unit") {
+      const fields = { name: v("name").replace(/\.$/, ""), about: v("about").replace(/\s+/g, " "), needs: listKeys(f, "needs"), stance: v("stance").replace(/\.$/, ""), notes: v("notes") };
+      if (f.elements.section) fields.section = Number(f.elements.section.value);
+      const r = await draftEdit([{ op: "upsertNode", layer: "unit", key, check: true, fields }], { op: key ? "edit" : "add", key });
+      if (r && !key && planDag()) { D.sel = r.keys[0]; drawAll(); }
+      return;
+    }
+    const fields = { title: v("title"), detail: v("detail").replace(/\s+/g, " "), kind: v("kind"), uses: listKeys(f, "uses"), proves: listKeys(f, "proves") };
+    if (layer === "methods") fields.restsOn = listKeys(f, "restsOn");
+    if (!key) { const c = D.view; Object.assign(fields, { x: Math.round((c.x + c.w / 2 - 115) / 10) * 10, y: Math.round((c.y + c.h / 2 - 44) / 10) * 10 }); }
+    const r = await draftEdit([{ op: "upsertNode", layer, key, check: true, fields }], { op: key ? "edit" : "add", key });
+    if (r) { D.sel = (key || r.keys[0]).replace(/^m:/, ""); drawAll(); }
   });
+  d.addEventListener("input", (e) => { if (e.target.matches(".kp-in")) kpAdd(e.target.closest(".kp"), true); });
   // drag a unit to reorder it within its section (Lesson plan › Edit units)
   let dragging = null;
   const clearMarks = () => $$("#p-dag .drop-before, #p-dag .drop-after").forEach((x) => x.classList.remove("drop-before", "drop-after"));
@@ -741,10 +1034,14 @@ export function initDag() {
     const from = dragging.dataset.editUnit, to = s.li.dataset.editUnit, next = keys.filter((k) => k !== from);
     next.splice(next.indexOf(to) + (s.after ? 1 : 0), 0, from);
     if (to === from || next.join() === keys.join()) return;
-    planEdit([{ op: "orderUnits", section: Number(list.dataset.section), keys: next }], { op: "reorder", key: from, before: next[next.indexOf(from) + 1] || null });
+    draftEdit([{ op: "orderUnits", section: Number(list.dataset.section), keys: next }], { op: "reorder", key: from, before: next[next.indexOf(from) + 1] || null });
   });
   d.addEventListener("dragend", () => { dragging?.classList.remove("dragging"); dragging = null; clearMarks(); });
-  d.addEventListener("keydown", (e) => { if (e.key === "Escape" && D.editing && (D.edit || D.remove)) { D.edit = null; D.remove = null; D.editErr = ""; drawAll(); } });
+  d.addEventListener("keydown", (e) => {
+    if (e.target.matches?.(".kp-in") && e.key === "Enter") { e.preventDefault(); if (!kpAdd(e.target.closest(".kp"))) e.target.classList.add("bad"); return; }
+    if (e.target.matches?.(".cmt-form textarea") && e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.target.form.requestSubmit(); return; }
+    if (e.key === "Escape" && (D.cEdit || (D.editing && (D.edit || D.remove)))) { Object.assign(D, { edit: null, remove: null, editErr: "", cEdit: null, cErr: "" }); drawAll(); }
+  });
   d.addEventListener("change", (e) => {
     if (e.target.matches("#dag-drop input")) upload([...e.target.files]);
     if (e.target.matches(".dag-version")) {
@@ -757,7 +1054,8 @@ export function initDag() {
   d.addEventListener("dragleave", (e) => e.target.closest?.("#dag-drop")?.classList.remove("over"));
   d.addEventListener("drop", (e) => { if (e.target.closest("#dag-drop")) { e.preventDefault(); upload([...e.dataTransfer.files]); } });
 
-  // pan (drag the background or a node) and zoom (wheel / pinch) by editing the viewBox
+  // pan (drag the background or a node) and zoom (wheel / pinch) by editing the viewBox; while editing a board,
+  // dragging a block moves it instead (its hand-drawn bends give way to plain elbows)
   const toBoard = (svg, cx, cy) => { const r = svg.getBoundingClientRect(), v = D.view, k = Math.max(v.w / r.width, v.h / r.height); return { x: v.x + (cx - r.left - (r.width - v.w / k) / 2) * k, y: v.y + (cy - r.top - (r.height - v.h / k) / 2) * k, k }; };
   d.addEventListener("wheel", (e) => {
     const svg = e.target.closest(".dag-svg"); if (!svg) return;
@@ -769,7 +1067,8 @@ export function initDag() {
   }, { passive: false });
   d.addEventListener("pointerdown", (e) => {
     const svg = e.target.closest(".dag-svg"); if (!svg || e.button !== 0) return;
-    D.dragging = { sx: e.clientX, sy: e.clientY, v: { ...D.view }, k: toBoard(svg, 0, 0).k, moved: false, node: e.target.closest(".node")?.dataset.id };
+    const node = e.target.closest(".node")?.dataset.id, n = node && D.editing && !planDag() && D.mode !== "plan" ? curDag().nodes.find((x) => x.id === node) : null;
+    D.dragging = { sx: e.clientX, sy: e.clientY, v: { ...D.view }, k: toBoard(svg, 0, 0).k, moved: false, node, move: n ? { n, x0: n.x, y0: n.y } : null };
     svg.setPointerCapture(e.pointerId);
   });
   d.addEventListener("pointermove", (e) => {
@@ -777,12 +1076,31 @@ export function initDag() {
     const dx = e.clientX - g.sx, dy = e.clientY - g.sy;
     if (Math.abs(dx) + Math.abs(dy) > 4) g.moved = true;
     if (!g.moved) return;
+    if (g.move) {
+      const { n } = g.move, dag = curDag();
+      n.x = Math.round((g.move.x0 + dx * g.k) / 10) * 10; n.y = Math.round((g.move.y0 + dy * g.k) / 10) * 10;
+      for (const ed of dag.edges) if (ed.from === n.id || ed.to === n.id) ed.bends = null;
+      $(`.dag-svg g.node[data-id="${CSS.escape(n.id)}"]`, d)?.setAttribute("transform", `translate(${n.x},${n.y})`);
+      $(".dag-svg .edges", d).innerHTML = edgesHtml(dag, statesNow(), Object.fromEntries(dag.nodes.map((x) => [x.id, x])));
+      return;
+    }
     D.view = { ...g.v, x: g.v.x - dx * g.k, y: g.v.y - dy * g.k };
     $(".dag-svg", d).setAttribute("viewBox", `${D.view.x} ${D.view.y} ${D.view.w} ${D.view.h}`);
   });
   d.addEventListener("pointerup", () => {
     const g = D.dragging; D.dragging = null;
-    if (g && !g.moved) { const was = D.sel; D.sel = g.node && g.node !== D.sel ? g.node : g.node ? D.sel : null; if (g.node) D.side = "info"; if (D.sel !== was) log("dag-select", { board: D.board, id: D.sel, from: was }); drawAll(); }
+    if (g?.move && g.moved) {
+      const { n, x0, y0 } = g.move;
+      if (n.x === x0 && n.y === y0) return;
+      D.sel = n.id; D.side = "info";
+      return draftEdit([{ op: "upsertNode", layer: D.board, key: keyOf(D.board, n.id), fields: { x: n.x, y: n.y } }], { op: "move", key: keyOf(D.board, n.id) });
+    }
+    if (g && !g.moved) {
+      const was = D.sel; D.sel = g.node && g.node !== D.sel ? g.node : g.node ? D.sel : null;
+      if (g.node) D.side = "info";
+      if (D.sel !== was) { Object.assign(D, { edit: null, remove: null, editErr: "", cEdit: null, cErr: "" }); log("dag-select", { board: D.mode === "plan" ? "plan" : D.board, id: D.sel, from: was }); }
+      drawAll();
+    }
   });
   d.addEventListener("close", () => clearInterval(D.poll));
 }

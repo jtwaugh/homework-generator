@@ -154,6 +154,21 @@ const MIGRATIONS = [
 
   CREATE TABLE setting (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `,
+  // 2: teacher comments on nodes (any layer, not versioned: they follow the key) and the curriculum edit log
+  `
+  CREATE TABLE node_comment (
+    id INTEGER PRIMARY KEY, curriculum_id TEXT NOT NULL REFERENCES curriculum(id), node_key TEXT NOT NULL,
+    text TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT, deleted_at TEXT
+  );
+  CREATE INDEX comment_by_key ON node_comment(curriculum_id, node_key);
+  CREATE TABLE curriculum_edit (
+    id INTEGER PRIMARY KEY, curriculum_id TEXT NOT NULL REFERENCES curriculum(id),
+    version_seq INTEGER,                                -- seq, not id: a discarded draft's edits stay readable
+    at TEXT NOT NULL, layer TEXT, node_key TEXT, op TEXT NOT NULL, summary TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'app', detail_json TEXT NOT NULL DEFAULT '{}'
+  );
+  CREATE INDEX edit_by_curriculum ON curriculum_edit(curriculum_id, at);
+  `,
 ];
 
 const open = new Map();
