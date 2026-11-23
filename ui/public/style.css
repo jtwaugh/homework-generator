@@ -114,15 +114,26 @@ button.link:hover { color: var(--ink); }
 /* full unit timeline */
 .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; }
 .chip { position: relative; display: inline-grid; place-items: center; min-width: 40px; height: 26px; padding: 0 7px; border-radius: 6px; font: 600 11.5px var(--mono); border: 1.5px solid transparent; }
-.chip select { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+button.chip { cursor: pointer; font: 600 11.5px var(--mono); }
+button.chip:hover { outline: 2px solid var(--accent-soft); outline-offset: 1px; }
+.chip.sel { outline: 2px solid var(--ink); outline-offset: 2px; }
 .chip.s-TAUGHT { background: var(--accent); color: #fff; }
-.chip.s-TAUGHT.partial { background: linear-gradient(90deg, var(--accent) 55%, #b9d3c9 55%); }
+.chip.s-TAUGHT.partial { background: #b9d3c9; color: var(--accent); box-shadow: inset 0 -5px 0 var(--accent); }
 .chip.s-CURRENT { background: #fff; color: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .chip.s-NEXT { background: #fff; color: var(--ink); border: 1.5px dashed #9b998f; }
 .chip.s-FUTURE { background: #efeee9; color: #9b998f; }
 .chip.warn::after { content: ""; position: absolute; top: -3px; right: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--bad); border: 1.5px solid #fff; }
 .chip.mini { min-width: 14px; width: 14px; height: 14px; padding: 0; vertical-align: -2px; margin: 0 3px 0 10px; box-shadow: none; }
 .legend { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.u-tag { margin-left: 6px; padding: 1px 7px; border-radius: 10px; background: #efeee9; color: var(--muted); font-size: 10.5px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.u-why { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); max-width: 62ch; }
+.u-detail { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; display: grid; gap: 4px; }
+.u-detail-head { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+.u-detail-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid #c9c7bf; border-radius: 7px; overflow: hidden; }
+.seg button { border: none; border-radius: 0; padding: 4px 11px; font-size: 12.5px; background: #fff; }
+.seg button + button { border-left: 1px solid #c9c7bf; }
+.seg button.on { background: var(--accent); color: #fff; }
 
 /* context lines */
 .cur-line { display: flex; align-items: baseline; gap: 10px; margin: 6px 0; font-size: 14px; }

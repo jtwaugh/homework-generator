@@ -18,7 +18,7 @@ const statusOf = (map, id) => map[id]?.status || "FUTURE";
 const LABEL = { TAUGHT: "Taught", CURRENT: "Current", NEXT: "Next", FUTURE: "Future" };
 
 // ---- units widget: collapsed to the one weekly decision ("did we move on?") ----
-export const unitsUI = { expanded: false, choosing: false, undo: null };
+export const unitsUI = { expanded: false, choosing: false, undo: null, sel: null };
 
 export function unitsModel(mdText) {
   const { map, free } = parseUnitStatuses(mdText);
@@ -36,15 +36,17 @@ function unitsWidgetHtml(mdText) {
   const m = unitsModel(mdText);
   const cur = m.current;
   const pct = S.units.length ? Math.round((m.taught / S.units.length) * 100) : 0;
+  const who = S.student || "the student";
   const head = `
     <div class="u-now">
-      <div><div class="k">Teaching now</div>
+      <div><div class="k">Where ${esc(who)} is <span class="u-tag">heads-up, not a limit</span></div>
         <div class="u-title">${cur.length ? cur.map((u) => `<b>${u.id}</b> ${esc(u.name)}`).join(" · ") : '<span class="bad-text">No unit marked current</span>'}</div></div>
       <span class="spacer"></span>
       <div class="u-progress" title="${m.taught} of ${S.units.length} units taught"><div style="width:${pct}%"></div></div>
       <span class="muted small">${m.taught}/${S.units.length} taught</span>
       <button class="link" data-act="expand">${unitsUI.expanded ? "hide units" : "all units"}</button>
-    </div>`;
+    </div>
+    <p class="u-why">Claude uses this so problems don't lean on things ${esc(who)} hasn't seen, and to pick review. It doesn't limit this week: any unit you add to Topics is included, taught or not.</p>`;
   let decision;
   if (unitsUI.choosing) {
     const opts = [
@@ -62,14 +64,29 @@ function unitsWidgetHtml(mdText) {
       <button class="secondary" data-act="choose">${cur.length ? "We moved on →" : "Choose unit →"}</button></div>`;
   }
   const all = unitsUI.expanded ? `
-    <div class="chips">${S.units.map((u) => {
+    <div class="chips" role="list">${S.units.map((u) => {
       const s = m.st(u.id), note = m.map[u.id]?.note || "";
       const missing = ["TAUGHT", "CURRENT"].includes(s) ? u.needs.filter((n) => !["TAUGHT", "CURRENT"].includes(m.st(n))) : [];
-      const tip = `${u.id} ${u.name}: ${LABEL[s]}${note ? " " + note : ""}${u.needs.length ? `\nNeeds ${u.needs.join(", ")}` : ""}${missing.length ? `\n⚠ ${missing.join(", ")} not taught yet` : ""}`;
-      return `<span class="chip s-${s}${note ? " partial" : ""}${missing.length ? " warn" : ""}" title="${esc(tip)}">${u.id}<select data-unit="${u.id}" aria-label="${esc(u.id + " " + u.name)}">${STATUSES.map((x) => `<option value="${x}" ${x === s ? "selected" : ""}>${LABEL[x]}</option>`).join("")}</select></span>`;
+      return `<button class="chip s-${s}${note ? " partial" : ""}${missing.length ? " warn" : ""}${unitsUI.sel === u.id ? " sel" : ""}" data-act="pick" data-id="${u.id}" title="${esc(`${u.id} ${u.name}: ${LABEL[s]}${note ? " " + note : ""}`)}" aria-expanded="${unitsUI.sel === u.id}">${u.id}</button>`;
     }).join("")}</div>
-    <div class="legend"><span class="chip s-TAUGHT mini"></span>Taught <span class="chip s-TAUGHT partial mini"></span>Partly <span class="chip s-CURRENT mini"></span>Current <span class="chip s-NEXT mini"></span>Next <span class="chip s-FUTURE mini"></span>Future <span class="muted">· click a unit to change it, hover for details</span></div>` : "";
+    ${unitDetailHtml(m)}
+    <div class="legend"><span class="chip s-TAUGHT mini"></span>Taught <span class="chip s-TAUGHT partial mini"></span>Partly <span class="chip s-CURRENT mini"></span>Current <span class="chip s-NEXT mini"></span>Next <span class="chip s-FUTURE mini"></span>Future <span class="muted">· click a unit to see or change it ·</span> <button class="link" data-page="dag" data-dag="plan">Open in Progress Map →</button></div>` : "";
   return head + decision + all;
+}
+
+// The clicked chip's details: name, what it needs, its note, and its status as four plain buttons.
+function unitDetailHtml(m) {
+  const u = S.units.find((x) => x.id === unitsUI.sel); if (!u) return "";
+  const s = m.st(u.id), note = (m.map[u.id]?.note || "").replace(/^\(|\)$/g, "");
+  const missing = ["TAUGHT", "CURRENT"].includes(s) ? u.needs.filter((n) => !["TAUGHT", "CURRENT"].includes(m.st(n))) : [];
+  const inTopics = parseTopics(parseWeekInput(S.status)["Topics"] || "").some((c) => c.id === u.id);
+  return `<div class="u-detail">
+    <div class="u-detail-head"><b>${u.id}</b> ${esc(u.name)}<span class="spacer"></span><button class="link" data-act="pick" data-id="${u.id}" aria-label="Close">close</button></div>
+    <div class="muted small">${u.needs.length ? `Builds on ${u.needs.join(", ")}` : "No prerequisites"}${note ? ` · ${esc(note)}` : ""}</div>
+    ${missing.length ? `<div class="warn-text small">⚠ ${missing.join(", ")} not marked taught yet</div>` : ""}
+    <div class="u-detail-row"><div class="seg" role="group" aria-label="${esc(u.id)} status">${STATUSES.map((x) => `<button class="${x === s ? "on" : ""}" data-act="status" data-id="${u.id}" data-status="${x}" aria-pressed="${x === s}">${LABEL[x]}</button>`).join("")}</div>
+      <span class="spacer"></span>${inTopics ? '<span class="ok-text small">✓ in this week\'s topics</span>' : `<button class="secondary small" data-act="topic" data-id="${u.id}">+ Add to this week's topics</button>`}</div>
+  </div>`;
 }
 
 const quickBtn = (id) => `<button class="link quick" data-act="quick" data-id="${id}" title="Start ${id} and have Claude write the whole set in one pass">Make a set →</button>`;
@@ -101,12 +118,24 @@ const QUICK_PROMPT = "This is a quick set: the teacher picked the unit and wants
   "Do the research, then reply directly with the final: the complete .tex, the problem manifest and the status-update block. " +
   "Start the reply with a short **Judgment calls** list of every default or assumption you made, so the teacher can correct any of them in one message.";
 
-function applyUnitAction(act, id) {
+function addTopicUnit(id) {
+  const u = S.units.find((x) => x.id === id); if (!u) return;
+  setField("Topics", serializeTopics([...parseTopics(parseWeekInput(S.status)["Topics"] || ""), { text: u.name, id: u.id }]));
+}
+
+function applyUnitAction(act, id, el) {
   if (act === "quick") return quickSet(id);
+  if (act === "topic") return addTopicUnit(id);
+  if (act === "status") {
+    const { map, free } = parseUnitStatuses(S.status);
+    map[id] = { status: el.dataset.status, note: map[id]?.note || "" };
+    return updateStatus(writeUnitStatuses(S.status, map, free));
+  }
   const m = unitsModel(S.status);
   if (act === "choose") unitsUI.choosing = true;
   else if (act === "cancel") unitsUI.choosing = false;
-  else if (act === "expand") unitsUI.expanded = !unitsUI.expanded;
+  else if (act === "expand") { unitsUI.expanded = !unitsUI.expanded; unitsUI.sel = null; }
+  else if (act === "pick") unitsUI.sel = unitsUI.sel === id ? null : id;
   else if (act === "undo") { const prev = unitsUI.undo.prev; unitsUI.undo = null; return updateStatus(prev); }
   else if (act === "start" || act === "finish") {
     const prev = S.status, map = { ...m.map };
@@ -210,18 +239,8 @@ function renderOpts(vals) {
   }
 }
 $("#ctx").addEventListener("click", (e) => { if (e.target.closest("[data-act=more]")) { ctxUI.more = !ctxUI.more; render(); } });
-$("#topic-suggest").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-unit]"); if (!b) return;
-  const u = S.units.find((x) => x.id === b.dataset.unit); if (!u) return;
-  setField("Topics", serializeTopics([...parseTopics(parseWeekInput(S.status)["Topics"] || ""), { text: u.name, id: u.id }]));
-});
-$("#units").addEventListener("click", (e) => { const b = e.target.closest("[data-act]"); if (b) applyUnitAction(b.dataset.act, b.dataset.id); });
-$("#units").addEventListener("change", (e) => {
-  const id = e.target.dataset.unit; if (!id) return;
-  const { map, free } = parseUnitStatuses(S.status);
-  map[id] = { status: e.target.value, note: map[id]?.note || "" };
-  updateStatus(writeUnitStatuses(S.status, map, free));
-});
+$("#topic-suggest").addEventListener("click", (e) => { const b = e.target.closest("[data-unit]"); if (b) addTopicUnit(b.dataset.unit); });
+$("#units").addEventListener("click", (e) => { const b = e.target.closest("[data-act]"); if (b) applyUnitAction(b.dataset.act, b.dataset.id, b); });
 $("#status-raw").addEventListener("input", (e) => updateStatus(e.target.value));
 $("#view-md").onclick = () => { const r = $("#raw-wrap"); r.hidden = !r.hidden; $("#view-md").textContent = r.hidden ? "Edit status (Markdown)" : "Close editor"; };
 $("#more-opts").addEventListener("toggle", (e) => (e.target.dataset.touched = "1"));
@@ -265,9 +284,9 @@ function renderSetup() {
   $("#date-note").textContent = vals["Date (for title)"] && vals["Date (for title)"] === nextSetDate(S.texFiles || [], "") ? "a week after your last set" : "";
   const chosen = new Set(parseTopics(vals["Topics"] || "").map((c) => c.id).filter(Boolean));
   const sugg = (S.units?.length ? unitsModel(S.status).current : []).filter((u) => !chosen.has(u.id));
-  $("#topic-suggest").innerHTML = sugg.length ? `<span class="muted small">Teaching now:</span>${sugg.map((u) => `<button class="sugg" data-unit="${u.id}">+ <b>${u.id}</b> ${esc(u.name)}</button>`).join("")}` : "";
+  $("#topic-suggest").innerHTML = sugg.length ? `<span class="muted small">${esc(S.student || "The student")} is on:</span>${sugg.map((u) => `<button class="sugg" data-unit="${u.id}">+ <b>${u.id}</b> ${esc(u.name)}</button>`).join("")}` : "";
   if (["f-ideas", "f-emph", "f-fact"].some((id) => vals[FIELD_IDS[id]]) && !$("#more-opts").dataset.touched) $("#more-opts").open = true;
-  if (!($("#units").contains(document.activeElement) && document.activeElement.tagName === "SELECT")) $("#units").innerHTML = unitsWidgetHtml(S.status);
+  $("#units").innerHTML = unitsWidgetHtml(S.status);
   $("#ctx").innerHTML = contextHtml(S.status);
   if (document.activeElement !== $("#status-raw")) $("#status-raw").value = S.status;
   const checks = setupChecks();
