@@ -18,6 +18,10 @@
 /ui/data/*
 !/ui/data/wu_dag.json
 !/ui/data/wu_methods_dag.json
+# Published curriculum versions (the DAGs, for git history). The lesson plan inside them is yours: kept local.
+!/ui/data/curricula/
+/ui/data/curricula/**/lesson_plan.json
+/ui/data/curricula/**/curriculum_ladder.md
 .DS_Store
 node_modules/
 /.vercel

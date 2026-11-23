@@ -54,7 +54,8 @@ export const blobConfigured = (env = process.env) => !!(env.BLOB_READ_WRITE_TOKE
 
 // roots: { prefix: localDir }, e.g. { root: "/tmp/hw/root", data: "/tmp/hw/data" }.
 // skip(relPath) -> true for files that stay local (caches, logs, builds).
-export function createMirror({ roots, store = null, skip = () => false, base = "hw" } = {}) {
+// beforeReplace(file): called before a pull overwrites or deletes a local file (the server closes hw.db first).
+export function createMirror({ roots, store = null, skip = () => false, base = "hw", beforeReplace = () => {} } = {}) {
   if (!store) return { enabled: false, pull: async () => {}, push: async () => {}, putNow: async () => {}, fetchNow: async () => null, delNow: async () => {} };
   // pathname -> { etag, size, mtimeMs } as of the last sync, for files this instance holds.
   const known = new Map();
@@ -88,10 +89,11 @@ export function createMirror({ roots, store = null, skip = () => false, base = "
       const got = await store.get(b.pathname);
       if (!got) continue;
       await fsp.mkdir(path.dirname(file), { recursive: true });
+      beforeReplace(file);
       await fsp.writeFile(file, got.buf);
       known.set(b.pathname, { etag: got.etag || b.etag, ...stamp(file) });
     }
-    for (const [p] of known) if (!seen.has(p)) { const f = toFile(p); if (f) await fsp.rm(f, { force: true }); known.delete(p); }
+    for (const [p] of known) if (!seen.has(p)) { const f = toFile(p); if (f) { beforeReplace(f); await fsp.rm(f, { force: true }); } known.delete(p); }
   }
 
   function walk(dir, out = []) {

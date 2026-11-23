@@ -3,11 +3,16 @@
 //   node ui/scripts/import-dag.mjs methods <elements-dir>   -> data/wu_methods_dag.json  (methods DAG)
 // The methods board links each method to the content-DAG node it rests on ("§3 · rests on Linear equations"),
 // so import the content board first.
+// The JSON is the raw snapshot; the import also goes into the curriculum's draft in hw.db (matched to existing
+// node keys by whiteboard id, then title). Review the draft on the Courses page (removed nodes need
+// merge/split/retire) and publish it there. --no-db writes the JSON only.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ctx } from "../lib/store.mjs";
+import { importBoard, unresolvedRemovals, getVersion } from "../lib/curriculum.mjs";
 
-const [which, dir] = process.argv.slice(2);
+const [which, dir] = process.argv.slice(2).filter((a) => !a.startsWith("--"));
 const BOARDS = {
   content: { out: "wu_dag.json", source: "https://claude.ai/artifact/Wc277jvQy91AJxjW5mKriz",
     kind: { white: "assumed", blue: "definition", green: "theorem", yellow: "method" }, fallback: "theorem" },
@@ -16,7 +21,7 @@ const BOARDS = {
 };
 const B = BOARDS[which];
 if (!B || !dir) { console.error("usage: import-dag.mjs content|methods <elements-dir>"); process.exit(1); }
-const DATA = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data");
+const DATA = process.env.HW_DATA ? path.resolve(process.env.HW_DATA) : path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data");
 
 const els = fs.readdirSync(dir).filter((f) => /^e\d+\.json$/.test(f)).map((f) => ({ id: f.slice(0, -5), ...JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")) }));
 const nodes = els.filter((e) => e.type === "shape").map((e) => {
@@ -46,3 +51,13 @@ const texts = els.filter((e) => e.type === "text").map((e) => ({ text: e.text, s
 const out = path.join(DATA, B.out);
 fs.writeFileSync(out, JSON.stringify({ source: B.source, board: which, importedAt: new Date().toISOString().slice(0, 10), nodes, edges, texts }, null, 1));
 console.log(`wrote ${out}: ${nodes.length} nodes, ${edges.length} edges (${edges.filter((e) => e.prove).length} prove)`);
+
+if (!process.argv.includes("--no-db")) {
+  const c = ctx({ dir: DATA });
+  const r = importBoard(c.db, c.curriculumId, which, JSON.parse(fs.readFileSync(out, "utf8")));
+  console.log(`draft v${getVersion(c.db, r.draft).seq} of ${c.curriculumId}: ${r.matched} nodes matched, ${r.added.length} new, ${r.unmatchedOld.length} gone`);
+  for (const a of r.added) console.log(`  + ${a.key} ${a.title}`);
+  for (const g of r.unmatchedOld) console.log(`  - ${g.key} ${g.title}`);
+  const open = unresolvedRemovals(c.db, r.draft);
+  if (open.length) console.log(`${open.length} removed node(s) need merge/split/retire before the draft can be published (Courses page).`);
+}

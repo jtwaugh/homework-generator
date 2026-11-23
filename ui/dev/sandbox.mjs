@@ -6,11 +6,12 @@
 //   HW_ROOT=<dir>/root HW_DATA=<dir>/data PORT=4757 node ui/server.mjs
 //
 // Copies: the project's top-level .md/.tex files, and from ui/data the corpus, the two DAGs, weeks,
-// notes and dag_state.json. The Python venv is symlinked (read-only use). Delete the dir when done.
+// notes, hw.db (or the v0 files it migrates from) and the curriculum exports. The Python venv is symlinked (read-only use). Delete the dir when done.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 
 const UI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ROOT = path.join(UI, "..");
@@ -20,9 +21,15 @@ export function makeSandbox(dir = fs.mkdtempSync(path.join(os.tmpdir(), "hw-sand
   const root = path.join(dir, "root"), data = path.join(dir, "data");
   fs.mkdirSync(root, { recursive: true }); fs.mkdirSync(data, { recursive: true });
   for (const f of fs.readdirSync(ROOT)) if (/\.(md|tex)$/i.test(f)) fs.copyFileSync(path.join(ROOT, f), path.join(root, f));
-  for (const f of ["corpus", "weeks", "notes", "wu_dag.json", "wu_methods_dag.json", "dag_state.json"]) {
+  for (const f of ["corpus", "weeks", "notes", "wu_dag.json", "wu_methods_dag.json", "dag_state.json", "backups", "curricula", "legacy-v0"]) {
     const src = path.join(DATA, f);
     if (fs.existsSync(src)) fs.cpSync(src, path.join(data, f), { recursive: true });
+  }
+  // hw.db may be open (WAL) in a running server: VACUUM INTO takes a consistent copy.
+  if (fs.existsSync(path.join(DATA, "hw.db"))) {
+    const db = new DatabaseSync(path.join(DATA, "hw.db"), { readOnly: true });
+    db.exec(`VACUUM INTO '${path.join(data, "hw.db").replace(/'/g, "''")}'`);
+    db.close();
   }
   if (fs.existsSync(path.join(DATA, "venv"))) fs.symlinkSync(path.join(DATA, "venv"), path.join(data, "venv"));
   return { dir, root, data };

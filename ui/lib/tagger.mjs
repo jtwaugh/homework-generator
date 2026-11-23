@@ -4,18 +4,28 @@
 import fs from "node:fs";
 import path from "node:path";
 import { runAgent, makeClient } from "./agent.mjs";
+import { ctx as storeCtx } from "./store.mjs";
+import { ladderFor, graphFor } from "./curriculum.mjs";
 
 export const TAG_MODEL = process.env.HW_TAG_MODEL || "claude-haiku-5-5";
 const BATCH = 40;
 
-// Untagged = no methods node and no content node. Rejected problems are skipped.
-export const needsTags = (p) => p.status !== "rejected" && !(p.wuNodes || []).length;
+// Untagged = no methods node and no content node, or queued for retagging after a curriculum change
+// (its tags were split or retired). Rejected problems are skipped.
+export const needsTags = (p) => p.status !== "rejected" && (!(p.wuNodes || []).length || !!p.needsRetag);
 
-function context({ root, data }) {
-  const read = (f) => (fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "");
-  const ladder = read(path.join(root, "curriculum_ladder.md")).split("\n").filter((l) => /^- (U\d\d|M\d|F\d) /.test(l)).map((l) => l.split(".")[0].slice(2)).join("\n");
-  const dag = (f, pre) => { const t = read(path.join(data, f)); return t ? JSON.parse(t).nodes.filter((n) => n.kind !== "word-problem").map((n) => `${pre}${n.id} ${n.title}`).join("\n") : ""; };
-  return { ladder, content: dag("wu_dag.json", ""), methods: dag("wu_methods_dag.json", "") };
+// The ladder units and both DAGs the tags are checked against: the active enrollment's curriculum version
+// (hw.db), or the files under root/data when those are given (scripts run against a bare checkout).
+function context({ root, data, c } = {}) {
+  const units = (md) => md.split("\n").filter((l) => /^- (U\d\d|M\d|F\d) /.test(l)).map((l) => l.split(".")[0].slice(2)).join("\n");
+  const list = (g, pre) => (g?.nodes || []).filter((n) => n.kind !== "word-problem").map((n) => `${pre}${n.id} ${n.title}`).join("\n");
+  if (root && data) {
+    const read = (f) => (fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "");
+    const dag = (f) => { const t = read(path.join(data, f)); return t ? JSON.parse(t) : null; };
+    return { ladder: units(read(path.join(root, "curriculum_ladder.md"))), content: list(dag("wu_dag.json"), ""), methods: list(dag("wu_methods_dag.json"), "") };
+  }
+  c ||= storeCtx();
+  return { ladder: units(ladderFor(c.db, c.versionId)), content: list(graphFor(c.db, c.versionId, "content"), ""), methods: list(graphFor(c.db, c.versionId, "methods"), "") };
 }
 
 export function tagPrompt(probs, ctx) {
@@ -53,8 +63,8 @@ async function runClaude(prompt, client) {
 }
 
 // Tags `probs` in place (wuNodes, tags; units only when the problem has none). Returns {tagged, cost}.
-export async function tagProblems(probs, { root, data, onBatch, client } = {}) {
-  const ctx = context({ root, data });
+export async function tagProblems(probs, { root, data, c, onBatch, client } = {}) {
+  const ctx = context({ root, data, c });
   let tagged = 0, cost = 0;
   for (let s = 0; s < probs.length; s += BATCH) {
     const batch = probs.slice(s, s + BATCH);
@@ -62,8 +72,10 @@ export async function tagProblems(probs, { root, data, onBatch, client } = {}) {
     cost += r.cost;
     for (const t of parseTags(r.text, ctx)) {
       const p = batch[t.i]; if (!p) continue;
-      if (!(p.units || []).length && t.units.length) p.units = t.units;
+      // A retag replaces the tags that no longer resolve; otherwise tags only accumulate.
+      if ((p.needsRetag || !(p.units || []).length) && t.units.length) p.units = [...new Set([...(p.needsRetag ? p.units || [] : []), ...t.units])];
       p.wuNodes = [...new Set([...(p.wuNodes || []), ...t.wuNodes])];
+      delete p.needsRetag;
       p.tags = [...new Set([...(p.tags || []), ...t.tags])];
       tagged++;
     }

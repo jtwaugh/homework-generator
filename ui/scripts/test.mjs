@@ -14,6 +14,11 @@ import { parseTopics, serializeTopics, historyTopics } from "../public/topics.js
 import { computeStates, statusText, lessonPlan } from "../public/dag.js";
 import { S, lintTex, nextSetDate } from "../public/lib.js";
 import { parseTags } from "../lib/tagger.mjs";
+import { openDb } from "../lib/db.mjs";
+import * as Cur from "../lib/curriculum.mjs";
+import * as Prog from "../lib/progress.mjs";
+import { loadCorpusDb, recordAssignment } from "../lib/store.mjs";
+import { parseLadder, renderLadder } from "../lib/lessonplan.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA = path.join(HERE, "..", "data");
@@ -194,6 +199,139 @@ test("login: scrypt hash verifies only the right password; rate limit blocks and
   rl.fail("b", 3000); rl.fail("c", 3000); rl.fail("d", 3000); rl.fail("e", 3000); rl.fail("f", 3000);
   assert.ok(rl.blocked("g", 3001));
   assert.deepEqual(parseCookies("a=1; hw_session=x%2By"), { a: "1", hw_session: "x+y" });
+});
+
+// ---------- hw.db: versioned curricula, lineage, progress (in-memory) ----------
+const LADDER_MD = (() => { const f = path.join(HERE, "..", "..", "curriculum_ladder.md"); return fs.existsSync(f) ? fs.readFileSync(f, "utf8") : null; })();
+const TINY = {
+  content: { nodes: ["A", "B", "C", "F"].map((t, i) => ({ id: `e${i + 1}`, title: `Node ${t}`, detail: "", kind: "theorem", x: i * 10, y: 0, w: 230, h: 88 })), edges: [{ from: "e1", to: "e2", prove: false, bends: null }] },
+  methods: { nodes: [{ id: "e9", title: "Method", detail: "", kind: "method", x: 0, y: 0, w: 230, h: 88, sections: [3], restsOn: ["e1"] }], edges: [] },
+};
+const TINY_PLAN = "# Ladder\n\n## Ordered\n- U01 First unit. needs: none\n- U02 Second unit. needs: U01\n";
+function freshCurriculum() {
+  const db = openDb(null, { memory: true });
+  Cur.ensureCurriculum(db, "t", "Test");
+  const v1 = Cur.createDraft(db, "t", { origin: "migration" });
+  Cur.writeGraph(db, v1, "content", TINY.content); Cur.writeGraph(db, v1, "methods", TINY.methods);
+  Cur.writePlan(db, v1, parseLadder(TINY_PLAN), { covers: { U01: ["e1"] } });
+  Cur.publish(db, v1);
+  const s1 = Prog.addStudent(db, "One"), s2 = Prog.addStudent(db, "Two");
+  return { db, v1, e1: Prog.enroll(db, s1, "t", v1), e2: Prog.enroll(db, s2, "t", v1) };
+}
+const tagProblem = (db, id, keys, v) => {
+  db.prepare("INSERT OR IGNORE INTO problem(id, tex, answer, context, source_json, status, cas_verified, aliases_json, added_at, ord) VALUES (?, ?, '', '', '{}', 'candidate', 0, '[]', ?, 0)").run(id, `tex ${id}`, new Date().toISOString());
+  keys.forEach((k, i) => db.prepare("INSERT INTO problem_tag(problem_id, node_key, version_id, pos, source, at) VALUES (?,?,?,?, 'teacher', ?)").run(id, k, v, i, new Date().toISOString()));
+};
+
+test("hw.db: the real DAGs and lesson plan round-trip through a version", () => {
+  const db = openDb(null, { memory: true });
+  Cur.ensureCurriculum(db, "w", "W");
+  const v = Cur.createDraft(db, "w", { origin: "migration" });
+  const content = JSON.parse(fs.readFileSync(path.join(DATA, "wu_dag.json"), "utf8")), methods = JSON.parse(fs.readFileSync(path.join(DATA, "wu_methods_dag.json"), "utf8"));
+  Cur.writeGraph(db, v, "content", content); Cur.writeGraph(db, v, "methods", methods);
+  const g = Cur.graphFor(db, v, "content");
+  assert.deepEqual(g.nodes, content.nodes); assert.deepEqual(g.edges, content.edges);
+  assert.deepEqual(Cur.graphFor(db, v, "methods").nodes, methods.nodes);
+  if (LADDER_MD) { Cur.writePlan(db, v, parseLadder(LADDER_MD)); assert.equal(Cur.ladderFor(db, v), LADDER_MD); }
+  assert.equal(renderLadder(parseLadder(TINY_PLAN)), TINY_PLAN);
+});
+test("hw.db: lineage resolves merge, split and retire, composed across versions", () => {
+  const { db, v1 } = freshCurriculum();
+  const v2 = Cur.createDraft(db, "t");
+  const { keys: [d, e] } = Cur.editDraft(db, v2, [{ op: "upsertNode", layer: "content", fields: { title: "D" } }, { op: "upsertNode", layer: "content", fields: { title: "E" } }]);
+  assert.throws(() => Cur.editDraft(db, v2, [{ op: "removeNode", key: "e1", relation: "merged", into: ["nope"] }]));
+  Cur.editDraft(db, v2, [{ op: "removeNode", key: "e1", relation: "merged", into: ["e2"] }, { op: "removeNode", key: "e3", relation: "split", into: [d, e] }]);
+  Cur.editDraft(db, v2, [{ op: "removeNode", key: "e4", relation: "retired" }]);
+  Cur.publish(db, v2);
+  const v3 = Cur.createDraft(db, "t");
+  Cur.editDraft(db, v3, [{ op: "removeNode", key: "e2", relation: "merged", into: [d] }]);
+  Cur.publish(db, v3);
+  const idx = Cur.lineageIndex(db, "t");
+  assert.deepEqual(idx.resolve("e1", v1, v2), { status: "migrated", keys: ["e2"] });
+  assert.deepEqual(idx.resolve("e1", v1, v3), { status: "migrated", keys: [d] }); // merge then merge
+  assert.equal(idx.resolve("e3", v1, v3).status, "ambiguous");
+  assert.equal(idx.resolve("e4", v1, v3).status, "retired");
+  assert.equal(idx.resolve("m:e9", v1, v3).status, "current");
+  assert.throws(() => Cur.editDraft(db, v1, [{ op: "setNote", note: "x" }]), /published/);
+});
+test("hw.db: publish refuses unexplained removals, then migrates tags and queues the ambiguous ones", () => {
+  const { db, v1 } = freshCurriculum();
+  tagProblem(db, "p1", ["e1", "U01"], v1); tagProblem(db, "p2", ["e3"], v1); tagProblem(db, "p3", ["e2"], v1);
+  const v2 = Cur.createDraft(db, "t");
+  const { keys: [d, e] } = Cur.editDraft(db, v2, [{ op: "upsertNode", layer: "content", fields: { title: "D" } }, { op: "upsertNode", layer: "content", fields: { title: "E" } }]);
+  db.prepare("DELETE FROM node_revision WHERE version_id = ? AND node_key IN ('e1','e3')").run(v2); // as an import would
+  assert.throws(() => Cur.publish(db, v2), (err) => assert.deepEqual(err.missing.sort(), ["e1", "e3"]) || true);
+  Cur.editDraft(db, v2, [{ op: "lineage", key: "e1", relation: "merged", into: ["e2"] }, { op: "lineage", key: "e3", relation: "split", into: [d, e] }]);
+  const r = Cur.publish(db, v2);
+  assert.equal(r.lineageTags, 1); assert.equal(r.queued, 1);
+  assert.deepEqual(db.prepare("SELECT problem_id, reason FROM retag_queue").all().map((x) => ({ ...x })), [{ problem_id: "p2", reason: "split" }]);
+  const c = { db, curriculumId: "t", versionId: v2, enrollmentId: 1 };
+  const byId = Object.fromEntries(loadCorpusDb(c).map((p) => [p.id, p]));
+  assert.deepEqual(byId.p1.wuNodes, ["e2"]); assert.deepEqual(byId.p1.units, ["U01"]); assert.equal(byId.p1.taggedIn, 1);
+  assert.ok(byId.p2.needsRetag); assert.deepEqual(byId.p2.wuNodes, []);
+  assert.equal(byId.p3.taggedIn, 1);
+});
+test("hw.db: a unit split sends units:[U02] tags to the retag queue; a unit merge moves them", () => {
+  const { db, v1 } = freshCurriculum();
+  tagProblem(db, "p1", ["U02"], v1); tagProblem(db, "p2", ["U01"], v1);
+  const v2 = Cur.createDraft(db, "t");
+  const { keys: [a, b] } = Cur.editDraft(db, v2, [{ op: "upsertNode", layer: "unit", fields: { name: "Second, part a", needs: ["U01"] } }, { op: "upsertNode", layer: "unit", fields: { name: "Second, part b", needs: ["U01"] } }]);
+  assert.match(a, /^u:/);
+  Cur.editDraft(db, v2, [{ op: "removeNode", key: "U02", relation: "split", into: [a, b] }]);
+  assert.equal(Cur.publish(db, v2).queued, 1);
+  const v3 = Cur.createDraft(db, "t");
+  Cur.editDraft(db, v3, [{ op: "removeNode", key: "U01", relation: "merged", into: [a] }]);
+  assert.deepEqual(Cur.coversFor(db, v3)[a], ["e1"]); // covers follow the merge
+  assert.equal(Cur.publish(db, v3).lineageTags, 1);
+  const p2 = loadCorpusDb({ db, curriculumId: "t", versionId: v3, enrollmentId: 1 }).find((p) => p.id === "p2");
+  assert.deepEqual(p2.units, [a]);
+});
+test("hw.db: re-import matches by whiteboard id, then title; the rest are new or gone", () => {
+  const old = [{ key: "e1", external_ref: "e1", title: "Linear equations" }, { key: "c:abc", external_ref: "e7", title: "Old title" }, { key: "e3", external_ref: "e3", title: "Gone" }];
+  const { map, unmatchedOld } = Cur.matchImport(old, [{ id: "e1", title: "Renamed" }, { id: "e50", title: "Old  Title!" }, { id: "e51", title: "Brand new" }]);
+  assert.deepEqual(map, { e1: "e1", e50: "c:abc", e51: null });
+  assert.deepEqual(unmatchedOld, ["e3"]);
+});
+test("hw.db: upgrading an enrollment carries progress (merge = least advanced, split = partial + flagged)", () => {
+  const { db, v1, e1 } = freshCurriculum();
+  Prog.saveGuessRun(db, e1, { id: "r1", at: "2026-01-01T00:00:00.000Z", ok: true, nodes: { e1: { state: "done" }, e2: { state: "partial" }, e3: { state: "done" } } });
+  Prog.setOverride(db, e1, "e4", "done", "taught");
+  const v2 = Cur.createDraft(db, "t");
+  const { keys: [d, e] } = Cur.editDraft(db, v2, [{ op: "upsertNode", layer: "content", fields: { title: "D" } }, { op: "upsertNode", layer: "content", fields: { title: "E" } }]);
+  Cur.editDraft(db, v2, [{ op: "removeNode", key: "e1", relation: "merged", into: ["e2"] }, { op: "removeNode", key: "e3", relation: "split", into: [d, e] }, { op: "removeNode", key: "e4", relation: "retired" }]);
+  Cur.publish(db, v2);
+  assert.throws(() => Prog.upgradeEnrollment(db, e1, 999));
+  assert.equal(Prog.upgradeEnrollment(db, e1, v2).written, 3);
+  const st = Prog.dagState(db, e1);
+  assert.equal(st.guess.nodes.e2.state, "partial");
+  assert.equal(st.guess.nodes[d].state, "partial"); assert.ok(st.guess.nodes[d].flagged);
+  assert.ok(!("e4" in st.overrides) && !("e4" in st.guess.nodes));
+  Prog.setOverride(db, e1, "e2", "done"); assert.equal(Prog.dagState(db, e1).overrides.e2.state, "done");
+  Prog.setOverride(db, e1, "e2", null); assert.ok(!("e2" in Prog.dagState(db, e1).overrides));
+  assert.equal(Prog.dagState(db, e1, v1).guess.nodes.e1.state, "done"); // the old version still reads as it was
+});
+test("hw.db: a split into a node that already exists leaves that node's own state alone", () => {
+  const { db, e1 } = freshCurriculum();
+  Prog.saveGuessRun(db, e1, { id: "r1", at: "2026-01-01T00:00:00.000Z", ok: true, nodes: { e2: { state: "done" }, e3: { state: "not-yet" } } });
+  const v2 = Cur.createDraft(db, "t");
+  const { keys: [d] } = Cur.editDraft(db, v2, [{ op: "upsertNode", layer: "content", fields: { title: "D" } }]);
+  Cur.editDraft(db, v2, [{ op: "removeNode", key: "e3", relation: "split", into: ["e2", d] }]);
+  Cur.publish(db, v2);
+  assert.equal(Prog.upgradeEnrollment(db, e1, v2).written, 1);
+  const n = Prog.dagState(db, e1).guess.nodes;
+  assert.equal(n.e2.state, "done"); assert.ok(!n.e2.flagged);
+  assert.equal(n[d].state, "partial"); assert.ok(n[d].flagged);
+});
+test("hw.db: usedOn and recency are per student", () => {
+  const { db, v1, e1, e2 } = freshCurriculum();
+  tagProblem(db, "p1", ["U01"], v1);
+  const c1 = { db, curriculumId: "t", versionId: v1, enrollmentId: e1 }, c2 = { ...c1, enrollmentId: e2 };
+  const today = new Date().toISOString().slice(0, 10);
+  recordAssignment(c1, { id: "w1", title: "Week 1", date: today, items: [{ problemId: "p1" }] });
+  assert.deepEqual(loadCorpusDb(c1)[0].usedOn, [today]);
+  assert.deepEqual(loadCorpusDb(c2)[0].usedOn, []);
+  const rank = (c) => searchCorpus(loadCorpusDb(c), { units: ["U01"], limit: 5 })[0];
+  assert.ok(rank(c1).score < rank(c2).score, "recently used for student 1 ranks lower for student 1 only");
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

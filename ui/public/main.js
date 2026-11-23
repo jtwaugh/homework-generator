@@ -9,6 +9,7 @@ import { openHistory, historyState } from "./history.js";
 import { inferenceState } from "./inference.js";
 import { openDag, initDag, dagState } from "./dag.js";
 import { openCorpus, corpusState } from "./corpus.js";
+import "./people.js";
 import { initUiLog, flushPending } from "./uilog.js";
 import { initPages, onShow, onReselect, pages } from "./pages.js";
 

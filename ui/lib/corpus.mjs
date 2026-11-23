@@ -1,4 +1,4 @@
-// Problem corpus: ui/data/corpus/problems.jsonl, one problem per line.
+// Problem corpus (stored in ui/data/hw.db; v0 kept it in ui/data/corpus/problems.jsonl, one problem per line).
 // Shared by the server, the MCP tool server, the seed script and the tests. No dependencies.
 //
 //   {id, tex, answer, units:[U14], wuNodes:[e57, m:e5], tags:[], context,
@@ -8,17 +8,23 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { loadCorpusDb, saveCorpusDb } from "./store.mjs";
 
 export const DATA = process.env.HW_DATA || path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data");
 export const CORPUS_FILE = () => path.join(DATA, "corpus", "problems.jsonl");
 
 // ---------- storage ----------
+// The corpus lives in hw.db (lib/store.mjs); items keep the jsonl shape above, with units/wuNodes resolved to
+// the active enrollment's curriculum version and usedOn from that student's assignments. Passing a file
+// reads or writes a jsonl file instead (v0 data, exports, tests).
 
-export function loadCorpus(file = CORPUS_FILE()) {
+export function loadCorpus(file = null) {
+  if (!file) return loadCorpusDb();
   if (!fs.existsSync(file)) return [];
   return fs.readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
 }
-export function saveCorpus(items, file = CORPUS_FILE()) {
+export function saveCorpus(items, file = null, opts = {}) {
+  if (!file) return saveCorpusDb(items, undefined, opts);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + ".tmp";
   fs.writeFileSync(tmp, items.map((p) => JSON.stringify(p)).join("\n") + (items.length ? "\n" : ""));

@@ -98,9 +98,11 @@ try {
 
   console.log("Sidebar tabs");
   await step("Students tab", "ui_click", sel(".nav-item[data-page=students]"), /ui: page from=\w+ to=students/);
-  await step("Students stub text", "ui_eval", { js: "document.querySelector('#p-students').hidden ? 'hidden' : document.querySelector('#p-students').textContent" }, /Stub — not built yet/);
+  await step("Students list", "ui_wait", { until: "!!document.querySelector('#p-students .ptable tbody tr')", timeoutMs: 10000 }, /true after/);
+  await step("Students working-on", "ui_eval", { js: "document.querySelector('#p-students').textContent" }, /Working on/);
   await step("Courses tab", "ui_click", sel(".nav-item[data-page=courses]"), /ui: page from=students to=courses/);
-  await step("Courses stub text", "ui_eval", { js: "document.querySelector('#p-courses').hidden ? 'hidden' : document.querySelector('#p-courses').textContent" }, /Stub — not built yet/);
+  await step("Courses versions", "ui_wait", { until: "!!document.querySelector('#p-courses .ptable tbody tr')", timeoutMs: 10000 }, /true after/);
+  await step("Courses v1", "ui_eval", { js: "document.querySelector('#p-courses').textContent" }, /v1[\s\S]*published[\s\S]*migration/);
   await step("Progress Map tab", "ui_click", sel(".nav-item[data-page=dag]"), /ui: page from=\w+ to=dag/, /GET \/api\/dag status=200/);
   await step("Methods sub-item", "ui_click", sel("[data-dag=methods]"), /GET \/api\/dag status=200/);
   await step("shows the methods board", "ui_eval", { js: "__hw.summary().dag.board" }, /methods/);

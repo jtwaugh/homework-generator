@@ -12,7 +12,11 @@ import { spawn, spawnSync } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { tagProblems, needsTags, TAG_MODEL } from "./lib/tagger.mjs";
-import { loadCorpus, saveCorpus, searchCorpus, formatHits, addProblems, patchProblem, dateFromName, tokenize, attachTex } from "./lib/corpus.mjs";
+import { loadCorpus, saveCorpus, searchCorpus, formatHits, addProblems, patchProblem, dateFromName, tokenize, attachTex, problemId, nearDuplicates } from "./lib/corpus.mjs";
+import { ctx, saveStatus, latestStatus, statusHistory, recordAssignment, setActiveEnrollment } from "./lib/store.mjs";
+import { closeDb, getSetting, setSetting } from "./lib/db.mjs";
+import * as Cur from "./lib/curriculum.mjs";
+import * as Prog from "./lib/progress.mjs";
 import { buildBrief, briefText, saveRulings, loadRulings } from "./lib/preflight.mjs";
 import { claudeAuth } from "./lib/auth.mjs";
 import { runAgent, makeClient, addUserTurn } from "./lib/agent.mjs";
@@ -27,11 +31,9 @@ const PUBLIC = path.join(UI_DIR, "public");
 const DATA = process.env.HW_DATA ? path.resolve(process.env.HW_DATA) : path.join(UI_DIR, "data");
 const WEEKS = path.join(DATA, "weeks");
 const BUILD = path.join(DATA, "build");
-const BACKUPS = path.join(DATA, "backups");
 const MCP_DIR = path.join(DATA, "mcp");
 const DEBUG = path.join(DATA, "debug");
 const NOTES = path.join(DATA, "notes");
-const DAG_STATE = path.join(DATA, "dag_state.json");
 const LOGS = path.join(DATA, "logs");
 const VENV_PY = path.join(DATA, "venv", "bin", "python");
 const PORT = Number(process.env.PORT || 4747);
@@ -100,15 +102,17 @@ function mergeUsage(a, b) {
 }
 
 const JOBS = path.join(DATA, "jobs");
-for (const d of [WEEKS, BUILD, BACKUPS, MCP_DIR, DEBUG, NOTES, LOGS, JOBS]) fs.mkdirSync(d, { recursive: true });
+for (const d of [WEEKS, BUILD, MCP_DIR, DEBUG, NOTES, LOGS, JOBS]) fs.mkdirSync(d, { recursive: true });
 
 const STATUS_FILE = path.join(ROOT, "weekly_status.md");
 const INSTRUCTIONS_FILE = path.join(ROOT, "project_instructions.md");
 const LADDER_FILE = path.join(ROOT, "curriculum_ladder.md");
-// The student's name, shown in the UI and used in prompts. Set HW_STUDENT=<name>; the default is generic.
-const STUDENT = (process.env.HW_STUDENT || "").trim();
-// The curriculum's name, shown in the sidebar header. Set HW_CURRICULUM=<name> to change it.
-const CURRICULUM = (process.env.HW_CURRICULUM || "").trim() || "Wu Algebra";
+// Students, curricula, progress, the corpus and status history live in DATA/hw.db (lib/store.mjs); the first
+// open migrates the v0 files. HW_STUDENT names the first student at migration; HW_CURRICULUM overrides the
+// sidebar title. weekly_status.md and curriculum_ladder.md at ROOT are exports of the active enrollment.
+const STUDENT_ENV = (process.env.HW_STUDENT || "").trim();
+const CURRICULUM_ENV = (process.env.HW_CURRICULUM || "").trim();
+const C = () => ctx({ dir: DATA });
 // The two Wu DAGs ship with the code. With DATA elsewhere (hosted: /tmp), copy them in on every start.
 const BUNDLED_DATA = ["wu_dag.json", "wu_methods_dag.json"];
 if (path.resolve(DATA) !== path.join(UI_DIR, "data")) for (const f of BUNDLED_DATA) { const src = path.join(UI_DIR, "data", f); if (fs.existsSync(src)) fs.copyFileSync(src, path.join(DATA, f)); }
@@ -153,7 +157,9 @@ export const mirror = createMirror({
   store: process.env.VERCEL && blobConfigured() ? blobStore() : null,
   // Production and preview deployments share a store; previews keep their own copy so testing can't touch it.
   base: process.env.HW_BLOB_PREFIX || (process.env.VERCEL_ENV && process.env.VERCEL_ENV !== "production" ? `hw-${process.env.VERCEL_ENV}` : "hw"),
-  skip: (rel, pre) => pre === "data" && (/^(build|logs|debug|mcp|venv|claude-cwd)\//.test(rel) || BUNDLED_DATA.includes(rel)),
+  skip: (rel, pre) => pre === "data" && (/^(build|logs|debug|mcp|venv|claude-cwd)\//.test(rel) || /^hw\.db-(wal|shm|journal)$/.test(rel) || BUNDLED_DATA.includes(rel)),
+  // A pulled hw.db replaces the file under the open connection: close it first, the next ctx() reopens.
+  beforeReplace: (f) => { if (path.basename(f) === "hw.db") closeDb(DATA); },
 });
 // Work that outlives its request (tagging, the progress-map guess). The Vercel entry swaps in waitUntil so
 // the instance stays up until it finishes.
@@ -200,6 +206,44 @@ async function writeLikeOriginal(p, text) {
   const orig = fs.existsSync(p) ? await fsp.readFile(p, "utf8") : "";
   const out = text.replace(/\r\n/g, "\n");
   await fsp.writeFile(p, orig.includes("\r\n") ? out.replace(/\n/g, "\r\n") : out);
+}
+
+// ---------- weekly status and lesson plan: hw.db, exported to the root files ----------
+// Editing weekly_status.md by hand still works: a file newer than the latest revision becomes a revision.
+async function readStatus(c = C()) {
+  const last = latestStatus(c);
+  let file = null;
+  try { file = await read(STATUS_FILE); } catch {}
+  if (file != null && file !== last?.text && (!last || fs.statSync(STATUS_FILE).mtimeMs > Date.parse(last.at) + 1000)) {
+    saveStatus(c, file, { source: "file" });
+    return file;
+  }
+  if (last && file !== last.text) await writeLikeOriginal(STATUS_FILE, last.text);
+  return last?.text ?? file ?? "";
+}
+async function writeStatus(text, { source = "teacher", assignmentId = null, c = C() } = {}) {
+  const id = saveStatus(c, text, { source, assignmentId });
+  await writeLikeOriginal(STATUS_FILE, text);
+  return id;
+}
+// The lesson plan the prompts use is the active enrollment's version. A hand edit of curriculum_ladder.md
+// (the file no longer matches what was last exported) goes into the curriculum's draft for review.
+const sha = (t) => createHash("sha256").update(t).digest("hex").slice(0, 16);
+async function readLadder(c = C()) {
+  const md = Cur.ladderFor(c.db, c.versionId);
+  let file = null;
+  try { file = await read(LADDER_FILE); } catch {}
+  const exported = getSetting(c.db, "ladder_export_hash");
+  if (file === md) { if (exported !== sha(md)) setSetting(c.db, "ladder_export_hash", sha(md)); return md; }
+  // Missing, or still what we last wrote: bring it up to date. Anything else is a hand edit and is never overwritten.
+  if (file == null || sha(file) === exported) { await writeLikeOriginal(LADDER_FILE, md); setSetting(c.db, "ladder_export_hash", sha(md)); return md; }
+  if (getSetting(c.db, "ladder_drift_hash") !== sha(file)) {
+    const d = Cur.createDraft(c.db, c.curriculumId, { origin: "edit", note: "curriculum_ladder.md edited by hand" });
+    Cur.editDraft(c.db, d, [{ op: "setLadder", md: file }]);
+    setSetting(c.db, "ladder_drift_hash", sha(file));
+    logEvent("curriculum", "ladder-drift", { draft: Cur.getVersion(c.db, d).seq });
+  }
+  return md;
 }
 
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json", ".pdf": "application/pdf",
@@ -303,7 +347,7 @@ async function readToolLog(id) {
 }
 
 async function buildSystemPrompt() {
-  const [instr, ladder] = await Promise.all([read(INSTRUCTIONS_FILE), read(LADDER_FILE)]);
+  const [instr, ladder] = await Promise.all([read(INSTRUCTIONS_FILE), readLadder()]);
   const gold = [];
   for (const n of (await texFiles()).slice(-GOLD_COUNT)) gold.push(`<file name="${n}">\n${await read(path.join(ROOT, n))}\n</file>`);
   return [
@@ -433,7 +477,7 @@ async function compileTex(text) {
 // ---------- stages that run outside the week's session ----------
 
 async function weekBrief(overrides = {}) {
-  const [status, ladder] = await Promise.all([read(STATUS_FILE), read(LADDER_FILE)]);
+  const [status, ladder] = await Promise.all([readStatus(), readLadder()]);
   return buildBrief({ status, ladder, corpus: loadCorpus(), dataDir: DATA, overrides });
 }
 
@@ -536,7 +580,7 @@ function planStages(kind, week, brief) {
 }
 
 async function corpusPreload() {
-  const [status, ladder] = await Promise.all([read(STATUS_FILE), read(LADDER_FILE)]);
+  const [status, ladder] = await Promise.all([readStatus(), readLadder()]);
   const q = preloadQuery(status, ladder);
   const hits = searchCorpus(loadCorpus(), { units: q.units, query: q.query, limit: 15 });
   return { ...q, hits };
@@ -559,16 +603,21 @@ function saveManifest(week, name, tex) {
   const date = dateFromName(name) || new Date().toISOString().slice(0, 10);
   const items = loadCorpus();
   const r = addProblems(items, list.map((p) => ({
-    tex: p.tex, answer: p.answer, units: p.units, tags: p.tags, casVerified: p.casVerified, status: "used", usedOn: [date],
+    tex: p.tex, answer: p.answer, units: p.units, tags: p.tags, casVerified: p.casVerified, status: "used",
     context: p.part ? `Part ${p.part}` : "", source: { kind: "final", file: name, date, week: week.id, origin: p.source },
   })), { file: false });
-  // Adapted from a corpus problem: the original counts as used on this date too.
+  // The set's problems become this student's assignment; a corpus problem it was adapted from counts as used too.
+  const rows = [];
   for (const p of list) {
+    const pid = problemId(p.tex);
+    const own = items.find((x) => x.id === pid || (x.aliases || []).includes(pid)) || nearDuplicates(items, p.tex)[0];
+    if (own) rows.push({ problemId: own.id, part: p.part, n: p.n, answer: p.answer, sourceRef: p.source || null, casVerified: p.casVerified });
     const m = String(p.source || "").match(/^corpus:(p[0-9a-f]+)/);
     const orig = m && items.find((x) => x.id === m[1]);
-    if (orig) { orig.usedOn = [...new Set([...(orig.usedOn || []), date])].sort(); if (orig.status === "candidate") orig.status = "used"; }
+    if (orig) { if (orig.status === "candidate") orig.status = "used"; rows.push({ problemId: orig.id, sourceRef: `adapted into ${own?.id || "?"}` }); }
   }
   saveCorpus(items);
+  recordAssignment(C(), { id: week.id, title: week.title, date, model: week.model, sessionId: week.sessionId, savedAs: name, transcriptPath: `weeks/${week.id}.json`, items: rows });
   const ids = [...r.added, ...r.merged].filter((id) => needsTags(items.find((x) => x.id === id) || {}));
   return { added: r.added.length, merged: r.merged.length, total: list.length, toTag: ids };
 }
@@ -582,10 +631,10 @@ export function tagInBackground(ids, label) {
     const probs = loadCorpus().filter((p) => ids.includes(p.id)).map((p) => structuredClone(p));
     logEvent("tag", "start", { label, problems: probs.length, model: TAG_MODEL });
     try {
-      const r = await tagProblems(probs, { root: ROOT, data: DATA });
+      const r = await tagProblems(probs);
       const items = loadCorpus();
       for (const p of probs) patchProblem(items, p.id, { units: p.units, wuNodes: p.wuNodes, tags: p.tags }, { file: false });
-      saveCorpus(items);
+      saveCorpus(items, null, { source: "tagger" });
       logEvent("tag", "done", { label, tagged: r.tagged, withMethods: probs.filter((p) => p.wuNodes.some((n) => n.startsWith("m:"))).length, costUSD: +r.cost.toFixed(4) });
     } catch (e) { logEvent("tag", "error", { label, error: e.message.slice(0, 300) }); }
   });
@@ -595,16 +644,8 @@ export function tagInBackground(ids, label) {
 
 // ---------- Wu DAG: snapshot + the student's progress ----------
 
-async function dagState() {
-  const st = await readJson(DAG_STATE, { guess: null, overrides: {} });
-  // Guesses made before run history existed: keep the last one as a run without a log.
-  if (st.guess && !st.runs) {
-    const g = st.guess, id = `${Date.parse(g.at) || 0}`;
-    g.runId = id;
-    st.runs = [{ id, at: g.at, model: g.model, ok: true, files: g.files, usage: g.usage || null, summary: g.summary || "", nodes: g.nodes, ladderToWu: g.ladderToWu || {}, log: [] }];
-  }
-  return st;
-}
+// {guess, overrides, runs} for the active enrollment at a version (lib/progress.mjs).
+const dagState = (c = C(), versionId = null) => Prog.dagState(c.db, c.enrollmentId, versionId ?? c.versionId);
 let guessJob = null; // { running, startedAt, tools, error }
 
 async function noteFiles() {
@@ -618,10 +659,10 @@ async function noteFiles() {
 }
 
 async function buildGuessPrompt() {
-  const [content, methods, ladder, status] = await Promise.all([
-    readJson(path.join(DATA, "wu_dag.json"), { nodes: [], edges: [] }), readJson(path.join(DATA, "wu_methods_dag.json"), { nodes: [], edges: [] }),
-    read(LADDER_FILE), read(STATUS_FILE),
-  ]);
+  const c = C();
+  const content = Cur.graphFor(c.db, c.versionId, "content"), methods = Cur.graphFor(c.db, c.versionId, "methods");
+  const [ladder, status] = await Promise.all([readLadder(c), readStatus(c)]);
+  const STUDENT = c.studentName;
   const nodeLines = (g, pre) => g.nodes.map((n) => `${pre}${n.id} [${n.kind}] ${n.title}${n.detail ? " — " + n.detail.replace(/\s+/g, " ") : ""}${n.restsOn?.length ? ` (rests on ${n.restsOn.join(", ")})` : ""}`).join("\n");
   const edgeLines = (g, pre) => g.edges.map((e) => `${pre}${e.from} -> ${pre}${e.to}${e.prove ? " (needed to prove)" : ""}`).join("\n");
   const files = [];
@@ -683,10 +724,8 @@ function guessLogger(log) {
   };
 }
 
-async function saveRun(st, run) {
-  st.runs = [run, ...(st.runs || [])].slice(0, MAX_RUNS);
-  await fsp.writeFile(DAG_STATE, JSON.stringify(st, null, 1));
-}
+// Runs are kept per enrollment, against the version the prompt was built from.
+function saveRun(c, run) { Prog.saveGuessRun(c.db, c.enrollmentId, { ...run, versionId: c.versionId }); }
 
 async function runGuess() {
   if (guessJob?.running) return;
@@ -699,6 +738,7 @@ async function runGuess() {
   const logLine = guessLogger(log);
   const onLog = (e) => { logLine(e); shareJob("dag-guess", guessJob); };
   let r = null;
+  const c = C();
   const files = (await texFiles()).length + (await noteFiles()).length;
   const base = () => ({ id: `${startedAt}`, at: new Date(startedAt).toISOString(), model: GUESS_MODEL, ms: Date.now() - startedAt, files, usage: r?.usage || null, log });
   try {
@@ -711,15 +751,13 @@ async function runGuess() {
       try { const x = JSON.parse(b); if (x?.nodes) { parsed = x; break; } } catch {}
     }
     if (!parsed) throw new Error("Claude's reply had no JSON nodes block");
-    const st = await dagState();
-    st.guess = { at: new Date().toISOString(), model: GUESS_MODEL, nodes: parsed.nodes, ladderToWu: parsed.ladderToWu || {}, summary: parsed.summary || "", usage: r.usage, files, runId: `${startedAt}` };
-    await saveRun(st, { ...base(), ok: true, summary: st.guess.summary, nodes: parsed.nodes, ladderToWu: st.guess.ladderToWu });
+    saveRun(c, { ...base(), ok: true, summary: parsed.summary || "", nodes: parsed.nodes, ladderToWu: parsed.ladderToWu || {} });
     guessJob = { running: false, finishedAt: Date.now(), costUSD: r.usage?.costUSD || 0 };
     logEvent("dag", "guess-done", { nodes: Object.keys(parsed.nodes).length, costUSD: r.usage?.costUSD });
   } catch (e) {
     guessJob = { running: false, error: e.message };
     logEvent("dag", "guess-failed", { error: e.message });
-    try { await saveRun(await dagState(), { ...base(), ok: false, error: e.message, summary: "" }); } catch {}
+    try { saveRun(c, { ...base(), ok: false, error: e.message, summary: "" }); } catch {}
   } finally {
     clearInterval(heartbeat);
     await shareJob("dag-guess", guessJob, { force: true });
@@ -746,12 +784,14 @@ async function handle(req, res) {
   }
 
   if (m === "GET" && p === "/api/state") {
+    const c = C();
     return send(res, 200, {
-      status: await read(STATUS_FILE),
-      ladder: await read(LADDER_FILE),
+      status: await readStatus(c),
+      ladder: await readLadder(c),
       texFiles: await texFiles(),
-      student: STUDENT,
-      curriculum: CURRICULUM,
+      student: c.studentName || STUDENT_ENV,
+      curriculum: CURRICULUM_ENV || c.db.prepare("SELECT title FROM curriculum WHERE id = ?").get(c.curriculumId)?.title || "Wu Algebra",
+      enrollment: { id: c.enrollmentId, curriculum: c.curriculumId, version: Cur.getVersion(c.db, c.versionId)?.seq },
       weeks: await listWeeks(),
       tectonic: !!findTectonic(),
       model: DEFAULT_MODEL,
@@ -764,13 +804,9 @@ async function handle(req, res) {
   }
 
   if (m === "PUT" && p === "/api/status") {
-    const { text, backup = true } = await body(req);
+    const { text } = await body(req);
     if (typeof text !== "string" || !text.trim()) return send(res, 400, { error: "empty status" });
-    if (backup) {
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      await fsp.copyFile(STATUS_FILE, path.join(BACKUPS, `weekly_status.${stamp}.md`));
-    }
-    await writeLikeOriginal(STATUS_FILE, text);
+    await writeStatus(text, { source: "teacher" });
     return send(res, 200, { ok: true });
   }
 
@@ -833,24 +869,111 @@ async function handle(req, res) {
 
   // ---- DAG ----
   if (m === "GET" && p === "/api/dag") {
-    const [content, methods, st] = await Promise.all([readJson(path.join(DATA, "wu_dag.json"), null), readJson(path.join(DATA, "wu_methods_dag.json"), null), dagState()]);
-    return send(res, 200, { content, methods, guess: st.guess, overrides: st.overrides || {}, job: (guessJob?.running ? guessJob : (await remoteJob("dag-guess")) || guessJob) && { ...(guessJob?.running ? guessJob : (await remoteJob("dag-guess")) || guessJob), elapsed: guessJob.startedAt ? Date.now() - guessJob.startedAt : 0 }, notes: await noteFiles(), guessModel: GUESS_MODEL, runs: (st.runs || []).map(runSummary) });
+    // ?version=<id> shows another version of the curriculum (progress carried forward through lineage).
+    const c = C();
+    const vid = Number(url.searchParams.get("version")) || c.versionId;
+    const ver = Cur.getVersion(c.db, vid);
+    if (!ver || ver.curriculum_id !== c.curriculumId) return send(res, 404, { error: "no such version" });
+    const st = dagState(c, vid);
+    const job = guessJob?.running ? guessJob : (await remoteJob("dag-guess")) || guessJob;
+    return send(res, 200, {
+      content: Cur.graphFor(c.db, vid, "content"), methods: Cur.graphFor(c.db, vid, "methods"), guess: st.guess, overrides: st.overrides || {},
+      job: job && { ...job, elapsed: job.startedAt ? Date.now() - job.startedAt : 0 }, notes: await noteFiles(), guessModel: GUESS_MODEL, runs: st.runs.map(runSummary),
+      version: { id: ver.id, seq: ver.seq, status: ver.status, enrolled: c.versionId }, versions: Cur.listVersions(c.db, c.curriculumId).map((v) => ({ id: v.id, seq: v.seq, status: v.status })),
+      plan: Cur.planFor(c.db, vid),
+    });
   }
   const rm = p.match(/^\/api\/dag\/runs\/(\d+)$/);
   if (m === "GET" && rm) {
-    const run = ((await dagState()).runs || []).find((x) => x.id === rm[1]);
+    const run = Prog.getRun(C().db, rm[1]);
     return run ? send(res, 200, run) : send(res, 404, { error: "no such run" });
   }
   if (m === "PUT" && p === "/api/dag") {
     const { id, state, note } = await body(req);
-    if (!/^(m:)?e\d+$/.test(id || "")) return send(res, 400, { error: "bad node id" });
-    if (state != null && !["done", "partial", "not-yet"].includes(state)) return send(res, 400, { error: "bad state" });
-    const st = await dagState();
-    st.overrides ||= {};
-    if (state == null) delete st.overrides[id];
-    else st.overrides[id] = { state, note: note || "", at: new Date().toISOString() };
-    await fsp.writeFile(DAG_STATE, JSON.stringify(st, null, 1));
-    return send(res, 200, { overrides: st.overrides });
+    const c = C();
+    if (!/^[A-Za-z0-9:_-]{1,40}$/.test(id || "") || !Cur.keysOf(c.db, c.versionId).has(id)) return send(res, 400, { error: "bad node id" });
+    if (state != null && !Prog.STATES.includes(state)) return send(res, 400, { error: "bad state" });
+    return send(res, 200, { overrides: Prog.setOverride(c.db, c.enrollmentId, id, state, note || "") });
+  }
+
+  // ---- students and enrollments ----
+  if (m === "GET" && p === "/api/students") {
+    const c = C();
+    return send(res, 200, { students: Prog.listStudents(c.db), enrollments: Prog.listEnrollments(c.db), active: c.enrollmentId, curricula: Cur.listCurricula(c.db) });
+  }
+  if (m === "POST" && p === "/api/students") {
+    const { name, curriculum } = await body(req);
+    if (!String(name || "").trim()) return send(res, 400, { error: "name required" });
+    const c = C();
+    const cur = curriculum || c.curriculumId;
+    const v = Cur.latestPublished(c.db, cur);
+    if (!v) return send(res, 400, { error: "that curriculum has no published version" });
+    const sid = Prog.addStudent(c.db, name);
+    return send(res, 200, { student: sid, enrollment: Prog.enroll(c.db, sid, cur, v.id) });
+  }
+  if (m === "PUT" && p === "/api/enrollment") {
+    // Switch the active student/course. The root weekly_status.md and curriculum_ladder.md follow it.
+    const { id } = await body(req);
+    const c = C();
+    if (!Prog.getEnrollment(c.db, Number(id))) return send(res, 404, { error: "no such enrollment" });
+    await readStatus(c); // keep any hand edit of the current file with the student it belongs to
+    setActiveEnrollment(c.db, Number(id));
+    setSetting(c.db, "ladder_export_hash", "");
+    const n = C();
+    // A student with no status yet starts from a blank one, never from the previous student's file.
+    const text = latestStatus(n)?.text ?? `# Weekly status: ${n.studentName}\n\nNothing taught yet.\n`;
+    if (!latestStatus(n)) saveStatus(n, text, { source: "teacher" });
+    await writeLikeOriginal(STATUS_FILE, text);
+    await writeLikeOriginal(LADDER_FILE, Cur.ladderFor(n.db, n.versionId));
+    setSetting(n.db, "ladder_export_hash", sha(Cur.ladderFor(n.db, n.versionId)));
+    return send(res, 200, { ok: true });
+  }
+  if (m === "POST" && p === "/api/enrollment/upgrade") {
+    const { to } = await body(req);
+    const c = C();
+    try { return send(res, 200, Prog.upgradeEnrollment(c.db, c.enrollmentId, Number(to))); } catch (e) { return send(res, 400, { error: e.message }); }
+  }
+  if (m === "GET" && p === "/api/status/history") return send(res, 200, { revisions: statusHistory(C()) });
+
+  // ---- curriculum versions ----
+  if (m === "GET" && p === "/api/versions") {
+    const c = C();
+    const draft = Cur.draftOf(c.db, c.curriculumId);
+    return send(res, 200, {
+      curriculum: c.db.prepare("SELECT * FROM curriculum WHERE id = ?").get(c.curriculumId), versions: Cur.listVersions(c.db, c.curriculumId), enrolled: c.versionId,
+      enrollments: Prog.listEnrollments(c.db).filter((e) => e.curriculum_id === c.curriculumId),
+      draft: draft && { id: draft.id, seq: draft.seq, note: draft.note, unresolved: Cur.unresolvedRemovals(c.db, draft.id), diff: draft.parent_id ? Cur.diffVersions(c.db, draft.parent_id, draft.id) : null },
+      retag: c.db.prepare("SELECT COUNT(*) n FROM retag_queue WHERE done_at IS NULL").get().n,
+    });
+  }
+  const vm = p.match(/^\/api\/versions\/(\d+)(\/diff|\/publish)?$/);
+  if (vm) {
+    const c = C(), vid = Number(vm[1]);
+    const ver = Cur.getVersion(c.db, vid);
+    if (!ver || ver.curriculum_id !== c.curriculumId) return send(res, 404, { error: "no such version" });
+    if (m === "GET" && !vm[2]) return send(res, 200, { ...ver, meta_json: undefined, plan: Cur.planFor(c.db, vid), ladder: Cur.ladderFor(c.db, vid) });
+    if (m === "GET" && vm[2] === "/diff") {
+      const against = Number(url.searchParams.get("against")) || ver.parent_id;
+      return against ? send(res, 200, Cur.diffVersions(c.db, against, vid)) : send(res, 400, { error: "nothing to compare with" });
+    }
+    if (m === "POST" && vm[2] === "/publish") {
+      try {
+        const r = Cur.publish(c.db, vid, { exportDir: path.join(DATA, "curricula") });
+        logEvent("curriculum", "published", { seq: r.version.seq, lineageTags: r.lineageTags, queued: r.queued });
+        return send(res, 200, { version: { id: r.version.id, seq: r.version.seq, status: r.version.status }, lineageTags: r.lineageTags, queued: r.queued });
+      } catch (e) { return send(res, e.missing ? 409 : 400, { error: e.message, missing: e.missing }); }
+    }
+    if (m === "DELETE" && !vm[2]) { try { Cur.discardDraft(c.db, vid); return send(res, 200, { ok: true }); } catch (e) { return send(res, 400, { error: e.message }); } }
+  }
+  if (m === "POST" && p === "/api/versions/draft") {
+    // {ops: [...]} (see editDraft in lib/curriculum.mjs); creates the draft from the latest published version if needed.
+    const { ops = [], note } = await body(req);
+    const c = C();
+    const d = Cur.createDraft(c.db, c.curriculumId, { origin: "edit", note: note || "" });
+    try { return send(res, 200, { draft: d, ...Cur.editDraft(c.db, d, ops) }); } catch (e) { return send(res, 400, { error: e.message }); }
+  }
+  if (m === "GET" && p === "/api/retag") {
+    return send(res, 200, { queue: C().db.prepare("SELECT q.*, cv.seq FROM retag_queue q JOIN curriculum_version cv ON cv.id = q.version_id WHERE q.done_at IS NULL ORDER BY q.at").all() });
   }
   if (m === "POST" && p === "/api/dag/guess") {
     if (guessJob?.running || (await remoteJob("dag-guess"))) return send(res, 409, { error: "already guessing" });
@@ -909,11 +1032,7 @@ async function handle(req, res) {
       const dest = path.join(ROOT, name);
       if (fs.existsSync(dest) && !overwrite) return send(res, 409, { error: `${name} already exists` });
       await fsp.writeFile(dest, tex);
-      if (status && status.trim()) {
-        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-        await fsp.copyFile(STATUS_FILE, path.join(BACKUPS, `weekly_status.${stamp}.md`));
-        await writeLikeOriginal(STATUS_FILE, status.trimEnd() + "\n");
-      }
+      if (status && status.trim()) await writeStatus(status.trimEnd() + "\n", { source: "claude", assignmentId: id });
       const week = await loadWeek(id);
       let corpus = null;
       try { corpus = saveManifest(week, name, tex); tagInBackground(corpus.toTag || [], name); delete corpus.toTag; } catch (e) { corpus = { error: e.message }; }
