@@ -11,7 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { tx, now, J, P } from "./db.mjs";
-import { parseLadder, renderLadder } from "./lessonplan.mjs";
+import { parseLadder, renderLadder, parseUnitLine, renderUnitLine } from "./lessonplan.mjs";
 
 export const LAYERS = ["content", "methods", "unit"];
 const STD = new Set(["id", "title", "detail", "kind", "x", "y", "w", "h"]);
@@ -197,6 +197,7 @@ function writeLineage(db, ver, oldKey, relation, into = [], note = "") {
 //   removeNode {key, relation: retired|merged|replaced|split, into: [keys], note}
 //   lineage    {key, relation, into, note}       for a key an import dropped
 //   addEdge / removeEdge {from, to, kind, extra?}
+//   orderUnits {section, keys}                    the units of one lesson plan section, in their new order
 //   setCovers {covers: {U05: [...]}} · setPlanText {text} · setGated {gated: [{terms, unit}]} · setLadder {md}
 export function editDraft(db, v, ops) {
   const ver = requireDraft(db, v);
@@ -205,14 +206,17 @@ export function editDraft(db, v, ops) {
     for (const o of ops) {
       if (o.op === "upsertNode") {
         const layer = o.layer || layerOfKey(o.key || "");
-        const key = o.key || newKey(layer);
+        const key = o.key || (layer === "unit" ? nextUnitKey(db, ver.curriculum_id) : newKey(layer));
         const old = db.prepare("SELECT * FROM node_revision WHERE version_id = ? AND node_key = ?").get(v, key);
         const f = o.fields || {};
         if (layer === "unit") {
           const ex = old ? P(old.extra_json, {}) : {};
-          insRev(db, v, { key, layer, ord: old?.ord ?? nextOrd(db, v, "node_revision", "AND layer = 'unit'"), title: f.name ?? old?.title ?? key, detail: f.about ?? old?.detail ?? "", kind: "unit",
-            extra: { stance: f.stance ?? ex.stance ?? "", notes: f.notes ?? ex.notes ?? "", section: f.section ?? ex.section ?? 0 } });
+          const u = { name: f.name ?? old?.title ?? key, about: f.about ?? old?.detail ?? "", stance: f.stance ?? ex.stance ?? "", notes: f.notes ?? ex.notes ?? "", section: f.section ?? ex.section ?? 0 };
+          if (o.check) checkUnit(db, v, key, u, f.needs);
+          insRev(db, v, { key, layer, ord: old?.ord ?? nextOrd(db, v, "node_revision", "AND layer = 'unit'"), title: u.name, detail: u.about, kind: "unit",
+            extra: { stance: u.stance, notes: u.notes, section: u.section } });
           if (f.needs) { db.prepare("DELETE FROM edge WHERE version_id = ? AND from_key = ? AND kind = 'needs'").run(v, key); f.needs.forEach((n, i) => insEdge(db, v, { ord: i, from: key, to: n, kind: "needs" })); }
+          syncLayout(db, v);
         } else {
           const { title, detail, kind, x, y, w, h, restsOn, ...extra } = f;
           const ex = old ? P(old.extra_json, {}) : {};
@@ -237,12 +241,14 @@ export function editDraft(db, v, ops) {
           db.prepare("DELETE FROM node_revision WHERE version_id = ? AND node_key = ?").run(v, o.key);
           db.prepare("DELETE FROM edge WHERE version_id = ? AND (from_key = ? OR to_key = ?)").run(v, o.key, o.key);
           db.prepare("DELETE FROM gated_term WHERE version_id = ? AND unit_key = ?").run(v, o.key);
+          if (layerOfKey(o.key) === "unit") syncLayout(db, v);
         }
         // A key created in this draft never existed in a published version: nothing to record.
         if (db.prepare("SELECT 1 FROM node_revision WHERE version_id = ? AND node_key = ?").get(ver.parent_id ?? -1, o.key)) writeLineage(db, ver, o.key, o.relation || "retired", into, o.note || "");
         else db.prepare("DELETE FROM node WHERE curriculum_id = ? AND key = ? AND created_in_version = ?").run(ver.curriculum_id, o.key, v);
       } else if (o.op === "addEdge") insEdge(db, v, { ord: nextOrd(db, v, "edge"), from: o.from, to: o.to, kind: o.kind, extra: o.extra });
       else if (o.op === "removeEdge") db.prepare("DELETE FROM edge WHERE version_id = ? AND from_key = ? AND to_key = ? AND kind = ?").run(v, o.from, o.to, o.kind);
+      else if (o.op === "orderUnits") orderUnits(db, v, o.section, o.keys || []);
       else if (o.op === "setCovers") setCovers(db, v, o.covers);
       else if (o.op === "setPlanText") db.prepare("UPDATE curriculum_version SET plan_text = ? WHERE id = ?").run(o.text, v);
       else if (o.op === "setGated") {
@@ -256,6 +262,76 @@ export function editDraft(db, v, ops) {
     }
   });
   return { keys };
+}
+
+// A new unit gets the next U number this curriculum has never used (the ladder format only knows U\d\d, M\d and
+// F\d), so a deleted unit's key is never handed to a different unit.
+function nextUnitKey(db, cur) {
+  const used = db.prepare("SELECT key FROM node WHERE curriculum_id = ? AND layer = 'unit'").all(cur).map((r) => r.key);
+  const n = Math.max(0, ...used.map((k) => (/^U(\d\d)$/.exec(k) || [, 0])[1]).map(Number)) + 1;
+  return n < 100 ? `U${String(n).padStart(2, "0")}` : newKey("unit");
+}
+
+// Edits from the lesson plan editor ({check: true}) must survive curriculum_ladder.md: one line per unit, read back
+// into the same fields. Needs must name other units of the draft, and the section must hold units (not gated terms).
+function checkUnit(db, v, key, u, needs) {
+  if (!String(u.name).trim()) throw new Error("A unit needs a name");
+  for (const [k, val] of Object.entries(u)) if (typeof val === "string" && /\n/.test(val)) throw new Error(`${k} must be one line`);
+  if (needs) {
+    const units = keysOf(db, v, "unit");
+    for (const n of needs) {
+      if (n === key) throw new Error(`${key} cannot need itself`);
+      if (!units.has(n)) throw new Error(`Needs ${n}: no such unit in this version`);
+    }
+  }
+  const layout = getVersion(db, v).meta.plan?.layout || [];
+  const sec = layout[u.section];
+  if (layout.length && (!sec || /^gated/i.test(sec.heading))) throw new Error("Pick a section for the unit");
+  const want = { key: "U00", name: u.name, about: u.about, needs: needs || [], stance: u.stance, notes: u.notes };
+  const back = parseUnitLine(renderUnitLine(want));
+  const bad = !back ? "name" : ["name", "about", "stance", "notes"].find((f) => back[f] !== want[f]) || (back.needs.join() !== want.needs.join() && "needs");
+  if (bad) throw new Error({
+    name: "The name can't contain a full stop followed by a space (the lesson plan splits the name off there)",
+    about: "The description can't contain “Needs U..”, “Formal.” or “Informal….”: put those in their own fields",
+    stance: "Stance must be empty, “Formal”, or start with “Informal”",
+    notes: "The notes can't start with “Formal.” or “Informal”",
+    needs: "Needs didn't read back the same",
+  }[bad]);
+}
+
+// Reorder one section's units. Its other lines (blank lines, notes) keep their places; the units fill the unit
+// slots in the new order, and every unit's ord follows the plan's order from top to bottom.
+function orderUnits(db, v, section, keys) {
+  setMeta(db, v, (m) => {
+    const sec = m.plan?.layout?.[section];
+    if (!sec) throw new Error(`No section ${section} in the lesson plan`);
+    const have = sec.items.filter((it) => it.unit).map((it) => it.unit);
+    if (keys.length !== have.length || [...keys].sort().join() !== [...have].sort().join()) throw new Error("Those aren't that section's units; reload and try again");
+    let j = 0;
+    sec.items = sec.items.map((it) => (it.unit ? { unit: keys[j++] } : it));
+    const order = m.plan.layout.flatMap((s) => s.items.filter((it) => it.unit).map((it) => it.unit));
+    const rest = revisionsOf(db, v, "unit").map((r) => r.node_key).filter((k) => !order.includes(k));
+    [...order, ...rest].forEach((k, i) => db.prepare("UPDATE node_revision SET ord = ? WHERE version_id = ? AND node_key = ?").run(i, v, k));
+  });
+}
+
+// Keep the recorded section layout in step with the units: each unit is listed in its own section only, and a unit
+// a section doesn't list yet goes after that section's last unit.
+function syncLayout(db, v) {
+  const units = revisionsOf(db, v, "unit").map((r) => ({ key: r.node_key, section: r.extra.section ?? 0, ord: r.ord }));
+  setMeta(db, v, (m) => {
+    m.plan ||= { layout: [], hasSections: true };
+    const layout = m.plan.layout ||= [];
+    if (!layout.length && units.length) { layout.push({ heading: "Units", items: [] }); m.plan.hasSections = true; }
+    const sec = new Map(units.map((u) => [u.key, Math.min(u.section, layout.length - 1)]));
+    layout.forEach((s, si) => { s.items = s.items.filter((it) => !it.unit || sec.get(it.unit) === si); });
+    for (const u of [...units].sort((a, b) => a.ord - b.ord)) {
+      const s = layout[sec.get(u.key)];
+      if (!s || s.items.some((it) => it.unit === u.key)) continue;
+      let last = -1; s.items.forEach((it, i) => { if (it.unit) last = i; });
+      s.items.splice(last + 1, 0, { unit: u.key });
+    }
+  });
 }
 
 // Keys that were in the parent, are gone from the draft, and have no lineage yet: publish refuses these.
@@ -368,7 +444,7 @@ export function baseTags(db, cur, problemId, idx, atV) {
 // ---------- diff, import matching, export ----------
 
 export function diffVersions(db, a, b) {
-  const out = { added: [], removed: [], changed: [], edgesAdded: [], edgesRemoved: [], lineage: [], planTextChanged: false, gatedChanged: false };
+  const out = { added: [], removed: [], changed: [], edgesAdded: [], edgesRemoved: [], lineage: [], planTextChanged: false, gatedChanged: false, unitOrderChanged: false };
   const ra = new Map(db.prepare("SELECT * FROM node_revision WHERE version_id = ?").all(a).map((r) => [r.node_key, r]));
   const rb = new Map(db.prepare("SELECT * FROM node_revision WHERE version_id = ?").all(b).map((r) => [r.node_key, r]));
   const strip = (r) => ({ title: r.title, detail: r.detail, kind: r.kind, extra: r.extra_json });
@@ -390,6 +466,11 @@ export function diffVersions(db, a, b) {
   out.planTextChanged = getVersion(db, a).plan_text !== getVersion(db, b).plan_text;
   const g = (v) => J(db.prepare("SELECT grp, pos, term, unit_key FROM gated_term WHERE version_id = ? ORDER BY grp, pos").all(v));
   out.gatedChanged = g(a) !== g(b);
+  // the units both versions have, in plan order (section by section): a move shows even with no other change
+  const seq = (v) => (getVersion(db, v).meta.plan?.layout || []).map((s) => s.items.filter((it) => it.unit).map((it) => it.unit));
+  const both = (s, other) => s.map((xs) => xs.filter((k) => other.has(k)).join(",")).join("|");
+  const sa = seq(a), sb = seq(b), ka = new Set(sa.flat()), kb = new Set(sb.flat());
+  out.unitOrderChanged = both(sa, kb) !== both(sb, ka);
   return out;
 }
 

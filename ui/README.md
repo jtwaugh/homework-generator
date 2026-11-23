@@ -27,7 +27,7 @@ The page is split in two: the conversation with Claude on the left (every tool c
 
 Header buttons:
 - **$ badge**: what each turn cost on your API account, tokens, searches, tool calls, and an estimated research vs writing split. `HW_BUDGET_USD=2` caps each turn.
-- **Progress map**: Wu's school algebra as two DAGs (Content and Methods). **Guess progress** has Claude read every homework file and your uploaded notes and mark each block done / partly / not yet; click a block to see its evidence or override it.
+- **Progress map**: Wu's school algebra as two DAGs (Content and Methods). **Guess progress** has Claude read every homework file and your uploaded notes and mark each block done / partly / not yet; click a block to see its evidence or override it. **Lesson plan › Edit units** adds, changes or removes units (a removed unit is retired or merged into another); edits go to the course's draft, which you publish on **Courses**.
 - **Corpus**: every problem Claude can reuse (past homework, problems it saved from research). ★ to prefer, ✕ to never offer again.
 - **History**: a searchable list of sessions (one per homework, grouped by date). Each opens read-only in place: the **Conversation** (your inputs and Claude's steps, tool calls, replies and cost) and the **Homework** it produced (PDF / Source / Compile log). Older `.tex` files with no session are listed at the bottom; ← → between sessions.
 

@@ -646,6 +646,28 @@ body { display: grid; grid-template-columns: 208px 1fr; overflow: hidden; }
 .plan-note { color: var(--accent); }
 .plan-empty { padding: 18px; }
 
+/* lesson plan editing (Progress map › Lesson plan › Edit units): edits go to the course's draft */
+.plan.editing .plan-body { flex: 1; }
+.plan-acts { flex: none; display: flex; gap: 2px; opacity: .55; }
+.plan-unit:hover .plan-acts, .plan-acts:focus-within { opacity: 1; }
+.plan-acts .ghost { padding: 2px 7px; font-size: 13px; }
+.plan-remove { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; padding: 7px 9px; border-radius: 6px; background: #fbf3ef; }
+.plan-remove select { max-width: 260px; font-size: 12.5px; }
+.plan-add { padding: 2px 4px; }
+.plan-unit[draggable] { cursor: grab; position: relative; }
+.plan-unit .grip { flex: none; margin: 2px -4px 0 -4px; color: #b9b7ae; font-size: 12px; letter-spacing: -2px; user-select: none; }
+.plan-unit[draggable]:hover .grip { color: var(--muted); }
+.plan-unit.dragging { opacity: .45; }
+.plan-unit.drop-before::before, .plan-unit.drop-after::after { content: ""; position: absolute; left: 0; right: 0; height: 3px; border-radius: 2px; background: var(--accent); }
+.plan-unit.drop-before::before { top: -5px; } .plan-unit.drop-after::after { bottom: -5px; }
+.plan-form { border-style: dashed; border-color: var(--accent); }
+.pe-form { display: flex; gap: 12px; width: 100%; align-items: flex-start; }
+.pe-fields { flex: 1; display: grid; gap: 8px; min-width: 0; }
+.pe-fields label { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
+.pe-fields input, .pe-fields textarea, .pe-fields select { font: inherit; font-size: 13.5px; color: inherit; }
+.pe-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.pe-row > label { flex: 1; min-width: 160px; }
+
 /* lesson plan as a DAG (Progress map › Lesson plan › DAG) */
 .plan-view { margin-left: 10px; }
 .plan-view button { padding: 4px 12px; font-size: 13px; }

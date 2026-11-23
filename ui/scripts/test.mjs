@@ -344,7 +344,7 @@ test("hw.db: a unit split sends units:[U02] tags to the retag queue; a unit merg
   tagProblem(db, "p1", ["U02"], v1); tagProblem(db, "p2", ["U01"], v1);
   const v2 = Cur.createDraft(db, "t");
   const { keys: [a, b] } = Cur.editDraft(db, v2, [{ op: "upsertNode", layer: "unit", fields: { name: "Second, part a", needs: ["U01"] } }, { op: "upsertNode", layer: "unit", fields: { name: "Second, part b", needs: ["U01"] } }]);
-  assert.match(a, /^u:/);
+  assert.deepEqual([a, b], ["U03", "U04"]); // next unused U numbers, so the ladder can still read them
   Cur.editDraft(db, v2, [{ op: "removeNode", key: "U02", relation: "split", into: [a, b] }]);
   assert.equal(Cur.publish(db, v2).queued, 1);
   const v3 = Cur.createDraft(db, "t");
@@ -353,6 +353,41 @@ test("hw.db: a unit split sends units:[U02] tags to the retag queue; a unit merg
   assert.equal(Cur.publish(db, v3).lineageTags, 1);
   const p2 = loadCorpusDb({ db, curriculumId: "t", versionId: v3, enrollmentId: 1 }).find((p) => p.id === "p2");
   assert.deepEqual(p2.units, [a]);
+});
+test("lesson plan editor: add, edit and remove units in the draft; the ladder reads them back", () => {
+  const { db } = freshCurriculum();
+  const v2 = Cur.createDraft(db, "t");
+  const add = (fields) => Cur.editDraft(db, v2, [{ op: "upsertNode", layer: "unit", check: true, fields: { section: 0, ...fields } }]).keys[0];
+  const k = add({ name: "Third unit", about: "Lines.", needs: ["U02"], stance: "Formal" });
+  assert.equal(k, "U03");
+  assert.throws(() => add({ name: "Bad. Name" }), /full stop/);
+  assert.throws(() => add({ name: "X", needs: ["U99"] }), /U99/);
+  assert.throws(() => add({ name: "X", about: "Covers. Needs U01." }), /description/);
+  assert.throws(() => add({ name: "" }), /name/);
+  Cur.editDraft(db, v2, [{ op: "upsertNode", layer: "unit", key: "U01", check: true, fields: { name: "First unit, renamed" } }]);
+  Cur.editDraft(db, v2, [{ op: "removeNode", key: "U02", relation: "merged", into: ["U03"] }]);
+  const md = Cur.ladderFor(db, v2), back = parseLadder(md);
+  assert.deepEqual(back.units.map((u) => u.key), ["U01", "U03"]);
+  assert.deepEqual(back.units[1].needs, []); // U03 needed U02, which merged into U03 itself
+  assert.equal(back.units[0].name, "First unit, renamed");
+  assert.deepEqual(Cur.planFor(db, v2).layout[0].items.filter((i) => i.unit), [{ unit: "U01" }, { unit: "U03" }]);
+  Cur.publish(db, v2);
+  const v3 = Cur.createDraft(db, "t");
+  Cur.editDraft(db, v3, [{ op: "removeNode", key: "U03", relation: "retired" }]);
+  assert.equal(Cur.editDraft(db, v3, [{ op: "upsertNode", layer: "unit", check: true, fields: { name: "Fresh", section: 0 } }]).keys[0], "U04"); // U03 is never reused
+});
+test("lesson plan editor: reordering a section's units moves their ladder lines and shows in the diff", () => {
+  const { db, v1 } = freshCurriculum();
+  const v2 = Cur.createDraft(db, "t");
+  Cur.editDraft(db, v2, [{ op: "upsertNode", layer: "unit", check: true, fields: { name: "Third unit", section: 0 } }]);
+  assert.throws(() => Cur.editDraft(db, v2, [{ op: "orderUnits", section: 0, keys: ["U01", "U02"] }]), /section's units/);
+  Cur.editDraft(db, v2, [{ op: "orderUnits", section: 0, keys: ["U03", "U01", "U02"] }]);
+  assert.deepEqual(parseLadder(Cur.ladderFor(db, v2)).units.map((u) => u.key), ["U03", "U01", "U02"]);
+  assert.equal(Cur.diffVersions(db, v1, v2).unitOrderChanged, false); // only the new unit moved
+  Cur.editDraft(db, v2, [{ op: "orderUnits", section: 0, keys: ["U02", "U03", "U01"] }]);
+  assert.deepEqual(parseLadder(Cur.ladderFor(db, v2)).units.map((u) => u.key), ["U02", "U03", "U01"]);
+  assert.deepEqual(Cur.planFor(db, v2).units.map((u) => u.key), ["U02", "U03", "U01"]); // ord follows
+  assert.equal(Cur.diffVersions(db, v1, v2).unitOrderChanged, true);
 });
 test("hw.db: re-import matches by whiteboard id, then title; the rest are new or gone", () => {
   const old = [{ key: "e1", external_ref: "e1", title: "Linear equations" }, { key: "c:abc", external_ref: "e7", title: "Old title" }, { key: "e3", external_ref: "e3", title: "Gone" }];

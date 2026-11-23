@@ -75,7 +75,7 @@ function diffHtml(df, unresolved) {
     df.removed.length && `<h4>Removed (${df.removed.length})</h4><ul>${removed.map((x) => `<li>${x}</li>`).join("")}</ul>`,
     df.changed.length && `<h4>Changed (${df.changed.length})</h4>${li(df.changed, (c) => `${node(c)} <span class="muted small">${esc(c.fields.join(", "))}</span>`)}`,
     (df.edgesAdded.length || df.edgesRemoved.length) && `<h4>Links</h4>${li([...edges(df.edgesAdded).map((x) => `+ ${x}`), ...edges(df.edgesRemoved).map((x) => `− ${x}`)], (x) => x)}`,
-    (df.planTextChanged || df.gatedChanged) && `<h4>Lesson plan</h4><p class="small">${[df.planTextChanged && "preamble text changed", df.gatedChanged && "gated terms changed"].filter(Boolean).join("; ")}</p>`,
+    (df.planTextChanged || df.gatedChanged || df.unitOrderChanged) && `<h4>Lesson plan</h4><p class="small">${[df.unitOrderChanged && "units reordered", df.planTextChanged && "preamble text changed", df.gatedChanged && "gated terms changed"].filter(Boolean).join("; ")}</p>`,
   ].filter(Boolean);
   return parts.length ? parts.join("") : `<p class="muted small">No changes against the version it was made from yet.</p>`;
 }

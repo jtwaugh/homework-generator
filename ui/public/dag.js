@@ -27,7 +27,7 @@ export function lessonPlan(plan, statusMd) {
   };
   if (plan && typeof plan === "object") {
     const byKey = new Map((plan.units || []).map((u) => [u.key, u])), placed = new Set();
-    const groups = (plan.layout || []).map((sec) => ({ title: sec.heading || "", units: (sec.items || []).filter((i) => i.unit && byKey.has(i.unit)).map((i) => {
+    const groups = (plan.layout || []).map((sec, si) => ({ title: sec.heading || "", section: si, units: (sec.items || []).filter((i) => i.unit && byKey.has(i.unit)).map((i) => {
       const u = byKey.get(i.unit); placed.add(u.key);
       return unit(u.key, u.name, u.about, u.needs || [], u.stance || "", u.notes || "");
     }) }));
@@ -272,7 +272,8 @@ export function ladderHints(statusMd, ladderToWu, guess, overrides) {
 // ---------- view ----------
 
 const PLAN_VIEW_KEY = "hw.planView";
-const D = { data: null, version: null, mode: "content", sel: null, view: null, poll: null, side: "info", dragging: null, planView: "linear", graph: null };
+const D = { data: null, version: null, mode: "content", sel: null, view: null, poll: null, side: "info", dragging: null, planView: "linear", graph: null,
+  editing: false, edit: null, remove: null, editErr: "" }; // edit: a unit key, or {section} for a new unit; remove: a unit key
 try { if (localStorage.getItem(PLAN_VIEW_KEY) === "dag") D.planView = "dag"; } catch {}
 Object.defineProperty(D, "board", { get: () => (D.mode === "methods" ? "methods" : "content"), enumerable: true });
 const MODE_LABEL = { content: "Content", methods: "Methods", plan: "Lesson plan" };
@@ -361,6 +362,7 @@ function notesPanel() {
 
 function planHtml() {
   const groups = lessonPlan(D.data?.plan || S.ladder, S.status);
+  if (D.editing) return planEditHtml(groups);
   if (!groups.length) return '<p class="muted plan-empty">This version of the course has no units yet.</p>';
   return `<div class="plan">${groups.map((g) => `
     <section class="plan-group">${g.title ? `<h3>${esc(g.title)}</h3>` : ""}
@@ -376,6 +378,88 @@ function planHtml() {
           </div>
         </li>`).join("")}</ol>
     </section>`).join("")}</div>`;
+}
+
+// ---------- lesson plan editing ----------
+// Edits go to the course's draft (created from the latest published version on the first edit), never to a
+// published version: the student keeps using theirs until the draft is published on Courses and they're upgraded.
+const planUnits = () => D.data?.plan?.units || [];
+const unitSections = () => (D.data?.plan?.layout || []).map((s, i) => ({ i, heading: s.heading })).filter((s) => !/^gated/i.test(s.heading));
+
+function unitRowHtml(u) {
+  const neededBy = planUnits().filter((x) => x.needs.includes(u.id)).map((x) => x.key);
+  const confirm = D.remove === u.id ? `<div class="plan-remove small">
+      <span>Remove ${esc(u.id)}?${neededBy.length ? ` ${neededBy.map(esc).join(", ")} need${neededBy.length === 1 ? "s" : ""} it.` : ""}</span>
+      <button class="small-btn" data-pe="retire" title="Drop it; problems tagged with it go on the retag queue when the draft is published">Retire it</button>
+      <span class="muted">or merge into</span> <select class="pe-into">${planUnits().filter((x) => x.key !== u.id).map((x) => `<option value="${esc(x.key)}">${esc(x.key)} ${esc(x.name)}</option>`).join("")}</select>
+      <button class="small-btn" data-pe="merge" title="Units that need it, its tags and gated terms move to the one you pick">Merge</button>
+      <button class="link" data-pe="cancel">Cancel</button>${D.editErr ? ` <span class="err">${esc(D.editErr)}</span>` : ""}</div>` : "";
+  const drag = !D.edit && !D.remove;
+  return `<li class="plan-unit s-${u.status}" data-edit-unit="${esc(u.id)}"${drag ? ` draggable="true" title="Drag to reorder"` : ""}>
+    ${drag ? '<span class="grip" aria-hidden="true">⋮⋮</span>' : ""}<span class="chip s-${u.status}">${esc(u.id)}</span>
+    <div class="plan-body">
+      <div class="plan-title"><b>${esc(u.name)}</b>${u.stance ? ` <span class="muted small">${esc(u.stance)}</span>` : ""}</div>
+      ${u.about ? `<div class="plan-about">${esc(u.about)}</div>` : ""}
+      ${u.guide ? `<div class="muted small plan-guide">${esc(u.guide)}</div>` : ""}
+      ${u.needs.length ? `<div class="muted small">Needs ${u.needs.map(esc).join(", ")}</div>` : ""}
+      ${confirm}
+    </div>
+    <span class="plan-acts"><button class="ghost" data-pe="edit" title="Edit ${esc(u.id)}">✎</button><button class="ghost" data-pe="remove" title="Remove ${esc(u.id)}">✕</button></span>
+  </li>`;
+}
+
+function unitFormHtml(u, section) {
+  const secs = unitSections();
+  return `<li class="plan-unit plan-form"><form class="pe-form" data-key="${esc(u?.key || "")}">
+    <span class="chip">${esc(u?.key || "new")}</span>
+    <div class="pe-fields">
+      <label>Name <input name="name" value="${esc(u?.name || "")}" required autocomplete="off" /></label>
+      <label>What it covers <textarea name="about" rows="2">${esc(u?.about || "")}</textarea></label>
+      <div class="pe-row">
+        <label>Needs <input name="needs" value="${esc((u?.needs || []).join(", "))}" placeholder="e.g. U03, U04" autocomplete="off" list="pe-units" /></label>
+        <label>Stance <input name="stance" value="${esc(u?.stance || "")}" placeholder="Formal / Informal…" list="pe-stances" autocomplete="off" /></label>
+      </div>
+      <label>Notes for the homework <input name="notes" value="${esc(u?.notes || "")}" autocomplete="off" /></label>
+      ${secs.length ? `<label>Section <select name="section">${secs.map((s) => `<option value="${s.i}"${s.i === section ? " selected" : ""}>${esc(s.heading)}</option>`).join("")}</select></label>` : ""}
+      <datalist id="pe-units">${planUnits().map((x) => `<option value="${esc(x.key)}">${esc(x.name)}</option>`).join("")}</datalist>
+      <datalist id="pe-stances"><option value="Formal"></option><option value="Informal"></option></datalist>
+      <div class="pe-row"><button class="small-btn primary" type="submit">${u ? "Save" : "Add unit"}</button> <button class="link" type="button" data-pe="cancel">Cancel</button>
+        ${D.editErr ? `<span class="err small">${esc(D.editErr)}</span>` : ""}</div>
+    </div></form></li>`;
+}
+
+function planEditHtml(groups) {
+  const byKey = new Map(planUnits().map((u) => [u.key, u]));
+  const secs = unitSections();
+  // every unit section, even an empty one, so a unit can be added to it
+  const shown = secs.map((s) => ({ title: s.heading, section: s.i, units: groups.find((g) => g.section === s.i)?.units || [] }));
+  for (const g of groups) if (g.section == null) shown.push(g);
+  if (!shown.length) shown.push({ title: "", section: 0, units: groups.flatMap((g) => g.units) });
+  const adding = (si) => D.edit && typeof D.edit === "object" && D.edit.section === si;
+  return `<div class="plan editing">${shown.map((g) => `
+    <section class="plan-group">${g.title ? `<h3>${esc(g.title)}</h3>` : ""}
+      <ol class="plan-list"${g.section != null ? ` data-section="${g.section}"` : ""}>${g.units.map((u) => (D.edit === u.id ? unitFormHtml(byKey.get(u.id), g.section) : unitRowHtml(u))).join("")}
+        ${adding(g.section) ? unitFormHtml(null, g.section) : g.section != null ? `<li class="plan-add"><button class="link" data-pe="add" data-section="${g.section}">+ Add a unit${g.title ? ` to ${esc(g.title)}` : ""}</button></li>` : ""}
+      </ol>
+    </section>`).join("")}</div>`;
+}
+
+async function planEdit(ops, what) {
+  try {
+    await api("/api/versions/draft", { method: "POST", body: { ops } });
+    log("plan-edit", what);
+    D.edit = null; D.remove = null; D.editErr = "";
+    D.data = await api(dagUrl());
+  } catch (e) { D.editErr = e.message; }
+  drawAll();
+}
+
+async function startEditing() {
+  let draft = D.data?.versions?.find((v) => v.status === "draft")?.id;
+  if (!draft) draft = (await api("/api/versions/draft", { method: "POST", body: { ops: [], note: "lesson plan edits" } })).draft;
+  Object.assign(D, { editing: true, edit: null, remove: null, editErr: "", planView: "linear", version: draft, sel: null, view: null });
+  log("plan-edit-mode", { on: true, draft });
+  await load();
 }
 
 // The lesson plan as its DAG. Selecting a unit lights up everything it rests on (ancestors) and everything that
@@ -448,13 +532,21 @@ function planLegendHtml() {
 
 function headHtml() {
   const job = D.data?.job, running = job?.running;
+  if (D.mode === "plan" && D.editing) {
+    const us = planUnits();
+    return `<h2>Progress map <span class="muted">· Lesson plan</span></h2>
+      <span class="dag-count"><b>Editing draft v${D.data.version.seq}</b> · ${us.length} unit${us.length === 1 ? "" : "s"}</span>
+      <span class="spacer"></span><span class="muted small">Publish the draft on <button class="link" data-page="courses">Courses</button> to use it</span>
+      <button class="primary" data-act="plan-done">Done</button>`;
+  }
   if (D.mode === "plan") {
     const us = lessonPlan(D.data?.plan || S.ladder, S.status).flatMap((g) => g.units), n = (s) => us.filter((u) => u.status === s).length;
     const ready = planDag() && D.graph ? D.graph.nodes.filter((x) => x.ready).length : 0;
     return `<h2>Progress map <span class="muted">· Lesson plan</span></h2>
       <span class="dag-count"><b>${n("TAUGHT")} of ${us.length} taught</b> · ${n("CURRENT")} current${n("NEXT") ? ` · ${n("NEXT")} next` : ""}${ready ? ` · ${ready} ready` : ""}</span>
       <div class="seg plan-view">${["linear", "dag"].map((v) => `<button data-plan-view="${v}" class="${D.planView === v ? "on" : ""}">${{ linear: "Linear", dag: "DAG" }[v]}</button>`).join("")}</div>
-      <span class="spacer"></span><span class="muted small">Statuses from weekly_status.md · change them on Create Homework</span>${versionPicker()}${planDag() ? '<button class="ghost" data-act="fit" title="Fit to screen">⤢</button>' : ""}`;
+      <span class="spacer"></span><span class="muted small">Statuses from weekly_status.md · change them on Create Homework</span>${versionPicker()}${planDag() ? '<button class="ghost" data-act="fit" title="Fit to screen">⤢</button>' : ""}
+      <button class="secondary" data-act="plan-edit" title="Add, change or remove units in the course's draft">Edit units</button>`;
   }
   const c = counts(curDag(), statesNow()), count = `<span class="dag-count"><b>${c.done} of ${c.total} done</b>${c.partial ? ` · ${c.partial} partly` : ""} · ${c.ready} ready</span>`;
   return `<h2>Progress map <span class="muted">· ${esc(MODE_LABEL[D.mode])}</span></h2>
@@ -483,6 +575,7 @@ function syncSidebar() {
 function drawAll() {
   const d = $("#p-dag");
   syncSidebar();
+  if (D.editing && (D.mode !== "plan" || (D.data?.version && D.data.version.status !== "draft"))) Object.assign(D, { editing: false, edit: null, remove: null, editErr: "" });
   if (D.mode === "plan" && D.planView === "dag") {
     const groups = lessonPlan(D.data?.plan || S.ladder, S.status);
     D.graph = planGraph(groups);
@@ -563,10 +656,26 @@ export function initDag() {
       try { localStorage.setItem(PLAN_VIEW_KEY, D.planView); } catch {}
       log("plan-view", { view: D.planView }); return drawAll();
     }
+    const pe = t.closest("[data-pe]");
+    if (pe && D.editing) {
+      const act = pe.dataset.pe, key = pe.closest("[data-edit-unit]")?.dataset.editUnit;
+      D.editErr = "";
+      if (act === "edit") { D.edit = key; D.remove = null; }
+      else if (act === "add") { D.edit = { section: Number(pe.dataset.section) }; D.remove = null; }
+      else if (act === "remove") { D.remove = key; D.edit = null; }
+      else if (act === "cancel") { D.edit = null; D.remove = null; }
+      else if (act === "retire") return planEdit([{ op: "removeNode", key, relation: "retired" }], { op: "remove", key, relation: "retired" });
+      else if (act === "merge") { const into = pe.parentElement.querySelector(".pe-into")?.value; if (into) return planEdit([{ op: "removeNode", key, relation: "merged", into: [into] }], { op: "remove", key, relation: "merged", into }); }
+      drawAll();
+      if (act === "edit" || act === "add") $("#p-dag .pe-form input[name=name]")?.focus();
+      return;
+    }
     const pu = t.closest(".plan-unit[data-unit]");
     if (pu) { D.planView = "dag"; D.sel = pu.dataset.unit; D.view = null; try { localStorage.setItem(PLAN_VIEW_KEY, "dag"); } catch {} log("plan-view", { view: "dag", from: pu.dataset.unit }); return drawAll(); }
     const gu = t.closest("[data-goto-unit]"); if (gu) { D.sel = gu.dataset.gotoUnit; log("dag-select", { board: "plan", id: D.sel }); return drawAll(); }
     const a = t.closest("[data-act]");
+    if (a?.dataset.act === "plan-edit") { try { await startEditing(); } catch (err) { alert(err.message); } return; }
+    if (a?.dataset.act === "plan-done") { Object.assign(D, { editing: false, edit: null, remove: null, editErr: "", version: null }); log("plan-edit-mode", { on: false }); return load(); }
     if (a?.dataset.act === "fit") { D.view = bbox(curDag()); return drawSvgOnly(); }
     if (a?.dataset.act === "guess") { try { await api("/api/dag/guess", { method: "POST" }); } catch (err) { alert(err.message); } return load(); }
     if (a?.dataset.act === "stop-guess") { await api("/api/dag/guess/stop", { method: "POST" }); return setTimeout(load, 500); }
@@ -574,6 +683,45 @@ export function initDag() {
     const gk = t.closest("[data-goto-key]"); if (gk) { focusNode(gk.dataset.gotoKey); return drawAll(); }
     const dn = t.closest("[data-del-note]"); if (dn) { if (!confirm(`Delete ${dn.dataset.delNote}?`)) return; const r = await api(`/api/notes/${encodeURIComponent(dn.dataset.delNote)}`, { method: "DELETE" }); D.data.notes = r.notes; return drawAll(); }
   });
+  d.addEventListener("submit", (e) => {
+    const f = e.target.closest(".pe-form"); if (!f) return;
+    e.preventDefault();
+    const v = (n) => f.elements[n]?.value.trim() ?? "";
+    const fields = { name: v("name").replace(/\.$/, ""), about: v("about").replace(/\s+/g, " "), needs: v("needs").toUpperCase().split(/[\s,]+/).filter(Boolean), stance: v("stance").replace(/\.$/, ""), notes: v("notes") };
+    if (f.elements.section) fields.section = Number(f.elements.section.value);
+    const key = f.dataset.key || undefined;
+    planEdit([{ op: "upsertNode", layer: "unit", key, check: true, fields }], { op: key ? "edit" : "add", key });
+  });
+  // drag a unit to reorder it within its section (Lesson plan › Edit units)
+  let dragging = null;
+  const clearMarks = () => $$("#p-dag .drop-before, #p-dag .drop-after").forEach((x) => x.classList.remove("drop-before", "drop-after"));
+  const dropSpot = (e) => {
+    const li = e.target.closest?.("li[data-edit-unit]");
+    if (!dragging || !li || li.parentElement !== dragging.parentElement) return null;
+    const r = li.getBoundingClientRect();
+    return { li, after: e.clientY > r.top + r.height / 2 };
+  };
+  d.addEventListener("dragstart", (e) => {
+    const li = e.target.closest?.("li[data-edit-unit][draggable]"); if (!li || !D.editing) return;
+    dragging = li; li.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", li.dataset.editUnit);
+  });
+  d.addEventListener("dragover", (e) => {
+    const s = dropSpot(e); if (!s) return;
+    e.preventDefault(); clearMarks();
+    if (s.li !== dragging) s.li.classList.add(s.after ? "drop-after" : "drop-before");
+  });
+  d.addEventListener("drop", (e) => {
+    const s = dropSpot(e); if (!s) return;
+    e.preventDefault();
+    const list = dragging.parentElement, keys = [...list.querySelectorAll(":scope > li[data-edit-unit]")].map((x) => x.dataset.editUnit);
+    const from = dragging.dataset.editUnit, to = s.li.dataset.editUnit, next = keys.filter((k) => k !== from);
+    next.splice(next.indexOf(to) + (s.after ? 1 : 0), 0, from);
+    if (to === from || next.join() === keys.join()) return;
+    planEdit([{ op: "orderUnits", section: Number(list.dataset.section), keys: next }], { op: "reorder", key: from, before: next[next.indexOf(from) + 1] || null });
+  });
+  d.addEventListener("dragend", () => { dragging?.classList.remove("dragging"); dragging = null; clearMarks(); });
+  d.addEventListener("keydown", (e) => { if (e.key === "Escape" && D.editing && (D.edit || D.remove)) { D.edit = null; D.remove = null; D.editErr = ""; drawAll(); } });
   d.addEventListener("change", (e) => {
     if (e.target.matches("#dag-drop input")) upload([...e.target.files]);
     if (e.target.matches(".dag-version")) {
