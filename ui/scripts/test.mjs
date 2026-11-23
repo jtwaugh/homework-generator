@@ -208,6 +208,18 @@ test("preflight: topics in NEXT/FUTURE units are promoted instead of asked; blan
   const off = buildBrief({ status, ladder, corpus: fz, dataDir: path.join(HERE, "no-such-dir"), overrides: { "promote:U21": false } });
   assert.ok(!off.allowedUnits.includes("U21"));
 });
+test("preflight: answer key, worked examples and unit circle sheet reach the brief", () => {
+  const ladder = fs.readFileSync(path.join(HERE, "..", "..", "curriculum_ladder.md"), "utf8");
+  const base = ["## This week's input", "Date (for title): 11/23/2026", "Topics: Linear equations"];
+  const brief = (extra) => buildBrief({ status: [...base, ...extra, ""].join("\n"), ladder, corpus: fz, dataDir: path.join(HERE, "no-such-dir") });
+  const none = brief([]);
+  assert.equal(none.answerKey, false); assert.equal(none.unitCircle, false); assert.equal(none.workedExamples, 0); assert.equal(none.graphPaperMode, "auto");
+  assert.match(briefText(none), /Answer key: no · Worked examples: no · Unit circle sheet: no/);
+  const all = brief(["Answer key: yes", "Worked examples: 2", "Unit circle sheet: yes", "Graph paper: yes"]);
+  assert.equal(all.answerKey, true); assert.equal(all.unitCircle, true); assert.equal(all.workedExamples, 2);
+  assert.match(briefText(all), /Graph paper: yes\n.*Answer key: yes · Worked examples: 2 · Unit circle sheet: yes/);
+  assert.equal(brief(["Worked examples: yes"]).workedExamples, "auto");
+});
 test("routing: checkpoint on the main model, final on Sonnet, fixes on Haiku then up a tier", () => {
   const w = { model: "claude-opus-5-5", messages: [] };
   assert.equal(stageFor("start", w), "outline");

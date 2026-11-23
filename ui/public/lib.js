@@ -114,6 +114,9 @@ export const WEEK_FIELDS = [
   { key: "Emphasize or avoid", label: "Emphasize / avoid", kind: "textarea" },
   { key: "Graph paper", label: "Graph paper", kind: "select", opts: ["", "yes", "no", "auto"] },
   { key: "Fact sheet or other auxiliary file", label: "Fact sheet / aux", kind: "textarea", ph: 'paste it, or "none"' },
+  { key: "Answer key", label: "Answer key", kind: "select", opts: ["", "yes", "no"] },
+  { key: "Worked examples", label: "Worked examples", kind: "input", ph: "yes or a number" },
+  { key: "Unit circle sheet", label: "Unit circle sheet", kind: "select", opts: ["", "yes", "no"] },
 ];
 // Template placeholder values that mean "not filled in".
 export const PLACEHOLDER = /^(yes \/ no( \/ auto)?|upload, paste, or "none")$/;

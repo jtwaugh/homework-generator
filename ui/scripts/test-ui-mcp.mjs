@@ -88,6 +88,11 @@ try {
 
   console.log("Set up the week");
   await step("date", "ui_type", { selector: "#f-date", text: "12/05/2026" }, /input el=#f-date value=12\/05\/2026/);
+  await step("open Options", "ui_click", sel("#opts-btn"), /click/);
+  await step("check Answer key", "ui_click", sel('#opts-menu input[data-key="Answer key"]'), /weekInput.Answer key: "" → "yes"/);
+  await step("Worked examples: 3", "ui_eval", { js: "document.querySelector('#opts-menu .dd-item[data-key=\"Worked examples\"] button[data-v=\"3\"]').click(); return document.querySelector('#opts-sum').textContent" }, /answer key · 3 worked examples/);
+  await step("Sections: 4", "ui_eval", { js: "document.querySelector('#opts-menu .dd-item[data-key^=\"Number of sections\"] button[data-v=\"4\"]').click(); return document.querySelector('#opts-sum').textContent" }, /^4 sections/);
+  await step("close Options", "ui_click", sel("#f-date"), /click/);
   await step("type a topic", "ui_type", { selector: "#f-topics .tinput", text: "linear inequalities" }, /input el=.*tinput/);
   await step("↩ adds the chip", "ui_key", { key: "Enter", selector: "#f-topics .tinput" }, /key key=Enter/, /weekInput.Topics: "" → "linear inequalities( \(U\d\d\))?"/i);
   await step("We moved on → pick a unit", "ui_click", sel("#units [data-act=choose]"), /data-act=choose/);

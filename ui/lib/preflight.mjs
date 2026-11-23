@@ -71,6 +71,12 @@ export function buildBrief({ status, ladder, corpus, dataDir, overrides = {}, no
   const disclaimer = /^y/i.test(input["Disclaimer"] || "") ? "yes" : "no";
   if (!input["Disclaimer"]) decisions.push({ key: "disclaimer", text: "Disclaimer is blank: no disclaimer line.", default: "no" });
   const graphPaper = /^y/i.test(input["Graph paper"] || "");
+  const graphPaperMode = graphPaper ? "yes" : /^n/i.test(input["Graph paper"] || "") ? "no" : "auto";
+  const on = (v) => !!v && !/^(no|none|auto)$/i.test(v.trim());
+  const answerKey = on(input["Answer key"]);
+  const unitCircle = on(input["Unit circle sheet"]);
+  const we = (input["Worked examples"] || "").trim();
+  const workedExamples = !on(we) ? 0 : Number(we.match(/^\d+$/)?.[0]) || "auto";
 
   // Topics -> units. Unit ids in chips win; else the ladder name / keywords.
   const topicChips = parseTopics(input["Topics"] || "").map((c) => {
@@ -116,7 +122,7 @@ export function buildBrief({ status, ladder, corpus, dataDir, overrides = {}, no
   const rulings = loadRulings(dataDir).rulings;
   const required = date ? [] : ["date"];
   return {
-    date, disclaimer, graphPaper, required,
+    date, disclaimer, graphPaper, graphPaperMode, answerKey, unitCircle, workedExamples, required,
     allowedUnits: [...allowed].sort(), promotions, decisions, rulings,
     extraBans: statusSection(status, "## Extra bans this week").split("\n").map((l) => l.replace(/^\s*-\s*/, "").trim()).filter((l) => l && !/^\(none\)$/i.test(l)),
     sections, needsResearch: sections.filter((s) => s.coverage !== "covered").map((s) => s.key),
@@ -126,7 +132,8 @@ export function buildBrief({ status, ladder, corpus, dataDir, overrides = {}, no
 // The brief as the text Claude gets (start of the outline stage).
 export function briefText(b, corpusById = {}) {
   const lines = [
-    `Date: ${b.date} · Disclaimer: ${b.disclaimer} · Graph paper: ${b.graphPaper ? "yes" : "no"}`,
+    `Date: ${b.date} · Disclaimer: ${b.disclaimer} · Graph paper: ${b.graphPaperMode || (b.graphPaper ? "yes" : "no")}${b.graphPaperMode === "auto" ? " (only if the set is graphing-adjacent)" : ""}`,
+    `Answer key: ${b.answerKey ? "yes" : "no"} · Worked examples: ${!b.workedExamples ? "no" : b.workedExamples === "auto" ? "yes (you choose how many)" : b.workedExamples} · Unit circle sheet: ${b.unitCircle ? "yes" : "no"}`,
     `Allowed units this week (TAUGHT or CURRENT, after promotions): ${b.allowedUnits.join(", ")}`,
     b.extraBans.length ? `Extra bans: ${b.extraBans.join("; ")}` : "",
     "", "## Decisions already made (do not ask about these; list them under Assumptions)",

@@ -68,12 +68,31 @@
         </div>
         <div class="opt-grid">
           <div class="field"><label for="f-date">Date</label><input id="f-date" placeholder="11/28/2026" /><span id="date-note" class="field-note"></span></div>
-          <div class="field"><label>Sections</label>
-            <div class="seg" data-key="Number of sections (default 3-4)" data-default="" data-other="1"><button data-v="">3–4<small>default</small></button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button><button data-v="other">Other…</button></div>
-            <input id="f-sections" placeholder="e.g. 4: routine, ideas, review, challenge" hidden />
+          <div class="field"><label>Options</label>
+            <div id="opts" class="dd">
+              <button id="opts-btn" class="dd-btn" aria-haspopup="true" aria-expanded="false"><span id="opts-sum"></span><span class="dd-caret">▾</span></button>
+              <div id="opts-menu" class="dd-menu" role="menu" hidden>
+                <div class="dd-item has-sub" data-key="Number of sections (default 3-4)" tabindex="0">
+                  <span class="dd-box"></span><span class="dd-label">Sections</span><span class="dd-val"></span><span class="dd-more">›</span>
+                  <div class="dd-sub">
+                    <button data-v="" title="Default: 3 to 4 sections">3–4</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button><button data-v="6">6</button>
+                    <input id="f-sections" placeholder="or describe the sections…" title="e.g. 4: routine, ideas, review, challenge" />
+                  </div>
+                </div>
+                <div class="dd-sep"></div>
+                <label class="dd-item"><input type="checkbox" data-key="Answer key" /><span class="dd-label">Answer key</span><span class="dd-hint">on its own page at the end</span></label>
+                <div class="dd-item has-sub" data-key="Worked examples" tabindex="0">
+                  <input type="checkbox" data-key="Worked examples" /><span class="dd-label">Worked examples</span><span class="dd-val"></span><span class="dd-more">›</span>
+                  <div class="dd-sub">
+                    <button data-v="yes" title="Claude picks how many">Auto</button><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button>
+                  </div>
+                </div>
+                <label class="dd-item"><input type="checkbox" data-key="Unit circle sheet" /><span class="dd-label">Unit circle sheet</span><span class="dd-hint">reference page</span></label>
+                <label class="dd-item"><input type="checkbox" data-key="Graph paper" /><span class="dd-label">Graph paper</span><span class="dd-hint">off: only if graphing</span></label>
+                <label class="dd-item"><input type="checkbox" data-key="Disclaimer" /><span class="dd-label">Disclaimer</span><span class="dd-hint">AI-generated note</span></label>
+              </div>
+            </div>
           </div>
-          <div class="field"><label>Graph paper</label><div class="seg" data-key="Graph paper" data-default="auto"><button data-v="auto">Auto<small>default</small></button><button data-v="yes">Yes</button><button data-v="no">No</button></div></div>
-          <div class="field"><label>Disclaimer</label><div class="seg" data-key="Disclaimer" data-default="no"><button data-v="no">No<small>default</small></button><button data-v="yes">Yes</button></div></div>
         </div>
         <details id="more-opts">
           <summary>More options <span class="muted">(problem ideas, emphasize/avoid, fact sheet)</span></summary>

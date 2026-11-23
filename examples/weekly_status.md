@@ -29,3 +29,6 @@ Example problem ideas (optional):
 Emphasize or avoid: 
 Graph paper: no
 Fact sheet or other auxiliary file: 
+Answer key: 
+Worked examples: 
+Unit circle sheet: 

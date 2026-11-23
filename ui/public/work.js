@@ -158,16 +158,57 @@ const FIELD_IDS = { "f-date": "Date (for title)", "f-sections": "Number of secti
 const setField = (key, v) => { const vals = parseWeekInput(S.status); vals[key] = v; updateStatus(writeWeekInput(S.status, vals)); };
 
 for (const [id, key] of Object.entries(FIELD_IDS)) $("#" + id).addEventListener("input", (e) => setField(key, e.target.value));
-const setupUI = { sectionsOther: false };
-$$(".seg").forEach((seg) => seg.addEventListener("click", (e) => {
-  const b = e.target.closest("button"); if (!b) return;
-  const v = b.dataset.v;
-  if (seg.dataset.other) {
-    setupUI.sectionsOther = v === "other";
-    if (v === "other") { render(); return $("#f-sections").focus(); }
+// Options dropdown: checkboxes, with small sub-menus for the numbers.
+const SECTIONS_KEY = "Number of sections (default 3-4)";
+const optsMenu = $("#opts-menu"), optsBtn = $("#opts-btn");
+const openOpts = (on) => { optsMenu.hidden = !on; optsBtn.setAttribute("aria-expanded", String(on)); if (!on) $$(".dd-item.open", optsMenu).forEach((x) => x.classList.remove("open")); };
+optsBtn.addEventListener("click", () => openOpts(optsMenu.hidden));
+document.addEventListener("click", (e) => { if (!optsMenu.hidden && !e.target.closest("#opts")) openOpts(false); });
+optsMenu.addEventListener("keydown", (e) => { if (e.key === "Escape") { openOpts(false); optsBtn.focus(); } });
+optsMenu.addEventListener("change", (e) => {
+  const cb = e.target.closest("input[type=checkbox]"); if (!cb) return;
+  // Checking means "yes" (Worked examples: Claude picks how many); the sub-menu sets a count.
+  setField(cb.dataset.key, cb.checked ? "yes" : "");
+});
+optsMenu.addEventListener("click", (e) => {
+  const item = e.target.closest(".dd-item.has-sub"); if (!item) return;
+  const b = e.target.closest(".dd-sub button");
+  if (b) return setField(item.dataset.key, b.dataset.v);
+  if (e.target.closest(".dd-sub") || e.target.matches("input")) return;
+  // Clicking the row itself opens its sub-menu (for touch, where there is no hover).
+  const was = item.classList.contains("open");
+  $$(".dd-item.open", optsMenu).forEach((x) => x.classList.remove("open"));
+  item.classList.toggle("open", !was);
+  if (!was) placeSub(item);
+});
+// Flyouts open to the left when there is no room on the right.
+const placeSub = (item) => { item.classList.remove("flip"); const sub = $(".dd-sub", item), r = item.getBoundingClientRect(); item.classList.toggle("flip", r.right + (sub.offsetWidth || 260) > window.innerWidth - 8); };
+optsMenu.addEventListener("mouseover", (e) => { const item = e.target.closest(".dd-item.has-sub"); if (item && !item.contains(e.relatedTarget)) placeSub(item); });
+optsMenu.addEventListener("focusin", (e) => { const item = e.target.closest(".dd-item.has-sub"); if (item) placeSub(item); });
+const yes = (v) => !!v && !/^(no|none|auto)$/i.test(v.trim());
+function optsSummary(vals) {
+  const n = (vals[SECTIONS_KEY] || "").trim();
+  const bits = [/^\d+$/.test(n) ? `${n} sections` : n ? "custom sections" : "3–4 sections"];
+  if (yes(vals["Answer key"])) bits.push("answer key");
+  const we = (vals["Worked examples"] || "").trim();
+  if (yes(we)) bits.push(/^\d+$/.test(we) ? `${we} worked example${we === "1" ? "" : "s"}` : "worked examples");
+  if (yes(vals["Unit circle sheet"])) bits.push("unit circle");
+  if (/^y/i.test(vals["Graph paper"] || "")) bits.push("graph paper");
+  if (yes(vals["Disclaimer"])) bits.push("disclaimer");
+  return bits.join(" · ");
+}
+function renderOpts(vals) {
+  $("#opts-sum").textContent = optsSummary(vals);
+  for (const cb of $$("input[type=checkbox]", optsMenu)) cb.checked = cb.dataset.key === "Graph paper" ? /^y/i.test(vals["Graph paper"] || "") : yes(vals[cb.dataset.key]);
+  for (const item of $$(".dd-item.has-sub", optsMenu)) {
+    const v = (vals[item.dataset.key] || "").trim();
+    const btns = $$(".dd-sub button", item);
+    btns.forEach((b) => b.classList.toggle("on", b.dataset.v === v || (item.dataset.key === SECTIONS_KEY && !b.dataset.v && !v)));
+    const on = btns.find((b) => b.classList.contains("on"));
+    if (item.dataset.key === SECTIONS_KEY && document.activeElement !== $("#f-sections") && /^\d*$/.test(v)) $("#f-sections").value = "";
+    $(".dd-val", item).textContent = item.dataset.key === SECTIONS_KEY ? (on ? on.textContent : v ? "custom" : "") : yes(v) ? (/^\d+$/.test(v) ? v : "auto") : "";
   }
-  setField(seg.dataset.key, v === seg.dataset.default ? "" : v); // the default is stored as blank
-}));
+}
 $("#ctx").addEventListener("click", (e) => { if (e.target.closest("[data-act=more]")) { ctxUI.more = !ctxUI.more; render(); } });
 $("#topic-suggest").addEventListener("click", (e) => {
   const b = e.target.closest("[data-unit]"); if (!b) return;
@@ -220,13 +261,7 @@ function renderSetup() {
   if (!vals["Date (for title)"] && S.texFiles && document.activeElement !== $("#f-date")) return setField("Date (for title)", nextSetDate(S.texFiles, ""));
   for (const [id, key] of Object.entries(FIELD_IDS)) { const f = $("#" + id); if (document.activeElement !== f) f.value = vals[key] || ""; }
   topics.sync();
-  $$("#v-setup .seg").forEach((seg) => {
-    const btns = $$("button", seg);
-    let v = (vals[seg.dataset.key] || seg.dataset.default).toLowerCase().trim();
-    if (seg.dataset.other && (setupUI.sectionsOther || !btns.some((b) => b.dataset.v === v))) { v = "other"; setupUI.sectionsOther = true; }
-    btns.forEach((b) => b.classList.toggle("on", v === b.dataset.v));
-  });
-  $("#f-sections").hidden = !setupUI.sectionsOther;
+  renderOpts(vals);
   $("#date-note").textContent = vals["Date (for title)"] && vals["Date (for title)"] === nextSetDate(S.texFiles || [], "") ? "a week after your last set" : "";
   const chosen = new Set(parseTopics(vals["Topics"] || "").map((c) => c.id).filter(Boolean));
   const sugg = (S.units?.length ? unitsModel(S.status).current : []).filter((u) => !chosen.has(u.id));

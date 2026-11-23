@@ -14,6 +14,7 @@ The page is split in two: the conversation with Claude on the left (every tool c
    - **show all units** opens the full timeline.
    - **Make a set on Uxx →** (or **Make a set →** next to any unit under **We moved on**) is the one-click path: it marks that unit current, sets the date a week after the last saved set, keeps the rest of last week's input, and has Claude write the finished set in one pass, with no questions and no outline. The reply opens with a **Judgment calls** list; correct any of them in one chat message, or go straight to step 3.
    - To steer the set instead, fill in the date and topics and click **Generate outline**.
+   - **Options** is a dropdown: the number of sections, and checkboxes for an answer key, worked examples, a unit circle reference sheet, graph paper and the disclaimer. Rows with a › open a small menu of numbers on hover (or click): how many sections, how many worked examples.
    - Everything autosaves to `weekly_status.md`. **view MD** shows the raw file.
 2. **Review the outline.**
    - If Claude asks questions, answer them or click **Use your defaults**.
