@@ -2,6 +2,8 @@
 // Live-debug harness: a persistent headless Chrome pointed at the app, controlled from the shell.
 //
 //   node ui/dev/harness.mjs serve            # start (keeps running; one browser, one page)
+//   HARNESS_HEADED=1 node ui/dev/harness.mjs serve   # same, in a visible window (e.g. to log in to a deployed
+//                                            # site by hand; the profile keeps the cookie for later headless runs)
 //   node ui/dev/harness.mjs <cmd> [args...]  # talk to it
 //
 // Commands:
@@ -41,6 +43,7 @@ const DATA = path.join(HERE, "..", "data", "harness");
 const CTRL = +(process.env.HARNESS_PORT || 4749);
 const CDP_PORT = +(process.env.HARNESS_CDP_PORT || 9333);
 const APP = process.env.APP_URL || `http://localhost:${process.env.PORT || 4747}/`;
+const HEADED = /^(1|true|yes)$/i.test(process.env.HARNESS_HEADED || "");
 const CHROME = process.env.CHROME || [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
@@ -71,7 +74,7 @@ async function serve() {
   if (!CHROME) throw new Error("Chrome not found; set CHROME=/path/to/chrome");
   fs.mkdirSync(DATA, { recursive: true });
   const chrome = spawn(CHROME, [
-    "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--no-default-browser-check",
+    ...(HEADED ? [] : ["--headless=new", "--disable-gpu", "--hide-scrollbars"]), "--no-first-run", "--no-default-browser-check",
     `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${path.join(DATA, CDP_PORT === 9333 ? "profile" : `profile-${CDP_PORT}`)}`,
     "--window-size=1200,1000", APP,
   ], { stdio: "ignore" });

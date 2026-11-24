@@ -44,7 +44,45 @@ const reviewItems = (status) => statusSection(status, "## Review priority").spli
 // The section plan's default sizes (project_instructions.md: routine ~15, idea-building 4-8).
 const ROUTINE = /arithmetic|drill|practice|simplify|expand|factor|solve|exponent law|basic/i;
 
-export function buildBrief({ status, ladder, corpus, overrides = {}, now = Date.now() }) {
+// The teacher's Progress-map comments that bear on this week: those on a unit in play (allowed, or in a section),
+// and those on a block one of those units covers. focus: the unit is in a section (this week's topics or review).
+export function briefComments(comments = [], { allowed, sections, byId = {} }) {
+  const inSec = new Set(sections.flatMap((s) => s.units));
+  const inPlay = (u) => allowed.has(u) || inSec.has(u);
+  const out = [];
+  for (const c of comments) {
+    if (!c.texts?.length) continue;
+    const units = c.layer === "unit" ? (inPlay(c.key) ? [c.key] : []) : c.via.filter(inPlay);
+    if (!units.length) continue;
+    out.push({ key: c.key, layer: c.layer, title: c.layer === "unit" ? byId[c.key]?.name || c.title : c.title, units, texts: c.texts, focus: units.some((u) => inSec.has(u)) });
+  }
+  const ord = (k) => { const i = Object.keys(byId).indexOf(k); return i < 0 ? 1e9 : i; };
+  return out.sort((a, b) => b.focus - a.focus || ord(a.units[0]) - ord(b.units[0]) || (a.layer === "unit" ? 0 : 1) - (b.layer === "unit" ? 0 : 1));
+}
+
+// The progress-map blocks of the units in play, with the student's state on each, for the brief.
+//   covers {U14: [keys]}, nodes Map key -> {layer, title}, progress {key: {state, confidence, source}} (teacher wins),
+//   units: the units in play, in ladder order.
+export function mapBlocks({ covers = {}, nodes, progress = {}, units = [] }) {
+  const out = [], seen = new Set();
+  for (const u of units) for (const k of covers[u] || []) {
+    const n = nodes.get(k);
+    if (!n || n.layer === "unit" || seen.has(k)) continue;
+    seen.add(k);
+    const p = progress[k];
+    out.push({ key: k, layer: n.layer, title: n.title, unit: u, state: p?.state || null, confidence: p?.confidence ?? null, teacher: p?.source === "teacher" });
+  }
+  return out;
+}
+const STATE_WORD = { done: "done", partial: "partial", "not-yet": "NOT YET" };
+export function mapLines(blocks = []) {
+  if (!blocks.length) return [];
+  const st = (b) => !b.state ? "no evidence" : `${STATE_WORD[b.state]}${b.teacher ? " (teacher)" : b.confidence != null ? ` (guess, ${Math.round(b.confidence * 100)}%)` : ""}`;
+  return ["", "## Progress map: the blocks of the units in play, and where the student is on each (key · block · state)",
+    ...blocks.map((b) => `- ${b.key} · ${b.layer === "methods" ? "method" : "fact"}: ${b.title} [${b.unit}] · ${st(b)}`)];
+}
+
+export function buildBrief({ status, ladder, corpus, comments = [], overrides = {}, now = Date.now() }) {
   const units = ladderUnits(ladder);
   const byId = Object.fromEntries(units.map((u) => [u.id, u]));
   const input = weekInput(status);
@@ -120,6 +158,7 @@ export function buildBrief({ status, ladder, corpus, overrides = {}, now = Date.
     conventions: items("## Standing conventions"),
     history: items("## Recent history").slice(-HISTORY_LINES),
     sections, needsResearch: sections.filter((s) => s.coverage !== "covered").map((s) => s.key),
+    comments: briefComments(comments, { allowed, sections, byId }),
   };
 }
 const HISTORY_LINES = 6;
@@ -146,6 +185,8 @@ export function briefText(b) {
     ...(b.review.length ? ["", "## Review priority (the mixed-review section draws from these first, in order)", ...list(b.review, true)] : []),
     ...(b.softDefaults.length ? ["", "## Soft defaults for this week", ...list(b.softDefaults)] : []),
     ...(b.extraBans.length ? ["", "## Extra bans this week", ...list(b.extraBans)] : []),
+    ...commentLines(b.comments),
+    ...mapLines(b.map),
     ...(b.conventions.length ? ["", "## Standing conventions (the teacher's rulings from earlier weeks; follow them)", ...list(b.conventions)] : []),
     ...(b.history.length ? ["", "## Recent sets (oldest first)", ...list(b.history)] : []),
     "", "## Decisions already made (do not ask about these; list them under Assumptions)",
@@ -154,6 +195,16 @@ export function briefText(b) {
     ...b.sections.map((s, i) => `${i + 1}. ${s.title} [${s.units.join(", ") || "no unit"}] ${s.kind}, about ${s.target} problems. Corpus: ${s.coverage} (${s.usable} usable${s.corpusIds.length ? ": " + s.corpusIds.slice(0, 12).join(", ") : ""})`),
   ];
   return lines.filter((l) => l !== "").join("\n").replace(/\n## /g, "\n\n## ");
+}
+
+// One line per comment, the unit (or block) first. A comment's own line breaks are kept, indented.
+export function commentItem(c) {
+  const where = c.layer === "unit" ? `${c.key} ${c.title}` : `${c.layer === "methods" ? "methods" : "content"} block "${c.title}" (covered by ${c.units.join(", ")})`;
+  return c.texts.map((t) => `- ${where}${c.focus ? " [this week]" : ""}: ${t.replace(/\n+/g, "\n  ")}`);
+}
+export function commentLines(cs = []) {
+  if (!cs.length) return [];
+  return ["", "## The teacher's comments on units and blocks in play (from the progress map; instructions, follow every one)", ...cs.flatMap(commentItem)];
 }
 
 // The student's status for prompts other than the week's (the progress-map guess): statuses, review, history.

@@ -70,7 +70,7 @@ function unitsWidgetHtml(mdText) {
       return `<button class="chip s-${s}${note ? " partial" : ""}${missing.length ? " warn" : ""}${unitsUI.sel === u.id ? " sel" : ""}" data-act="pick" data-id="${u.id}" title="${esc(`${u.id} ${u.name}: ${LABEL[s]}${note ? " " + note : ""}`)}" aria-expanded="${unitsUI.sel === u.id}">${u.id}</button>`;
     }).join("")}</div>
     ${unitDetailHtml(m)}
-    <div class="legend"><span class="chip s-TAUGHT mini"></span>Taught <span class="chip s-TAUGHT partial mini"></span>Partly <span class="chip s-CURRENT mini"></span>Current <span class="chip s-NEXT mini"></span>Next <span class="chip s-FUTURE mini"></span>Future <span class="muted">· click a unit to see or change it ·</span> <button class="link" data-page="dag" data-dag="plan">Open in Progress Map →</button></div>` : "";
+    <div class="legend"><span class="chip s-TAUGHT mini"></span>Taught <span class="chip s-TAUGHT partial mini"></span>Partly <span class="chip s-CURRENT mini"></span>Current <span class="chip s-NEXT mini"></span>Next <span class="chip s-FUTURE mini"></span>Future <span class="muted">· click a unit to see or change it ·</span> <button class="link" data-page="dag" data-dag="scopeSeq">Open in Progress Map →</button></div>` : "";
   return head + decision + all;
 }
 
@@ -84,9 +84,33 @@ function unitDetailHtml(m) {
     <div class="u-detail-head"><b>${u.id}</b> ${esc(u.name)}<span class="spacer"></span><button class="link" data-act="pick" data-id="${u.id}" aria-label="Close">close</button></div>
     <div class="muted small">${u.needs.length ? `Builds on ${u.needs.join(", ")}` : "No prerequisites"}${note ? ` · ${esc(note)}` : ""}</div>
     ${missing.length ? `<div class="warn-text small">⚠ ${missing.join(", ")} not marked taught yet</div>` : ""}
+    ${unitCommentsHtml(u.id)}
     <div class="u-detail-row"><div class="seg" role="group" aria-label="${esc(u.id)} status">${STATUSES.map((x) => `<button class="${x === s ? "on" : ""}" data-act="status" data-id="${u.id}" data-status="${x}" aria-pressed="${x === s}">${LABEL[x]}</button>`).join("")}</div>
       <span class="spacer"></span>${inTopics ? '<span class="ok-text small">✓ in this week\'s topics</span>' : `<button class="secondary small" data-act="topic" data-id="${u.id}">+ Add to this week's topics</button>`}</div>
   </div>`;
+}
+
+// A unit's Progress-map comments, with a box to add one. They go into the brief of every set that uses the unit.
+const unitComments = (id) => extra.comments?.[id] || [];
+function unitCommentsHtml(id) {
+  const cs = unitComments(id);
+  return `<div class="u-cmts">
+    <div><div class="k">💬 Your comments on ${esc(id)}</div><div class="muted small">Claude follows these in every set that uses ${esc(id)}.</div></div>
+    ${cs.map((c) => `<div class="u-cmt">${esc(c.text)}</div>`).join("")}
+    <form class="u-cmt-form" data-key="${esc(id)}"><textarea name="text" rows="2" placeholder="e.g. still shaky on negatives here; keep numbers small"></textarea>
+      <div class="u-cmt-row"><button class="small-btn" type="submit">Add comment</button>${unitsUI.cErr ? `<span class="err small">${esc(unitsUI.cErr)}</span>` : ""}${cs.length ? '<span class="spacer"></span><button class="link small" type="button" data-page="dag" data-dag="scopeSeq">edit on Progress map →</button>' : ""}</div></form>
+  </div>`;
+}
+async function addUnitComment(form) {
+  const text = form.elements.text.value.trim();
+  if (!text) return;
+  try {
+    const r = await api("/api/comments", { method: "POST", body: { key: form.dataset.key, text } });
+    extra.comments = r.comments; unitsUI.cErr = ""; form.elements.text.value = "";
+    log("unit-comment", { unit: form.dataset.key });
+    briefFor = null; loadBrief();
+  } catch (e) { unitsUI.cErr = e.message; }
+  render();
 }
 
 const quickBtn = (id) => `<button class="link quick" data-act="quick" data-id="${id}" title="Start ${id} and have Claude write the whole set in one pass">Make a set →</button>`;
@@ -241,14 +265,17 @@ function renderOpts(vals) {
 $("#ctx").addEventListener("click", (e) => { if (e.target.closest("[data-act=more]")) { ctxUI.more = !ctxUI.more; render(); } });
 $("#topic-suggest").addEventListener("click", (e) => { const b = e.target.closest("[data-unit]"); if (b) addTopicUnit(b.dataset.unit); });
 $("#units").addEventListener("click", (e) => { const b = e.target.closest("[data-act]"); if (b) applyUnitAction(b.dataset.act, b.dataset.id, b); });
+document.addEventListener("hw:comments", (e) => { extra.comments = e.detail || {}; briefFor = null; loadBrief(); });
+$("#units").addEventListener("submit", (e) => { const f = e.target.closest(".u-cmt-form"); if (f) { e.preventDefault(); addUnitComment(f); } });
 $("#status-raw").addEventListener("input", (e) => updateStatus(e.target.value));
 $("#view-md").onclick = () => { const r = $("#raw-wrap"); r.hidden = !r.hidden; $("#view-md").textContent = r.hidden ? "Edit status (Markdown)" : "Close editor"; };
 $("#more-opts").addEventListener("toggle", (e) => (e.target.dataset.touched = "1"));
 
 // Extra suggestion sources for topic chips, loaded once in the background.
-const extra = { dagNodes: [], tags: [] };
+const extra = { dagNodes: [], tags: [], comments: {} };
 export async function loadTopicSources() {
   const [dag, corpus] = await Promise.all([api("/api/dag").catch(() => null), api("/api/corpus").catch(() => ({ items: [] }))]);
+  if (dag) extra.comments = dag.comments || {};
   if (dag) extra.dagNodes = [...(dag.content?.nodes || []).filter((n) => n.kind !== "assumed").map((n) => ({ ...n, board: "content" })), ...(dag.methods?.nodes || []).map((n) => ({ ...n, id: "m:" + n.id, board: "methods" }))];
   const count = new Map();
   for (const p of corpus.items) for (const t of p.tags || []) count.set(t, (count.get(t) || 0) + 1);
@@ -286,8 +313,13 @@ function renderSetup() {
   const sugg = (S.units?.length ? unitsModel(S.status).current : []).filter((u) => !chosen.has(u.id));
   $("#topic-suggest").innerHTML = sugg.length ? `<span class="muted small">${esc(S.student || "The student")} is on:</span>${sugg.map((u) => `<button class="sugg" data-unit="${u.id}">+ <b>${u.id}</b> ${esc(u.name)}</button>`).join("")}` : "";
   if (["f-ideas", "f-emph", "f-fact"].some((id) => vals[FIELD_IDS[id]]) && !$("#more-opts").dataset.touched) $("#more-opts").open = true;
+  // Re-rendering the units widget must not eat a comment being typed in it.
+  const ta = $("#units .u-cmt-form textarea"), draft = ta && { key: ta.form.dataset.key, v: ta.value, focus: document.activeElement === ta, sel: ta.selectionStart };
   $("#units").innerHTML = unitsWidgetHtml(S.status);
+  const nt = draft && $(`#units .u-cmt-form[data-key="${draft.key}"] textarea`);
+  if (nt && draft.v) { nt.value = draft.v; if (draft.focus) { nt.focus(); nt.setSelectionRange(draft.sel, draft.sel); } }
   $("#ctx").innerHTML = contextHtml(S.status);
+  loadBrief(); // no-op unless the saved status changed: the brief (and the comments Claude will get) follows it
   if (document.activeElement !== $("#status-raw")) $("#status-raw").value = S.status;
   const checks = setupChecks();
   $("#setup-check").innerHTML = checks.map((c) => `<span class="${c.ok ? "ok" : "todo"}">${c.ok ? "✓" : "○"} ${c.label}</span>`).join("");
@@ -368,14 +400,30 @@ function renderBrief() {
   const el = $("#brief");
   if (!el) return;
   const b = briefData;
-  if (!b || !b.sections?.length) { el.innerHTML = ""; return; }
+  if (!b) { el.innerHTML = ""; return; }
+  const cmts = briefCommentsHtml(b);
+  if (!b.sections?.length) { el.innerHTML = cmts; return; }
   const promos = b.promotions.map((p) => `<button class="chip ${p.accepted ? "on" : "off"}" data-key="promote:${esc(p.id)}" title="${esc(p.from)} unit. Click to ${p.accepted ? "keep it out of" : "allow it in"} this week's set">${p.accepted ? "✓" : "✕"} ${esc(p.id)} as CURRENT</button>`).join(" ");
   const secs = b.sections.map((x) => `<span class="chip cov-${esc(x.coverage)}" title="${x.usable} usable corpus problems for about ${x.target}">${esc(x.title)} · ${COVER[x.coverage] || esc(x.coverage)}</span>`).join(" ");
   const plan = (b.stagesPlan || []).map((x) => `${esc(x.stage)}: ${x.skip ? "skipped" : esc((x.model || "").replace(/^claude-/, ""))}`).join(" → ");
   const other = b.decisions.filter((d) => !d.key.startsWith("promote:")).map((d) => `<li>${esc(d.text)}</li>`).join("");
-  el.innerHTML = `<div class="small"><b>Decided without asking</b> ${promos || '<span class="muted">nothing to decide</span>'}${other ? `<ul class="muted">${other}</ul>` : ""}</div>
+  el.innerHTML = `${cmts}<div class="small"><b>Decided without asking</b> ${promos || '<span class="muted">nothing to decide</span>'}${other ? `<ul class="muted">${other}</ul>` : ""}</div>
     <div class="small">${secs}</div><div class="small muted">Stages: ${plan}</div>`;
   $$("button[data-key]", el).forEach((btn) => (btn.onclick = () => toggleBrief(btn.dataset.key)));
+}
+// The comments Claude gets with this brief, this week's topics first. With none, say where to add them.
+function briefCommentsHtml(b) {
+  const cs = b.comments || [];
+  const focus = [...new Set(b.sections.flatMap((x) => x.units))];
+  if (!cs.length && !focus.length) return "";
+  const where = (c) => c.layer === "unit" ? `<b>${esc(c.key)}</b> ${esc(c.title)}` : `${esc(c.title)} <span class="muted">(${c.layer === "methods" ? "methods" : "content"} block, in ${esc(c.units.join(", "))})</span>`;
+  const items = cs.flatMap((c) => c.texts.map((t) => `<li class="${c.focus ? "focus" : ""}"><div class="bc-where">${where(c)}${c.focus ? ' <span class="bc-tag">this week</span>' : ""}</div><div class="bc-text">${esc(t)}</div></li>`)).join("");
+  const n = cs.reduce((k, c) => k + c.texts.length, 0);
+  return `<div class="brief-cmts${cs.length ? "" : " empty"}">
+    <div class="bc-head"><b>💬 ${n ? `Your ${n === 1 ? "comment" : `${n} comments`} Claude will follow` : "Your comments"}</b><span class="spacer"></span><button class="link small" data-page="dag" data-dag="scopeSeq">${n ? "edit" : "add"} on Progress map →</button></div>
+    ${n ? `<ul>${items}</ul><div class="muted small">Claude treats these as instructions for the units they're on, and the outline says how it used each one.</div>`
+      : `<div class="muted small">No comments on ${esc(focus.join(", ") || "this week's units")}. Notes like “still shaky on negatives” or “more word problems” change which problems Claude picks. Add one by clicking a unit under <i>all units</i>, or on the Progress map.</div>`}
+  </div>`;
 }
 $("#quick-set").onclick = () => { if (guardSetup()) { log("quick-set", { from: "setup" }); startWeek(QUICK_PROMPT); } };
 $("#generate").onclick = () => guardSetup() && startWeek("Follow the weekly workflow.");
@@ -522,6 +570,8 @@ function renderFinal(phase) {
     $(".diff", el).innerHTML = diffHtml(S.savedStatus, f.status);
   }
 
+  renderMapUpdate(el, f);
+
   const main = $(".savebar .main", el), alt = $(".savebar .alt", el);
   const busy = running || c.pending;
   main.disabled = alt.disabled = busy;
@@ -542,11 +592,12 @@ function renderFinal(phase) {
   const save = async () => {
     const f = currentFinal(); const name = $(".fname", el).value.trim();
     const updateStatus = !!f.status && $(".update-status", el).checked;
-    try { await api(`/api/weeks/${app.week.id}/finish`, { method: "POST", body: { name, tex: f.tex, updateStatus } }); }
+    const mapUpdate = $$(".map-items input:checked", el).map((x) => Number(x.dataset.i));
+    try { await api(`/api/weeks/${app.week.id}/finish`, { method: "POST", body: { name, tex: f.tex, updateStatus, mapUpdate } }); }
     catch (e) {
       if (e.status !== 409) return alert(e.message);
       if (!confirm(`${name} already exists. Replace it?`)) return;
-      await api(`/api/weeks/${app.week.id}/finish`, { method: "POST", body: { name, tex: f.tex, updateStatus, overwrite: true } });
+      await api(`/api/weeks/${app.week.id}/finish`, { method: "POST", body: { name, tex: f.tex, updateStatus, mapUpdate, overwrite: true } });
     }
     app.week = await api(`/api/weeks/${app.week.id}`); await refresh(false);
   };
@@ -558,10 +609,39 @@ function renderFinal(phase) {
     if (p.overfull.length) parts.push("Overfull boxes:\n```\n" + p.overfull.join("\n") + "\n```");
     const bad = p.lint.filter(([k]) => k === "bad");
     if (bad.length) parts.push("Checks against the hard gates flagged:\n" + bad.map(([, t]) => "- " + t).join("\n") + "\n(If a flag is a false positive, say so and leave it.)");
-    send("fix", "The app compiled and checked your .tex.\n\n" + parts.join("\n\n") + "\n\nPlease fix these and send the complete corrected .tex, the problem manifest and the status-update block again.");
+    send("fix", "The app compiled and checked your .tex.\n\n" + parts.join("\n\n") + "\n\nPlease fix these and send the complete corrected .tex, the problem manifest, the status-update block and the map-update block (if you sent one) again.");
   };
   $(".savebar .alt", el).onclick = save;
 }
+
+// Claude's proposed changes to the progress map (the final's map-update block, checked by the server), one checkbox
+// each. Unticking survives re-renders; a new final starts with everything ticked again.
+const STATE_LABEL = { "not-yet": "not yet", partial: "partial", done: "done" };
+function renderMapUpdate(el, f) {
+  const box = $(".map-view", el), mu = app.week.mapUpdate;
+  const items = mu && mu.at === f.msg.at ? mu.items : [];
+  box.hidden = !items.length && !mu?.error;
+  if (box.hidden) return;
+  const ul = $(".map-items", el);
+  if (ul.dataset.at !== f.msg.at) { ul.dataset.at = f.msg.at; ul.dataset.off = ""; }
+  const off = new Set(ul.dataset.off.split(",").filter(Boolean).map(Number));
+  const row = (r) => {
+    const st = r.state ? ` <span class="st mu-${r.state}">${STATE_LABEL[r.state]}</span>` : "";
+    const what = r.kind === "add"
+      ? `New ${r.add.layer === "methods" ? "method" : "fact"} block <b>${esc(r.add.title)}</b>${r.add.detail ? ` <span class="muted">(${esc(r.add.detail)})</span>` : ""}${r.links.length ? `<br><span class="muted small">${esc(r.links.join(" · "))}</span>` : ""}${r.state ? `<br>and mark it${st} for this student` : ""}`
+      : `Mark <b>${esc(r.title)}</b>${st} for this student`;
+    const notes = [r.why && `<span class="muted small">${esc(r.why)}</span>`, r.dropped?.length && `<span class="warn-text small">Left out links to blocks the map doesn't have: ${esc(r.dropped.join(", "))}</span>`, r.error && `<span class="warn-text small">Can't apply: ${esc(r.error)}</span>`].filter(Boolean);
+    return `<li class="${r.error ? "err" : ""}"><label><input type="checkbox" data-i="${r.i}" ${r.error ? "disabled" : off.has(r.i) ? "" : "checked"} /><span>${what}${notes.length ? `<br>${notes.join("<br>")}` : ""}</span></label></li>`;
+  };
+  ul.innerHTML = mu.error ? `<li class="err"><span class="warn-text">Couldn't read the proposals: ${esc(mu.error)}</span></li>` : items.map(row).join("");
+  $(".map-foot", el).textContent = items.some((r) => r.kind === "add") ? "New blocks go into a draft of the progress map. Publish it from Progress map to use them in next week's brief." : "";
+}
+$("#v-final .map-items").addEventListener("change", (e) => {
+  const ul = e.currentTarget, i = e.target.dataset.i;
+  const off = new Set(ul.dataset.off.split(",").filter(Boolean));
+  e.target.checked ? off.delete(i) : off.add(i);
+  ul.dataset.off = [...off].join(",");
+});
 
 // CAS log modal: every cas call for this week (from the MCP tool log, which has full code and output).
 async function openCasLog() {
@@ -578,10 +658,11 @@ async function openCasLog() {
 // ======================= done =======================
 
 function renderDone() {
-  const w = app.week, cs = w.corpusSaved;
+  const w = app.week, cs = w.corpusSaved, mu = w.mapUpdated;
   $("#v-done .done-text").innerHTML = `Saved <b>${esc(w.savedAs)}</b> to the project folder${w.statusUpdated ? " and updated the status for next week" : ""}.`
     + (cs && !cs.error ? `<br><span class="muted">${cs.total ? `${cs.added} new problem${cs.added === 1 ? "" : "s"} added to the corpus${cs.merged ? `, ${cs.merged} already there marked used` : ""}.` : "No problem manifest came with the final, so the corpus is unchanged."}</span>` : "")
-    + (cs?.error ? `<br><span class="warn-text">Corpus not updated: ${esc(cs.error)}</span>` : "");
+    + (cs?.error ? `<br><span class="warn-text">Corpus not updated: ${esc(cs.error)}</span>` : "")
+    + (mu?.error ? `<br><span class="warn-text">Progress map not updated: ${esc(mu.error)}</span>` : mu ? `<br><span class="muted">Progress map: ${[mu.added.length && `added ${mu.added.map((t) => `“${esc(t)}”`).join(", ")} to draft v${mu.draft} (publish it from Progress map)`, mu.marked && `${mu.marked} mark${mu.marked === 1 ? "" : "s"} for this student`].filter(Boolean).join("; ")}.</span>` : "");
 }
 $("#v-done .next-week").onclick = () => newWeek();
 

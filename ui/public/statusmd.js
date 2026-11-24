@@ -1,5 +1,5 @@
 // The week's status record (status_revision.text in hw.db) is the app's own data, kept as Markdown so the
-// teacher can read it, export it and upload an edited copy (Progress map › Lesson plan). Claude never reads or
+// teacher can read it, export it and upload an edited copy (Progress map › Scope and Sequence). Claude never reads or
 // rewrites it: the brief is rendered from it, and after a set the app applies the changes itself.
 // Pure functions, shared by the server (Save & finish) and the page (the preview of next week's status).
 
@@ -123,7 +123,7 @@ export function weekUpdateInputs(week, finalMsg, base) {
   return { date, promote, update: statusUpdateFrom(finalMsg?.text || "", base) };
 }
 
-// A status upload must look like one (Progress map › Lesson plan › Upload).
+// A status upload must look like one (Progress map › Scope and Sequence › Upload).
 export function checkStatusUpload(md) {
   if (typeof md !== "string" || !md.trim()) return "the file is empty";
   if (!/^(TAUGHT|CURRENT):/m.test(md)) return "no TAUGHT: or CURRENT: line, so this doesn't look like a status file";

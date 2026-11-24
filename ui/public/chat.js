@@ -85,7 +85,7 @@ function assistantHtml(text, archive = false) {
 function userLabel(m, archive = false) {
   const t = m.text || "";
   switch (kindOf(m)) {
-    case "start": return `📋 Sent this week's brief${m.preload ? ` and ${m.preload.count} corpus matches (${esc(m.preload.units.join(", ") || "no units")})` : ""}${archive ? `<details><summary class="muted small">what was sent</summary><pre>${esc(t)}</pre></details>` : ""}`;
+    case "start": return `📋 Sent this week's brief${m.brief?.comments ? `, ${m.brief.comments} of your comments` : ""}${m.preload ? ` and ${m.preload.count} corpus matches (${esc(m.preload.units.join(", ") || "no units")})` : ""}${archive ? `<details><summary class="muted small">what was sent</summary><pre>${esc(t)}</pre></details>` : ""}`;
     case "approve": { const e = t.match(/with these edits:\n([\s\S]*?)\nWrite the final/); return `✓ Approved the outline${e ? `, with edits:<div class="quote">${esc(e[1])}</div>` : ""}`; }
     case "fix": return `🔧 Sent the compile and check results for fixing<details><summary class="muted small">details</summary><pre>${esc(t)}</pre></details>`;
     default: return esc(t.replace(/\n\nSend the complete revised[\s\S]*$/, "").replace(/\n\n(For anything I didn't answer, use|Use) your stated default[\s\S]*$/, "\n\n(use your defaults for the rest)"));

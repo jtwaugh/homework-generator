@@ -52,7 +52,10 @@ export async function api(path, opts = {}) {
   return j;
 }
 
-export const S = { student: "", status: "", savedStatus: "", ladder: "", units: [], gated: [], texFiles: [], weeks: [], tectonic: false, model: "" };
+// The course the Progress map and Courses pages show when it is not the active student's (S.browse = its id).
+export const withCur = (path) => (S.browse ? `${path}${path.includes("?") ? "&" : "?"}curriculum=${encodeURIComponent(S.browse)}` : path);
+
+export const S = { browse: "", student: "", status: "", savedStatus: "", ladder: "", units: [], gated: [], texFiles: [], weeks: [], tectonic: false, model: "" };
 
 // ======================= parsing: curriculum ladder =======================
 

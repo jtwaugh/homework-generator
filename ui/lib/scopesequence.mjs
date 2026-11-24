@@ -1,11 +1,11 @@
-// The lesson plan (curriculum_ladder.md) as structured data, and back to the exact same text.
+// The Scope and Sequence (curriculum_ladder.md) as structured data, and back to the exact same text.
 //
-//   parseLadder(md) -> { planText, layout, units, gated }
-//     planText  the preamble (everything before the first "## " heading)
+//   parseLadder(md) -> { scopeSeqText, layout, units, gated }
+//     scopeSeqText  the preamble (everything before the first "## " heading)
 //     layout    [{ heading, items: [{unit: key} | {gated: grp} | {raw: line}] }]  (keeps the file's order and blank lines)
 //     units     [{ key, name, about, needs: [keys], stance, notes, section, ord }]
 //     gated     [{ grp, terms: [..], unit }]
-//   renderLadder(plan) -> md    (renderLadder(parseLadder(md)) === md for the ladder format)
+//   renderLadder(scopeSeq) -> md    (renderLadder(parseLadder(md)) === md for the ladder format)
 //
 // A unit line:  "- U05 Name. About sentences. Needs U03, U04. Formal. Notes."  (every part after the name optional)
 // A gated line: "- term, term: U10"
@@ -45,7 +45,7 @@ export function renderUnitLine(u) {
 export function parseLadder(md) {
   const lines = String(md || "").split("\n");
   const first = lines.findIndex((l) => /^## /.test(l));
-  const planText = (first < 0 ? lines : lines.slice(0, first)).join("\n");
+  const scopeSeqText = (first < 0 ? lines : lines.slice(0, first)).join("\n");
   const layout = [], units = [], gated = [];
   let sec = null;
   for (const line of first < 0 ? [] : lines.slice(first)) {
@@ -64,15 +64,15 @@ export function parseLadder(md) {
     }
     sec.items.push({ raw: line });
   }
-  return { planText, layout, units, gated, hasSections: first >= 0 };
+  return { scopeSeqText, layout, units, gated, hasSections: first >= 0 };
 }
 
-export function renderLadder({ planText, layout, units, gated, hasSections = true }) {
+export function renderLadder({ scopeSeqText, layout, units, gated, hasSections = true }) {
   const byKey = new Map(units.map((u) => [u.key, u]));
   const byGrp = new Map(gated.map((g) => [g.grp, g]));
   const placed = new Set();
-  const out = [planText];
-  if (!hasSections && !layout.length) return planText;
+  const out = [scopeSeqText];
+  if (!hasSections && !layout.length) return scopeSeqText;
   layout.forEach((sec, si) => {
     out.push(`## ${sec.heading}`);
     // Units added since the layout was recorded go after this section's last unit line.

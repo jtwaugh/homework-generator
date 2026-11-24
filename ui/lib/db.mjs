@@ -1,5 +1,5 @@
 // The app's database: ui/data/hw.db (SQLite through node:sqlite, no dependencies). One file holds the
-// curricula and their versions (content DAG, methods DAG, lesson plan), students, enrollments, progress,
+// curricula and their versions (content DAG, methods DAG, Scope and Sequence), students, enrollments, progress,
 // the shared problem corpus and homework history. Week transcripts stay in data/weeks/<id>.json.
 //
 // Ontology in one paragraph: a node KEY (e26, m:e5, U05) is the stable identity of a concept; a node REVISION
@@ -37,7 +37,7 @@ const MIGRATIONS = [
     status TEXT NOT NULL CHECK (status IN ('draft','published')),
     origin TEXT NOT NULL CHECK (origin IN ('import','edit','migration')),
     note TEXT NOT NULL DEFAULT '', plan_text TEXT NOT NULL DEFAULT '',
-    meta_json TEXT NOT NULL DEFAULT '{}',               -- per-layer headers (source, importedAt, texts), plan layout
+    meta_json TEXT NOT NULL DEFAULT '{}',               -- per-layer headers (source, importedAt, texts), Scope and Sequence layout
     created_at TEXT NOT NULL, published_at TEXT,
     UNIQUE (curriculum_id, seq)
   );
@@ -168,6 +168,13 @@ const MIGRATIONS = [
     source TEXT NOT NULL DEFAULT 'app', detail_json TEXT NOT NULL DEFAULT '{}'
   );
   CREATE INDEX edit_by_curriculum ON curriculum_edit(curriculum_id, at);
+  `,
+  // 3: "lesson plan" is now "Scope and Sequence": plan_text, meta.plan and the plan-text edit op renamed
+  `
+  ALTER TABLE curriculum_version RENAME COLUMN plan_text TO scope_seq_text;
+  UPDATE curriculum_version SET meta_json = json_set(json_remove(meta_json, '$.plan'), '$.scopeSeq', json(json_extract(meta_json, '$.plan')))
+    WHERE json_type(meta_json, '$.plan') IS NOT NULL;
+  UPDATE curriculum_edit SET op = 'scope-seq-text' WHERE op = 'plan-text';
   `,
 ];
 

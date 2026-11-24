@@ -17,7 +17,8 @@ import { ctx, loadCorpusDb, saveStatus, latestStatus, statusHistory, recordAssig
 import { closeDb, getSetting, setSetting, tx } from "./lib/db.mjs";
 import * as Cur from "./lib/curriculum.mjs";
 import * as Prog from "./lib/progress.mjs";
-import { buildBrief, briefText, statusDigest } from "./lib/preflight.mjs";
+import { buildBrief, briefText, statusDigest, commentLines, mapBlocks } from "./lib/preflight.mjs";
+import { mapUpdateFrom, resolveMapUpdate, mapUpdateOps } from "./lib/mapupdate.mjs";
 import { applyWeekUpdate, weekUpdateInputs, checkStatusUpload } from "./public/statusmd.js";
 import { exportBoardMd, parseBoardMd } from "./public/progressmd.js";
 import { claudeAuth } from "./lib/auth.mjs";
@@ -114,6 +115,16 @@ const LADDER_FILE = path.join(ROOT, "curriculum_ladder.md");
 const STUDENT_ENV = (process.env.HW_STUDENT || "").trim();
 const CURRICULUM_ENV = (process.env.HW_CURRICULUM || "").trim();
 const C = () => ctx({ dir: DATA });
+// The course a request is about: the active enrollment's, or another one picked on the Progress map (X-Curriculum
+// header or ?curriculum=). Another course shows its draft, else its latest published version, with no progress.
+function CB(req, url) {
+  const c = C(), want = String(req.headers["x-curriculum"] || url.searchParams.get("curriculum") || "");
+  if (!want || want === c.curriculumId) return c;
+  if (!c.db.prepare("SELECT 1 FROM curriculum WHERE id = ?").get(want)) return null;
+  const v = Cur.draftOf(c.db, want) || Cur.latestPublished(c.db, want);
+  return { ...c, curriculumId: want, versionId: v?.id ?? null, browsing: true };
+}
+const noCourse = (res) => send(res, 404, { error: "no such curriculum" });
 // The two Wu DAGs ship with the code. With DATA elsewhere (hosted: /tmp), copy them in on every start.
 const BUNDLED_DATA = ["wu_dag.json", "wu_methods_dag.json"];
 if (path.resolve(DATA) !== path.join(UI_DIR, "data")) for (const f of BUNDLED_DATA) { const src = path.join(UI_DIR, "data", f); if (fs.existsSync(src)) fs.copyFileSync(src, path.join(DATA, f)); }
@@ -209,7 +220,7 @@ async function writeLikeOriginal(p, text) {
   await fsp.writeFile(p, orig.includes("\r\n") ? out.replace(/\n/g, "\r\n") : out);
 }
 
-// ---------- weekly status and lesson plan: hw.db ----------
+// ---------- weekly status and Scope and Sequence: hw.db ----------
 // The status is the app's own record (status_revision): edited on Create Homework, updated by Save & finish,
 // exported or replaced by upload on the Progress map. Nothing outside hw.db is read or written for it.
 const isActive = (c) => c.enrollmentId === C().enrollmentId;
@@ -226,7 +237,7 @@ async function readStatus(c = C()) {
 async function writeStatus(text, { source = "teacher", assignmentId = null, c = C() } = {}) {
   return saveStatus(c, text, { source, assignmentId });
 }
-// The lesson plan the prompts use is the active enrollment's version. A hand edit of curriculum_ladder.md
+// The Scope and Sequence the prompts use is the active enrollment's version. A hand edit of curriculum_ladder.md
 // (the file no longer matches what was last exported) goes into the curriculum's draft for review.
 const sha = (t) => createHash("sha256").update(t).digest("hex").slice(0, 16);
 async function readLadder(c = C()) {
@@ -387,13 +398,16 @@ async function buildSystemPrompt(c = C()) {
     "- You are running inside a local app, not a chat. The first user message carries the app's brief, which is this week's whole input: the inputs (date, topics, options, fact sheet), unit statuses and allowed units, review priority, bans, the teacher's standing conventions, recent sets, decisions already made, a section plan with corpus coverage, and research notes for sections the corpus couldn't cover. Wherever the workflow mentions weekly_status.md, read it as the brief. There is no status file to read or reconcile.",
     "- There is no opening question round in this app. Never reply with only questions, and never stop before the checkpoint. Whenever the workflow says to ask the teacher (missing fields, unit confirmations, definitions for a new unit, edge cases), make the most conservative reasonable choice, use it, and list it in the checkpoint: under **Assumptions** (one line each) for choices you made, and under **Needs your call** (at most 5) for the ones the teacher should rule on. For a new unit's definitions, use the standard precise definition in Wu's style, state it in the checkpoint, and avoid its edge cases. The checkpoint is the teacher's only chance to correct you, so make it complete.",
     "- Treat the brief's decisions and standing conventions as the teacher's answers. Never ask about them again. Assumptions you list in a checkpoint apply to this set only.",
+    "- The brief's **teacher's comments** are notes the teacher left on units and blocks of the progress map: how the student is doing with them, what to stress or avoid, how they want them taught. Read each one as a direct instruction for every problem that touches that unit or block, and let it shape which problems you pick, how you phrase them and how hard they are. Those marked [this week] are on this week's topics and matter most. A comment outranks the workflow's soft defaults and your own preferences; only the hard gates outrank it (if one conflicts, follow the gate and say so). In the checkpoint, and at the top of the final when there was no checkpoint, include a **Your comments** list: one line per comment saying concretely what in this set follows it (which section or problems), or why it couldn't.",
     "- Tools: web search, web fetch, and the app's own tools `cas`, `check_answers`, `corpus_search` and `corpus_add`. There is no bash tool. The app compiles your .tex with Tectonic and will send you any errors or overfull-box warnings. In the final step, write \"not compiled (the app will compile it)\".",
     "- Answer checks: the app checks answer keys itself, with no model involved. End every reply that states answers (the checkpoint, and every reply with a .tex) with one ```json fenced block {\"checks\": [...]}: one item per problem whose answer can be checked mechanically, in the shape `check_answers` takes ({\"id\", \"kind\", \"expr\", \"vars\", \"claimed\", \"form\"}). In a reply with a .tex, use ids P<part>.<n> to match the manifest. After your reply the app runs the block through sympy and sends you only what failed. This replaces the workflow's verification steps (working every candidate by hand, substituting back, using Python): work each answer out once and don't re-check it, by hand or with a tool. Answers the app has already checked (the checkpoint's, once it passed) are settled: when you write the .tex, copy them as they are; work out only answers to problems you changed or added. If you need an answer you don't know yet, get it from `check_answers` with claimed left out, with every such problem in one call. Use `cas` only for what check_answers can't express (randomized sets, searching for numbers that give integer roots), and print only failures and a count. Leave out of the block corpus problems marked `cas ✓` that you use verbatim (same text, same answer), and problems with no mechanical answer (explanations, proofs, graphs). The teacher doesn't see the block.",
     "- Problem corpus: the teacher's cache of problems from past sets, earlier research and favorites. The first message includes the best matches for this week. Draw from the corpus first, and adapt rather than copy problems marked used (especially recent ones). Use `corpus_search` for more. Web search only for sections where the corpus and the research notes together have fewer than 3 suitable candidates, and keep it brief: a few targeted searches, not a second research pass. When code processes search or fetch results, print only the parts you need (a problem's text, a short excerpt), never whole result objects or page contents: everything printed stays in the conversation and is paid for on every later call. Whenever you find good problems on the web, call `corpus_add` with them, including ones you won't use this week. In the checkpoint, say which problems came from the corpus (by id) and which came from the web.",
     "- In the final step put the complete .tex in exactly one ```latex fenced block. Do not write a weekly_status.md: the app keeps the status and updates it itself.",
     "- After the .tex, add one ```json fenced block: a problem manifest, an array with one object per \\item in the set, in the order they appear in the .tex: {\"part\": 1, \"n\": 3, \"answer\": \"...\", \"units\": [\"U14\"], \"source\": \"corpus:<id>\" or \"web:<url>\" or \"new\", \"casVerified\": true}. casVerified is true for a `cas ✓` corpus problem used verbatim and for every problem in your checks block (the app clears it for any that fail). Don't repeat the problem text: the app reads it from the .tex. The app saves it to the corpus when the teacher saves the set.",
     "- Then one more ```json fenced block, an object with your proposed changes to the status for next week: {\"history\": \"one line for Recent history: what this set covered and anything to follow up\", \"review\": [\"the full updated Review priority list, most important first\"], \"conventions\": [\"a new standing convention, only if the teacher stated a lasting rule this week\"]}. Omit review to keep the current list; conventions is usually empty. The app moves promoted units to CURRENT and clears the week's input itself.",
-    "- If the teacher asks for changes after the final, always reply with the complete revised .tex, the manifest, the status-update block and the checks block again.",
+    "- The brief's **Progress map** lists the blocks (facts and methods) of the units in play and where the student is on each: done, partial, NOT YET, or no evidence. A unit being TAUGHT doesn't mean every skill a problem needs is on the map. When you pick problems for the checkpoint, note the skills each one needs beyond the obvious unit (for example a compound inequality a < x < b inside an absolute-value problem, or completing the square inside a graphing problem). If a skill has no block on the map, or its block is NOT YET, list it in the checkpoint under **Map gaps** (at most 4, one line each): the skill, the problems that rely on it, and the choice for the teacher: teach it in this set (a worked example or a scaffolded first problem), avoid it, or add it to the map as not yet known. Make the conservative choice yourself (scaffold or avoid) and carry on; never stop for it. Leave the heading out when there are none.",
+    "- Then, only when the set relies on a skill the map lacks, or the teacher told you something about what the student does or doesn't know, add one more ```json fenced block: {\"mapUpdate\": [...]}, one item per change, each with a one-line \"why\" naming the problems. To add a block: {\"add\": {\"layer\": \"methods\" or \"content\", \"title\": \"short name, like the map's\", \"detail\": \"one line\", \"restsOn\": [content keys, for a method], \"uses\": [keys of the same layer it builds on], \"neededBy\": [keys that need it], \"units\": [\"the unit it belongs to\"]}, \"state\": \"not-yet\", \"why\": \"...\"}. To change the student's state on a block that's there: {\"key\": \"m:e38\", \"state\": \"partial\", \"why\": \"...\"}. Use keys exactly as the brief's Progress map gives them. The teacher approves each item at Save & finish; new blocks go into a draft of the map. Leave the block out when there's nothing to change.",
+    "- If the teacher asks for changes after the final, always reply with the complete revised .tex, the manifest, the status-update block, the map-update block if there was one, and the checks block again.",
   ].join("\n");
 }
 
@@ -509,7 +523,47 @@ async function compileTex(text) {
 
 async function weekBrief(overrides = {}, c = C()) {
   const [status, ladder] = await Promise.all([readStatus(c), readLadder(c)]);
-  return buildBrief({ status, ladder, corpus: loadCorpusDb(c), dataDir: DATA, overrides });
+  const brief = buildBrief({ status, ladder, corpus: loadCorpusDb(c), comments: Cur.nodeComments(c.db, c.curriculumId, c.versionId), dataDir: DATA, overrides });
+  const inPlay = new Set([...brief.allowedUnits, ...brief.sections.flatMap((x) => x.units)]);
+  const order = ladderUnits(ladder).map((u) => u.id);
+  const units = [...inPlay].sort((a, b) => (order.indexOf(a) + 1 || 1e9) - (order.indexOf(b) + 1 || 1e9));
+  brief.map = mapBlocks({ covers: Cur.coversFor(c.db, c.versionId), nodes: mapNodes(c.db, c.versionId), progress: studentProgress(c), units });
+  return brief;
+}
+
+// key -> {layer, title, x, y, w, h} for every block and unit of a version
+function mapNodes(db, v) {
+  const m = new Map();
+  for (const layer of ["content", "methods", "unit"]) for (const r of Cur.revisionsOf(db, v, layer)) m.set(r.node_key, { layer, title: r.title, x: r.x, y: r.y, w: r.w, h: r.h });
+  return m;
+}
+// The student's state per key: the teacher's mark, else the guess.
+function studentProgress(c) {
+  const st = dagState(c), out = {};
+  for (const [k, x] of Object.entries(st.guess?.nodes || {})) out[k] = { state: x.state, confidence: x.confidence, source: "guess" };
+  for (const [k, x] of Object.entries(st.overrides || {})) out[k] = { state: x.state, source: "teacher" };
+  return out;
+}
+// The latest final's proposed map changes, checked against the student's map: {at, items} or null.
+function weekMapUpdate(week) {
+  const fin = [...(week?.messages || [])].reverse().find((x) => x.role === "assistant" && /```(latex|tex)\n/.test(x.text || ""));
+  const items = fin && mapUpdateFrom(fin.text);
+  if (!items?.length) return null;
+  const c = weekCtx(week);
+  return { at: fin.at, items: resolveMapUpdate(items, mapNodes(c.db, c.versionId)) };
+}
+// Applies the approved items (indexes into weekMapUpdate's items): new blocks into the draft, states as teacher marks.
+function applyMapUpdate(week, accept) {
+  const mu = weekMapUpdate(week);
+  if (!mu || !accept?.length) return null;
+  const c = weekCtx(week), take = mu.items.filter((r) => accept.includes(r.i) && !r.error);
+  if (!take.length) return null;
+  const adds = take.some((r) => r.kind === "add");
+  const draft = adds ? Cur.createDraft(c.db, c.curriculumId, { origin: "edit", note: `From ${week.title || week.id}` }) : null;
+  const { ops, marks } = mapUpdateOps(take, { newKey: Cur.newKey, draftNodes: mapNodes(c.db, draft ?? c.versionId), covers: draft ? Cur.coversFor(c.db, draft) : {}, note: week.title || week.id });
+  if (ops.length) Cur.editDraft(c.db, draft, ops, { source: "claude" });
+  for (const x of marks) Prog.recordEvent(c.db, c.enrollmentId, { key: x.key, versionId: x.isNew ? draft : undefined, state: x.state, note: x.note, source: "teacher" });
+  return { added: take.filter((r) => r.kind === "add").map((r) => r.add.title), marked: marks.length, draft: draft ? Cur.getVersion(c.db, draft).seq : null };
 }
 
 const RESEARCH_SCHEMA = {
@@ -534,6 +588,8 @@ async function researchPrompt(brief) {
     "You research problem ideas for a 5th grader's rigorous algebra homework (Wu style). Find good sources, open them, and write ORIGINAL problems based on their ideas. Do not ask questions; there is no one to answer them.",
     `Allowed units: ${brief.allowedUnits.join(", ")}. Everything else is off limits.`,
     "", "## Rules (from the teacher's instructions)", instr.includes("## Hard gates") ? rules : instr,
+    ...commentLines((brief.comments || []).filter((x) => x.units.some((u) => secs.some((sec) => sec.units.includes(u))))),
+    ...((brief.comments || []).some((x) => x.units.some((u) => secs.some((sec) => sec.units.includes(u)))) ? ["Choose sources and write problems that follow these comments: they are the teacher's instructions for these units."] : []),
     "", "## Sections to research (the corpus is thin here)",
     ...secs.map((x) => `- key ${x.key}: ${x.title} [${x.units.join(", ")}] — ${x.kind}, need about ${x.target} problems; corpus has ${x.usable}.`),
     "", "Before searching, call corpus_search once per section to see what exists, so you don't duplicate it.",
@@ -587,7 +643,7 @@ const SLICE_HARD = Number(process.env.HW_SLICE_HARD_MS) || 240000;
 const MAX_SLICES = 40;
 const sinks = new Map(); // weekId -> fn(event) streaming a local turn's events to its request
 // Sent back once when the app's own answer check (the reply's checks block, run through sympy) finds wrong answers.
-const recheckPrompt = (text, stage) => `The app checked the answers in your checks block with sympy. These are wrong:\n${text}\n\nFix each wrong answer (or change the problem), then send ${stage === "outline" ? "the complete checkpoint again" : "the complete corrected .tex, the problem manifest and the status-update block again"}, with the checks block. If the CAS is the one that's wrong (the problem means something it can't see), keep your answer and say why in one line.`;
+const recheckPrompt = (text, stage) => `The app checked the answers in your checks block with sympy. These are wrong:\n${text}\n\nFix each wrong answer (or change the problem), then send ${stage === "outline" ? "the complete checkpoint again" : "the complete corrected .tex, the problem manifest, the status-update block and the map-update block (if you sent one) again"}, with the checks block. If the CAS is the one that's wrong (the problem means something it can't see), keep your answer and say why in one line.`;
 const NUDGE = "Nobody can answer questions in this app. For every question above, take the most conservative reasonable default yourself, list it under **Assumptions** (or **Needs your call** if the teacher must rule), and send the full checkpoint now.";
 
 // One slice of a turn's work. Returns {done}. Never throws: a failure ends the turn with that error.
@@ -861,6 +917,15 @@ export function tagInBackground(ids, label) {
 // ---------- Wu DAG: snapshot + the student's progress ----------
 
 // {guess, overrides, runs} for the active enrollment at a version (lib/progress.mjs).
+// every course with its versions and board sizes (the Progress map's picker)
+function curriculaList(db) {
+  const n = db.prepare("SELECT layer, COUNT(*) n FROM node_revision WHERE version_id = ? GROUP BY layer");
+  return Cur.listCurricula(db).map((c) => {
+    const v = Cur.draftOf(db, c.id) || Cur.latestPublished(db, c.id);
+    const counts = v ? Object.fromEntries(n.all(v.id).map((r) => [r.layer, r.n])) : {};
+    return { id: c.id, title: c.title, version: v && { id: v.id, seq: v.seq, status: v.status }, content: counts.content || 0, methods: counts.methods || 0 };
+  });
+}
 const dagState = (c = C(), versionId = null) => Prog.dagState(c.db, c.enrollmentId, versionId ?? c.versionId);
 let guessJob = null; // { running, startedAt, tools, error }
 
@@ -1108,32 +1173,38 @@ async function handle(req, res) {
   // ---- DAG ----
   if (m === "GET" && p === "/api/dag") {
     // ?version=<id> shows another version of the curriculum (progress carried forward through lineage).
-    const c = C();
+    const c = CB(req, url);
+    if (!c) return noCourse(res);
     const vid = Number(url.searchParams.get("version")) || c.versionId;
     const ver = Cur.getVersion(c.db, vid);
     if (!ver || ver.curriculum_id !== c.curriculumId) return send(res, 404, { error: "no such version" });
-    const st = dagState(c, vid);
+    const st = c.browsing ? { guess: null, overrides: {}, runs: [] } : dagState(c, vid);
     const job = guessJob?.running ? guessJob : (await remoteJob("dag-guess")) || guessJob;
     return send(res, 200, {
       content: Cur.graphFor(c.db, vid, "content"), methods: Cur.graphFor(c.db, vid, "methods"), guess: st.guess, overrides: st.overrides || {},
       job: job && { ...job, elapsed: job.startedAt ? Date.now() - job.startedAt : 0 }, notes: await noteFiles(), guessModel: GUESS_MODEL, runs: st.runs.map(runSummary),
-      version: { id: ver.id, seq: ver.seq, status: ver.status, enrolled: c.versionId }, versions: Cur.listVersions(c.db, c.curriculumId).map((v) => ({ id: v.id, seq: v.seq, status: v.status })),
-      plan: Cur.planFor(c.db, vid), comments: Cur.commentsFor(c.db, c.curriculumId),
-      curriculum: { id: c.curriculumId, title: c.db.prepare("SELECT title FROM curriculum WHERE id = ?").get(c.curriculumId)?.title || c.curriculumId },
+      version: { id: ver.id, seq: ver.seq, status: ver.status, enrolled: c.browsing ? null : c.versionId }, versions: Cur.listVersions(c.db, c.curriculumId).map((v) => ({ id: v.id, seq: v.seq, status: v.status })),
+      scopeSeq: Cur.scopeSeqFor(c.db, vid), comments: Cur.commentsFor(c.db, c.curriculumId),
+      curriculum: { id: c.curriculumId, title: c.db.prepare("SELECT title FROM curriculum WHERE id = ?").get(c.curriculumId)?.title || c.curriculumId, browsing: !!c.browsing },
+      curricula: curriculaList(c.db),
     });
   }
+  // every course, for the Progress map's picker
+  if (m === "GET" && p === "/api/curricula") return send(res, 200, { curricula: curriculaList(C().db), enrolled: C().curriculumId });
   // the curriculum's edit history (Progress map › History): draft edits, imports, publishes, discards, comments
-  if (m === "GET" && p === "/api/dag/history") { const c = C(); return send(res, 200, { edits: Cur.editHistory(c.db, c.curriculumId) }); }
+  if (m === "GET" && p === "/api/dag/history") { const c = CB(req, url); if (!c) return noCourse(res); return send(res, 200, { edits: Cur.editHistory(c.db, c.curriculumId) }); }
   // comments on nodes: {key, text} to add, {text} to change; they belong to the key, so any version can take them
   if (m === "POST" && p === "/api/comments") {
     const { key, text } = await body(req);
-    const c = C();
+    const c = CB(req, url);
+    if (!c) return noCourse(res);
     try { Cur.addComment(c.db, c.curriculumId, String(key || ""), text); } catch (e) { return send(res, 400, { error: e.message }); }
     return send(res, 200, { comments: Cur.commentsFor(c.db, c.curriculumId) });
   }
   const cmm = p.match(/^\/api\/comments\/(\d+)$/);
   if (cmm && (m === "PATCH" || m === "DELETE")) {
-    const c = C();
+    const c = CB(req, url);
+    if (!c) return noCourse(res);
     try {
       if (m === "PATCH") Cur.updateComment(c.db, c.curriculumId, Number(cmm[1]), (await body(req)).text);
       else Cur.deleteComment(c.db, c.curriculumId, Number(cmm[1]));
@@ -1213,10 +1284,11 @@ async function handle(req, res) {
 
   // ---- curriculum versions ----
   if (m === "GET" && p === "/api/versions") {
-    const c = C();
+    const c = CB(req, url);
+    if (!c) return noCourse(res);
     const draft = Cur.draftOf(c.db, c.curriculumId);
     return send(res, 200, {
-      curriculum: c.db.prepare("SELECT * FROM curriculum WHERE id = ?").get(c.curriculumId), versions: Cur.listVersions(c.db, c.curriculumId), enrolled: c.versionId,
+      curriculum: c.db.prepare("SELECT * FROM curriculum WHERE id = ?").get(c.curriculumId), versions: Cur.listVersions(c.db, c.curriculumId), enrolled: c.browsing ? null : c.versionId,
       enrollments: Prog.listEnrollments(c.db).filter((e) => e.curriculum_id === c.curriculumId),
       draft: draft && { id: draft.id, seq: draft.seq, note: draft.note, unresolved: Cur.unresolvedRemovals(c.db, draft.id), diff: draft.parent_id ? Cur.diffVersions(c.db, draft.parent_id, draft.id) : null },
       retag: c.db.prepare("SELECT COUNT(*) n FROM retag_queue WHERE done_at IS NULL").get().n,
@@ -1224,10 +1296,11 @@ async function handle(req, res) {
   }
   const vm = p.match(/^\/api\/versions\/(\d+)(\/diff|\/publish)?$/);
   if (vm) {
-    const c = C(), vid = Number(vm[1]);
+    const c = CB(req, url), vid = Number(vm[1]);
+    if (!c) return noCourse(res);
     const ver = Cur.getVersion(c.db, vid);
     if (!ver || ver.curriculum_id !== c.curriculumId) return send(res, 404, { error: "no such version" });
-    if (m === "GET" && !vm[2]) return send(res, 200, { ...ver, meta_json: undefined, plan: Cur.planFor(c.db, vid), ladder: Cur.ladderFor(c.db, vid) });
+    if (m === "GET" && !vm[2]) return send(res, 200, { ...ver, meta_json: undefined, scopeSeq: Cur.scopeSeqFor(c.db, vid), ladder: Cur.ladderFor(c.db, vid) });
     if (m === "GET" && vm[2] === "/diff") {
       const against = Number(url.searchParams.get("against")) || ver.parent_id;
       return against ? send(res, 200, Cur.diffVersions(c.db, against, vid)) : send(res, 400, { error: "nothing to compare with" });
@@ -1244,7 +1317,8 @@ async function handle(req, res) {
   if (m === "POST" && p === "/api/versions/draft") {
     // {ops: [...]} (see editDraft in lib/curriculum.mjs); creates the draft from the latest published version if needed.
     const { ops = [], note } = await body(req);
-    const c = C();
+    const c = CB(req, url);
+    if (!c) return noCourse(res);
     const d = Cur.createDraft(c.db, c.curriculumId, { origin: "edit", note: note || "" });
     try { return send(res, 200, { draft: d, ...Cur.editDraft(c.db, d, ops) }); } catch (e) { return send(res, 400, { error: e.message }); }
   }
@@ -1305,7 +1379,10 @@ async function handle(req, res) {
     if (m === "GET" && !action) {
       const here = running.has(id) || (!USE_WORKFLOW && progress.has(id));
       const remote = here ? null : await remoteJob(id);
-      return send(res, 200, { ...(await loadWeek(id)), running: here || !!remote, live: (here && progress.get(id)) || remote?.live || null });
+      const wk = await loadWeek(id);
+      let mapUpdate = null;
+      if (!wk.done) try { mapUpdate = weekMapUpdate(wk); } catch (e) { mapUpdate = { error: e.message, items: [] }; }
+      return send(res, 200, { ...wk, mapUpdate, running: here || !!remote, live: (here && progress.get(id)) || remote?.live || null });
     }
     if (m === "GET" && action === "/tools") return send(res, 200, { calls: await readToolLog(id) });
     if (m === "DELETE" && !action) {
@@ -1315,7 +1392,7 @@ async function handle(req, res) {
     if (m === "POST" && action === "/finish") {
       // One click: save the .tex into the project, (optionally) next week's status, and the problems into the corpus.
       // The app applies the status changes itself: the week's promotions plus the final's status-update block.
-      const { name, tex, updateStatus, overwrite } = await body(req);
+      const { name, tex, updateStatus, overwrite, mapUpdate: acceptMap = [] } = await body(req);
       if (!TEX_NAME.test(name || "")) return send(res, 400, { error: "Filename must look like hw_11_28_2026.tex" });
       const dest = path.join(ROOT, name);
       if (fs.existsSync(dest) && !overwrite) return send(res, 409, { error: `${name} already exists` });
@@ -1330,7 +1407,9 @@ async function handle(req, res) {
       }
       let corpus = null;
       try { corpus = saveManifest(week, name, tex); tagInBackground(corpus.toTag || [], name); delete corpus.toTag; } catch (e) { corpus = { error: e.message }; }
-      Object.assign(week, { done: true, savedAs: name, statusUpdated, corpusSaved: corpus });
+      let mapUpdated = null;
+      try { mapUpdated = applyMapUpdate(week, Array.isArray(acceptMap) ? acceptMap.map(Number) : []); } catch (e) { mapUpdated = { error: e.message }; }
+      Object.assign(week, { done: true, savedAs: name, statusUpdated, corpusSaved: corpus, mapUpdated });
       await saveWeek(week);
       return send(res, 200, { ok: true, corpus });
     }
@@ -1352,7 +1431,7 @@ async function handle(req, res) {
         for (const h of pre.hits) if (ids.length < 40 && !ids.includes(h.p.id)) ids.push(h.p.id);
         const hits = ids.map((i) => byId.get(i)).filter(Boolean).map((x) => ({ p: x, why: { recent: (x.usedOn || []).some((d) => Date.now() - Date.parse(d) < 42 * 864e5) } }));
         userMsg.preload = { count: hits.length, units: brief.allowedUnits, ids };
-        userMsg.brief = { date: brief.date, promotions: brief.promotions, decisions: brief.decisions, sections: brief.sections.map(({ corpusIds, ...x }) => x), needsResearch: brief.needsResearch };
+        userMsg.brief = { date: brief.date, promotions: brief.promotions, decisions: brief.decisions, comments: brief.comments.reduce((n, x) => n + x.texts.length, 0), sections: brief.sections.map(({ corpusIds, ...x }) => x), needsResearch: brief.needsResearch };
         prompt += `\n\n# Brief from the app (this week's whole input, settled before you were called)\n${briefText(brief)}\n\n## Corpus problems for this week (${corpus.length} in the corpus; search for more with corpus_search)\n${formatHits(hits)}`;
       }
       if (DRY_STAGES) {

@@ -1,26 +1,26 @@
 // Wu DAG progress map: the content board and the methods board (snapshots of the whiteboards), coloured by
 // how far the student has got. States come from Claude's guess (from homework + uploaded notes) unless the teacher
 // overrides a node ("set by you"). Methods ids are namespaced "m:eNN" everywhere outside their own file.
-// The sidebar sub-items pick the mode: the content board, the methods board, the lesson plan, or Inference.
-// Content, Methods and Lesson plan each have a deterministic Markdown export/import (progressmd.js, status.md);
+// The sidebar sub-items pick the mode: the content board, the methods board, the Scope and Sequence, or Inference.
+// Content, Methods and Scope and Sequence each have a deterministic Markdown export/import (progressmd.js, status.md);
 // Inference is the one place that pays Claude: drop files for it and run a guess. Every guess run (chain of thought, tool calls, cost, per-node evidence) is under History › Inference.
 // Pure helpers (edgePath, computeStates, ladderHints, statusText) are exported for ui/scripts/test.mjs.
-import { $, $$, esc, api, S, parseUnitStatuses, log } from "./lib.js";
+import { $, $$, esc, api, S, parseUnitStatuses, log, withCur } from "./lib.js";
 import { parseBoardMd } from "./progressmd.js";
 import { fmtUSD } from "./cost.js";
 
 export const LOW_CONFIDENCE = 0.6;
 const BOARD_LABEL = { content: "Content", methods: "Methods" };
-const KIND_LABEL = { assumed: "Assumed (pre-algebra)", definition: "Definition", theorem: "Theorem", method: "Method", "word-problem": "Word problem (not used)" };
+const KIND_LABEL = { assumed: "Assumed (earlier course)", definition: "Definition", theorem: "Theorem", method: "Method", "word-problem": "Word problem (not used)" };
 
 // ---------- pure ----------
 
-// Lesson plan: the course version's units in plan order, grouped by its sections, with each unit's status and
+// Scope and Sequence: the course version's units in Scope and Sequence order, grouped by its sections, with each unit's status and
 // note from weekly_status.md and any prerequisite not yet taught (only flagged once the unit itself is taught or
-// current, as in the Create Homework units widget). `plan` is the structured plan from GET /api/dag
+// current, as in the Create Homework units widget). `scopeSeq` is the structured Scope and Sequence from GET /api/dag
 // ({layout:[{heading, items:[{unit}|{raw}]}], units:[{key, name, about, needs, stance, notes}]}), or, as a
 // fallback, curriculum_ladder.md text (U units only).
-export function lessonPlan(plan, statusMd) {
+export function scopeSequence(scopeSeq, statusMd) {
   const { map } = parseUnitStatuses(statusMd || "");
   const st = (id) => map[id]?.status || "FUTURE";
   const ok = (id) => ["TAUGHT", "CURRENT"].includes(st(id));
@@ -28,17 +28,17 @@ export function lessonPlan(plan, statusMd) {
     const s = st(id);
     return { id, name, about, needs, stance, guide, status: s, note: (map[id]?.note || "").replace(/^\(|\)$/g, ""), missing: ok(id) ? needs.filter((n) => !ok(n)) : [] };
   };
-  if (plan && typeof plan === "object") {
-    const byKey = new Map((plan.units || []).map((u) => [u.key, u])), placed = new Set();
-    const groups = (plan.layout || []).map((sec, si) => ({ title: sec.heading || "", section: si, units: (sec.items || []).filter((i) => i.unit && byKey.has(i.unit)).map((i) => {
+  if (scopeSeq && typeof scopeSeq === "object") {
+    const byKey = new Map((scopeSeq.units || []).map((u) => [u.key, u])), placed = new Set();
+    const groups = (scopeSeq.layout || []).map((sec, si) => ({ title: sec.heading || "", section: si, units: (sec.items || []).filter((i) => i.unit && byKey.has(i.unit)).map((i) => {
       const u = byKey.get(i.unit); placed.add(u.key);
       return unit(u.key, u.name, u.about, u.needs || [], u.stance || "", u.notes || "");
     }) }));
-    const rest = (plan.units || []).filter((u) => !placed.has(u.key));
+    const rest = (scopeSeq.units || []).filter((u) => !placed.has(u.key));
     if (rest.length) groups.push({ title: groups.length ? "Other units" : "", units: rest.map((u) => unit(u.key, u.name, u.about, u.needs || [], u.stance || "", u.notes || "")) });
     return groups.filter((g) => g.units.length);
   }
-  const ladderMd = plan;
+  const ladderMd = scopeSeq;
   const groups = []; let group = null;
   for (const line of (ladderMd || "").split("\n")) {
     const h = line.match(/^##\s+(.*)$/);
@@ -55,15 +55,15 @@ export function lessonPlan(plan, statusMd) {
   return groups.filter((g) => g.units.length);
 }
 
-// The lesson plan's latent DAG: units as nodes, "Needs" as edges (need → unit), laid out in layers (Sugiyama
+// The Scope and Sequence's latent DAG: units as nodes, "Needs" as edges (need → unit), laid out in layers (Sugiyama
 // style). A unit's layer is its longest chain of needs; edges implied by others (U17 → M2 when U17 already needs
 // U15 → U16 → U17) are flagged `implied` and left out of the layout; long edges route through invisible dummy
-// slots so the barycenter sweeps can untangle them. Needs naming units not in the plan are ignored, and a cycle
+// slots so the barycenter sweeps can untangle them. Needs naming units not in the Scope and Sequence are ignored, and a cycle
 // is broken rather than looped on. `ready` marks a unit not yet started whose needs are all taught or current.
 // Returns { nodes: [{id, unit, x, y, w, h, layer, ready}], edges: [{from, to, implied, pts}] } where pts is the
 // route (source bottom, through dummies, to target top) for non-implied edges.
 export const PLAN_NODE = { w: 210, h: 58, gx: 34, gy: 74, dummy: 18 };
-export function planGraph(groups) {
+export function scopeSeqGraph(groups) {
   const units = groups.flatMap((g) => g.units), byId = new Map(units.map((u) => [u.id, u]));
   const needs = new Map(units.map((u) => [u.id, [...new Set(u.needs)].filter((n) => byId.has(n) && n !== u.id)]));
   // layers by longest path, breaking cycles at the back edge
@@ -102,7 +102,7 @@ export function planGraph(groups) {
     }
     link(prev, e.to);
   }
-  // order within rows: plan order, then barycenter sweeps down and up
+  // order within rows: Scope and Sequence order, then barycenter sweeps down and up
   const pos = new Map();
   const index = () => rows.forEach((r) => r.forEach((n, i) => pos.set(n.id, i)));
   rows.forEach((r) => r.sort((a, b) => a.ord - b.ord)); index();
@@ -274,17 +274,17 @@ export function ladderHints(statusMd, ladderToWu, guess, overrides) {
 
 // ---------- view ----------
 
-const PLAN_VIEW_KEY = "hw.planView";
+const SCOPE_SEQ_VIEW_KEY = "hw.scopeSeqView";
 // editing: the page shows the course's draft and every view can change it (Edit board / Edit units).
 //   edit: the view id (board block id or unit key) whose form is open, or {board} / {section} for a new one
 //   remove: the view id whose retire-or-merge choice is open
-// cEdit: the comment being edited; openC: the linear plan unit whose comments are open.
-const D = { data: null, version: null, mode: "content", sel: null, view: null, poll: null, side: "info", dragging: null, planView: "linear", graph: null,
+// cEdit: the comment being edited; openC: the linear Scope and Sequence unit whose comments are open.
+const D = { data: null, version: null, mode: "content", sel: null, view: null, poll: null, side: "info", dragging: null, scopeSeqView: "linear", graph: null,
   editing: false, edit: null, remove: null, editErr: "", cEdit: null, cErr: "", openC: null, hist: { filter: "all", data: null, err: "" } };
-try { if (localStorage.getItem(PLAN_VIEW_KEY) === "dag") D.planView = "dag"; } catch {}
+try { if (localStorage.getItem(SCOPE_SEQ_VIEW_KEY) === "dag") D.scopeSeqView = "dag"; } catch {}
 Object.defineProperty(D, "board", { get: () => (D.mode === "methods" ? "methods" : "content"), enumerable: true });
-const MODE_LABEL = { content: "Content", methods: "Methods", plan: "Lesson plan", inference: "Inference" };
-const LAYER_LABEL = { content: "Content", methods: "Methods", unit: "Lesson plan" };
+const MODE_LABEL = { content: "Content", methods: "Methods", scopeSeq: "Scope and Sequence", inference: "Inference" };
+const LAYER_LABEL = { content: "Content", methods: "Methods", unit: "Scope and Sequence" };
 const STATUS_LABEL = { TAUGHT: "Taught", CURRENT: "Current", NEXT: "Next", FUTURE: "Future" };
 const BOARD_KINDS = { content: ["assumed", "definition", "theorem", "method"], methods: ["method", "word-problem"] };
 
@@ -295,11 +295,15 @@ function bbox(dag) {
   return { x: x0 - 40, y: y0 - 40, w: x1 - x0 + 80, h: y1 - y0 + 80 };
 }
 
-const planDag = () => D.mode === "plan" && D.planView === "dag";
-const curDag = () => (planDag() ? D.graph : D.data?.[D.board]);
+const scopeSeqDag = () => D.mode === "scopeSeq" && D.scopeSeqView === "dag";
+const curDag = () => (scopeSeqDag() ? D.graph : D.data?.[D.board]);
+// Another course (picked in the header) has no student: its units and blocks show without progress.
+const browsing = () => !!D.data?.curriculum?.browsing;
+const seqSource = () => D.data?.scopeSeq || (browsing() ? "" : S.ladder);
+const seqStatus = () => (browsing() ? "" : S.status);
 const statesNow = () => computeStates(curDag(), D.board, D.data.guess, D.data.overrides, D.data.content);
 // a view id (what the SVG and D.sel use) → the node's key in the curriculum
-const nodeKey = (id) => (D.mode === "plan" ? id : keyOf(D.board, id));
+const nodeKey = (id) => (D.mode === "scopeSeq" ? id : keyOf(D.board, id));
 const commentsOf = (key) => D.data?.comments?.[key] || [];
 const when = (at) => new Date(at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 
@@ -323,7 +327,8 @@ function commentsHtml(key) {
           <div class="pe-row"><button class="small-btn primary" type="submit">Save</button> <button class="link" type="button" data-cmt="cancel">Cancel</button>${err}</div></form>`
       : `<div class="cmt" data-cid="${c.id}"><div class="cmt-text">${esc(c.text)}</div>
           <div class="cmt-meta muted small">${esc(when(c.updated || c.at))}${c.updated ? " · edited" : ""}<span class="cmt-acts"><button class="link" data-cmt="edit">Edit</button><button class="link" data-cmt="delete">Delete</button></span></div></div>`).join("")}
-    ${D.cEdit ? "" : `<form class="cmt-form"><textarea name="text" rows="2" placeholder="Add a comment: for you, not for Claude"></textarea>
+    <div class="muted small">${/^(U\d\d|M\d|F\d|u:)/.test(key) ? "Claude follows these in every homework set that uses this unit." : "Claude follows these in homework on the units that cover this block."}</div>
+    ${D.cEdit ? "" : `<form class="cmt-form"><textarea name="text" rows="2" placeholder="Add a comment: how it's going, what to stress or avoid"></textarea>
       <div class="pe-row"><button class="small-btn" type="submit">Add comment</button>${err}</div></form>`}
   </div>`;
 }
@@ -351,14 +356,14 @@ function kpAdd(kp, exact) {
 
 // Retire a node, or merge it into another of the same kind (its links, tags and covers move there).
 function removeHtml(id, label, neededBy, others) {
-  return `<div class="plan-remove small" data-node="${esc(id)}">
+  return `<div class="scope-seq-remove small" data-node="${esc(id)}">
     <span>Remove ${esc(label)}?${neededBy.length ? ` ${neededBy.map(esc).join(", ")} build${neededBy.length === 1 ? "s" : ""} on it.` : ""}</span>
     <button class="small-btn" data-pe="retire" title="Drop it; problems tagged with it go on the retag queue when the draft is published">Retire it</button>
     <span class="muted">or merge into</span> <select class="pe-into">${others.map((o) => `<option value="${esc(o.key)}">${esc(o.label)}</option>`).join("")}</select>
     <button class="small-btn" data-pe="merge" title="What builds on it, its tags and covers move to the one you pick">Merge</button>
     <button class="link" data-pe="cancel">Cancel</button>${D.editErr ? ` <span class="err">${esc(D.editErr)}</span>` : ""}</div>`;
 }
-// Edit / Remove for the selected node in a side panel (boards and the lesson plan DAG).
+// Edit / Remove for the selected node in a side panel (boards and the Scope and Sequence DAG).
 const editBarHtml = (id) => `<div class="np-edit" data-node="${esc(id)}"><button class="small-btn" data-pe="edit">✎ Edit</button><button class="small-btn" data-pe="remove">✕ Remove</button></div>`;
 const formButtons = (isNew, addLabel) => `<div class="pe-row"><button class="small-btn primary" type="submit">${isNew ? addLabel : "Save"}</button> <button class="link" type="button" data-pe="cancel">Cancel</button>
   ${D.editErr ? `<span class="err small">${esc(D.editErr)}</span>` : ""}</div>`;
@@ -431,7 +436,7 @@ function blockFormHtml(n) {
 function nodePanel(id) {
   if (D.editing && D.edit?.board) return `<div class="np"><div class="k">New ${esc(BOARD_LABEL[D.board].toLowerCase())} block</div>${blockFormHtml(null)}</div>`;
   const dag = curDag(), n = dag.nodes.find((x) => x.id === id);
-  if (!n) return `<p class="muted">${D.editing ? "Click a block to change it, drag it to move it, or add one with + Add block." : "Click a block to see where the student stands on it."}</p>`;
+  if (!n) return `<p class="muted">${D.editing ? "Click a block to change it, drag it to move it, or add one with + Add block." : browsing() ? "Click a block to see what it says and where it comes from." : "Click a block to see where the student stands on it."}</p>`;
   const key = keyOf(D.board, id);
   const head = `<div class="k">${esc(BOARD_LABEL[D.board])} · ${esc(KIND_LABEL[n.kind] || n.kind)}${n.sections?.length ? ` · §${n.sections.join(", §")}` : ""}${D.editing ? ` · <code>${esc(key)}</code>` : ""}</div>`;
   if (D.editing && D.edit === id) return `<div class="np">${head}${blockFormHtml(n)}</div>`;
@@ -445,7 +450,7 @@ function nodePanel(id) {
   const state = D.editing ? "" : `<div class="np-state d-${t.display}">${esc(t.label)}</div>
     <p class="np-note">${esc(t.note)}</p>
     ${t.missing.length ? `<div class="nls">${t.missing.map((x) => `<button class="link nl" data-goto-key="${esc(x.key)}">${esc(x.title)}</button>`).join("")}</div>` : ""}
-    ${n.kind === "word-problem" ? "" : viewingOther() ? `<p class="muted small">Showing v${D.data.version.seq}; ${esc(S.student || "the student")} is on another version, so states can only be changed there.</p>` : `<h4>Change it</h4><div class="seg np-set">${btn("done", "Done")}${btn("partial", "Partly")}${btn("not-yet", "Not yet")}</div>
+    ${n.kind === "word-problem" ? "" : browsing() ? `<p class="muted small">No student is on this course, so it has no progress.</p>` : viewingOther() ? `<p class="muted small">Showing v${D.data.version.seq}; ${esc(S.student || "the student")} is on another version, so states can only be changed there.</p>` : `<h4>Change it</h4><div class="seg np-set">${btn("done", "Done")}${btn("partial", "Partly")}${btn("not-yet", "Not yet")}</div>
     ${s.by === "you" ? `<button class="link" data-set="">use Claude's guess${g ? ` (${esc(g.state)})` : ""}</button>` : ""}`}`;
   return `<div class="np">${head}
     <h3 class="np-title">${esc(n.title)}</h3>
@@ -483,56 +488,56 @@ function inferenceHtml() {
   </div>`;
 }
 
-// ---------- lesson plan ----------
+// ---------- Scope and Sequence ----------
 // Edits go to the course's draft (created from the latest published version on the first edit), never to a
 // published version: the student keeps using theirs until the draft is published on Courses and they're upgraded.
-const planUnits = () => D.data?.plan?.units || [];
-const unitSections = () => (D.data?.plan?.layout || []).map((s, i) => ({ i, heading: s.heading })).filter((s) => !/^gated/i.test(s.heading));
-const sectionOf = (key) => (D.data?.plan?.layout || []).findIndex((s) => (s.items || []).some((i) => i.unit === key));
-const unitOpts = (except) => planUnits().filter((x) => x.key !== except).map((x) => ({ key: x.key, label: x.name }));
+const scopeSeqUnits = () => D.data?.scopeSeq?.units || [];
+const unitSections = () => (D.data?.scopeSeq?.layout || []).map((s, i) => ({ i, heading: s.heading })).filter((s) => !/^gated/i.test(s.heading));
+const sectionOf = (key) => (D.data?.scopeSeq?.layout || []).findIndex((s) => (s.items || []).some((i) => i.unit === key));
+const unitOpts = (except) => scopeSeqUnits().filter((x) => x.key !== except).map((x) => ({ key: x.key, label: x.name }));
 const cToggle = (id) => { const n = commentsOf(id).length; return `<button class="ghost cmt-tog${D.openC === id ? " on" : ""}" data-cmt-toggle="${esc(id)}" title="${n ? `${n} comment${n === 1 ? "" : "s"}` : "Add a comment"}">💬${n ? ` ${n}` : ""}</button>`; };
 
-function planHtml() {
-  const groups = lessonPlan(D.data?.plan || S.ladder, S.status);
-  if (D.editing) return planEditHtml(groups);
-  if (!groups.length) return '<p class="muted plan-empty">This version of the course has no units yet.</p>';
-  return `<div class="plan">${groups.map((g) => `
-    <section class="plan-group">${g.title ? `<h3>${esc(g.title)}</h3>` : ""}
-      <ol class="plan-list">${g.units.map((u) => `
-        <li class="plan-unit s-${u.status}" data-unit="${u.id}" title="Show ${u.id} in the DAG">
+function scopeSeqHtml() {
+  const groups = scopeSequence(seqSource(), seqStatus());
+  if (D.editing) return scopeSeqEditHtml(groups);
+  if (!groups.length) return '<p class="muted scope-seq-empty">This version of the course has no units yet.</p>';
+  return `<div class="scope-seq">${groups.map((g) => `
+    <section class="scope-seq-group">${g.title ? `<h3>${esc(g.title)}</h3>` : ""}
+      <ol class="scope-seq-list">${g.units.map((u) => `
+        <li class="scope-seq-unit s-${u.status}" data-unit="${u.id}" title="Show ${u.id} in the DAG">
           <span class="chip s-${u.status}${u.note && u.status === "TAUGHT" ? " partial" : ""}${u.missing.length ? " warn" : ""}">${u.id}</span>
-          <div class="plan-body">
-            <div class="plan-title"><b>${esc(u.name)}</b> <span class="st s-${u.status}">${STATUS_LABEL[u.status]}</span>${u.stance ? ` <span class="muted small">${esc(u.stance)}</span>` : ""}</div>
-            ${u.about ? `<div class="plan-about">${esc(u.about)}</div>` : ""}
-            ${u.note ? `<div class="plan-note small">${esc(u.note)}</div>` : ""}
-            ${u.guide ? `<div class="muted small plan-guide">${esc(u.guide)}</div>` : ""}
+          <div class="scope-seq-body">
+            <div class="scope-seq-title"><b>${esc(u.name)}</b> <span class="st s-${u.status}">${STATUS_LABEL[u.status]}</span>${u.stance ? ` <span class="muted small">${esc(u.stance)}</span>` : ""}</div>
+            ${u.about ? `<div class="scope-seq-about">${esc(u.about)}</div>` : ""}
+            ${u.note ? `<div class="scope-seq-note small">${esc(u.note)}</div>` : ""}
+            ${u.guide ? `<div class="muted small scope-seq-guide">${esc(u.guide)}</div>` : ""}
             ${u.needs.length ? `<div class="muted small">Needs ${u.needs.map(esc).join(", ")}${u.missing.length ? ` · <span class="bad-text">${u.missing.map(esc).join(", ")} not taught yet</span>` : ""}</div>` : ""}
             ${D.openC === u.id ? commentsHtml(u.id) : ""}
           </div>
-          <span class="plan-acts">${cToggle(u.id)}</span>
+          <span class="scope-seq-acts">${cToggle(u.id)}</span>
         </li>`).join("")}</ol>
     </section>`).join("")}</div>`;
 }
 
 function unitRowHtml(u) {
-  const neededBy = planUnits().filter((x) => x.needs.includes(u.id)).map((x) => x.key);
+  const neededBy = scopeSeqUnits().filter((x) => x.needs.includes(u.id)).map((x) => x.key);
   const confirm = D.remove === u.id ? removeHtml(u.id, u.id, neededBy, unitOpts(u.id).map((o) => ({ key: o.key, label: `${o.key} ${o.label}` }))) : "";
   const drag = !D.edit && !D.remove && D.openC !== u.id;
-  return `<li class="plan-unit s-${u.status}" data-edit-unit="${esc(u.id)}" data-node="${esc(u.id)}"${drag ? ` draggable="true" title="Drag to reorder"` : ""}>
+  return `<li class="scope-seq-unit s-${u.status}" data-edit-unit="${esc(u.id)}" data-node="${esc(u.id)}"${drag ? ` draggable="true" title="Drag to reorder"` : ""}>
     ${drag ? '<span class="grip" aria-hidden="true">⋮⋮</span>' : ""}<span class="chip s-${u.status}">${esc(u.id)}</span>
-    <div class="plan-body">
-      <div class="plan-title"><b>${esc(u.name)}</b>${u.stance ? ` <span class="muted small">${esc(u.stance)}</span>` : ""}</div>
-      ${u.about ? `<div class="plan-about">${esc(u.about)}</div>` : ""}
-      ${u.guide ? `<div class="muted small plan-guide">${esc(u.guide)}</div>` : ""}
+    <div class="scope-seq-body">
+      <div class="scope-seq-title"><b>${esc(u.name)}</b>${u.stance ? ` <span class="muted small">${esc(u.stance)}</span>` : ""}</div>
+      ${u.about ? `<div class="scope-seq-about">${esc(u.about)}</div>` : ""}
+      ${u.guide ? `<div class="muted small scope-seq-guide">${esc(u.guide)}</div>` : ""}
       ${u.needs.length ? `<div class="muted small">Needs ${u.needs.map(esc).join(", ")}</div>` : ""}
       ${confirm}
       ${D.openC === u.id ? commentsHtml(u.id) : ""}
     </div>
-    <span class="plan-acts">${cToggle(u.id)}<button class="ghost" data-pe="edit" title="Edit ${esc(u.id)}">✎</button><button class="ghost" data-pe="remove" title="Remove ${esc(u.id)}">✕</button></span>
+    <span class="scope-seq-acts">${cToggle(u.id)}<button class="ghost" data-pe="edit" title="Edit ${esc(u.id)}">✎</button><button class="ghost" data-pe="remove" title="Remove ${esc(u.id)}">✕</button></span>
   </li>`;
 }
 
-// The unit form, in the linear list and in the lesson plan DAG's side panel.
+// The unit form, in the linear list and in the Scope and Sequence DAG's side panel.
 function unitFormHtml(u, section) {
   const secs = unitSections();
   return `<form class="pe-form" data-layer="unit" data-key="${esc(u?.key || "")}">
@@ -549,19 +554,19 @@ function unitFormHtml(u, section) {
     </div></form>`;
 }
 
-function planEditHtml(groups) {
-  const byKey = new Map(planUnits().map((u) => [u.key, u]));
+function scopeSeqEditHtml(groups) {
+  const byKey = new Map(scopeSeqUnits().map((u) => [u.key, u]));
   const secs = unitSections();
   // every unit section, even an empty one, so a unit can be added to it
   const shown = secs.map((s) => ({ title: s.heading, section: s.i, units: groups.find((g) => g.section === s.i)?.units || [] }));
   for (const g of groups) if (g.section == null) shown.push(g);
   if (!shown.length) shown.push({ title: "", section: 0, units: groups.flatMap((g) => g.units) });
   const adding = (si) => D.edit && typeof D.edit === "object" && D.edit.section === si;
-  const form = (u, si) => `<li class="plan-unit plan-form">${unitFormHtml(u, si)}</li>`;
-  return `<div class="plan editing">${shown.map((g) => `
-    <section class="plan-group">${g.title ? `<h3>${esc(g.title)}</h3>` : ""}
-      <ol class="plan-list"${g.section != null ? ` data-section="${g.section}"` : ""}>${g.units.map((u) => (D.edit === u.id ? form(byKey.get(u.id), g.section) : unitRowHtml(u))).join("")}
-        ${adding(g.section) ? form(null, g.section) : g.section != null ? `<li class="plan-add"><button class="link" data-pe="add" data-section="${g.section}">+ Add a unit${g.title ? ` to ${esc(g.title)}` : ""}</button></li>` : ""}
+  const form = (u, si) => `<li class="scope-seq-unit scope-seq-form">${unitFormHtml(u, si)}</li>`;
+  return `<div class="scope-seq editing">${shown.map((g) => `
+    <section class="scope-seq-group">${g.title ? `<h3>${esc(g.title)}</h3>` : ""}
+      <ol class="scope-seq-list"${g.section != null ? ` data-section="${g.section}"` : ""}>${g.units.map((u) => (D.edit === u.id ? form(byKey.get(u.id), g.section) : unitRowHtml(u))).join("")}
+        ${adding(g.section) ? form(null, g.section) : g.section != null ? `<li class="scope-seq-add"><button class="link" data-pe="add" data-section="${g.section}">+ Add a unit${g.title ? ` to ${esc(g.title)}` : ""}</button></li>` : ""}
       </ol>
     </section>`).join("")}</div>`;
 }
@@ -570,7 +575,7 @@ function planEditHtml(groups) {
 async function draftEdit(ops, what) {
   let r = null;
   try {
-    r = await api("/api/versions/draft", { method: "POST", body: { ops } });
+    r = await api(withCur("/api/versions/draft"), { method: "POST", body: { ops } });
     log("dag-edit", { mode: D.mode, ...what });
     D.edit = null; D.remove = null; D.editErr = "";
     D.data = await api(dagUrl());
@@ -586,22 +591,22 @@ async function draftEdit(ops, what) {
 
 async function startEditing() {
   let draft = D.data?.versions?.find((v) => v.status === "draft")?.id;
-  if (!draft) draft = (await api("/api/versions/draft", { method: "POST", body: { ops: [], note: "edits in the app" } })).draft;
+  if (!draft) draft = (await api(withCur("/api/versions/draft"), { method: "POST", body: { ops: [], note: "edits in the app" } })).draft;
   Object.assign(D, { editing: true, edit: null, remove: null, editErr: "", version: draft });
   log("dag-edit-mode", { on: true, draft, mode: D.mode });
   await load();
 }
 
-// The lesson plan as its DAG. Selecting a unit lights up everything it rests on (ancestors) and everything that
+// The Scope and Sequence as its DAG. Selecting a unit lights up everything it rests on (ancestors) and everything that
 // rests on it (descendants), and dims the rest; implied edges are drawn only for the selected unit.
-function planClosure(g, id, dir) {
+function scopeSeqClosure(g, id, dir) {
   const out = new Set(), next = (x) => g.edges.filter((e) => (dir === "up" ? e.to === x : e.from === x)).map((e) => (dir === "up" ? e.from : e.to));
   const walk = (x) => { for (const y of next(x)) if (!out.has(y)) { out.add(y); walk(y); } };
   walk(id); return out;
 }
-function planSvgHtml() {
+function scopeSeqSvgHtml() {
   const g = D.graph, sel = g.nodes.some((n) => n.id === D.sel) ? D.sel : null;
-  const up = sel ? planClosure(g, sel, "up") : new Set(), down = sel ? planClosure(g, sel, "down") : new Set();
+  const up = sel ? scopeSeqClosure(g, sel, "up") : new Set(), down = sel ? scopeSeqClosure(g, sel, "down") : new Set();
   const byId = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
   const ok = (id) => ["TAUGHT", "CURRENT"].includes(byId[id].unit.status);
   const edges = g.edges.map((e) => {
@@ -624,19 +629,19 @@ function planSvgHtml() {
   }).join("");
   const v = D.view;
   const mk = (id, cls) => `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah${cls}"/></marker>`;
-  return `<svg class="dag-svg plan-dag" viewBox="${v.x} ${v.y} ${v.w} ${v.h}" xmlns="http://www.w3.org/2000/svg">
+  return `<svg class="dag-svg scope-seq-dag" viewBox="${v.x} ${v.y} ${v.w} ${v.h}" xmlns="http://www.w3.org/2000/svg">
     <defs>${mk("parr", "")}${mk("parr-anc", " anc")}${mk("parr-desc", " desc")}${mk("parr-dim", " dim")}</defs>
     <g class="edges">${edges}</g><g class="nodes">${nodes}</g></svg>`;
 }
 
-function planPanel(id) {
+function scopeSeqPanel(id) {
   if (D.editing && D.edit && typeof D.edit === "object") return `<div class="np"><div class="k">New unit</div>${unitFormHtml(null, D.edit.section)}</div>`;
   const g = D.graph, n = g.nodes.find((x) => x.id === id);
   if (!n) return `<p class="muted">${D.editing ? "Click a unit to change or remove it, or add one with + Add unit." : "Click a unit to see what it needs and what it opens up. Its prerequisites light up in green, the units that build on it in blue."}</p>`;
   const u = n.unit, name = (k) => g.nodes.find((x) => x.id === k)?.unit.name || "";
-  if (D.editing && D.edit === id) return `<div class="np"><div class="k">Unit ${esc(u.id)}</div>${unitFormHtml(planUnits().find((x) => x.key === id), sectionOf(id))}</div>`;
+  if (D.editing && D.edit === id) return `<div class="np"><div class="k">Unit ${esc(u.id)}</div>${unitFormHtml(scopeSeqUnits().find((x) => x.key === id), sectionOf(id))}</div>`;
   const links = (ks) => `<div class="nls">${[...ks].map((k) => `<button class="link nl" data-goto-unit="${esc(k)}"><b>${esc(k)}</b> ${esc(name(k))}</button>`).join("")}</div>`;
-  const direct = g.edges.filter((e) => e.from === id).map((e) => e.to), all = planClosure(g, id, "down"), anc = planClosure(g, id, "up");
+  const direct = g.edges.filter((e) => e.from === id).map((e) => e.to), all = scopeSeqClosure(g, id, "down"), anc = scopeSeqClosure(g, id, "up");
   const known = new Set(g.nodes.map((x) => x.id)), unknown = u.needs.filter((k) => !known.has(k));
   const edits = D.editing ? editBarHtml(id) + (D.remove === id ? removeHtml(id, u.id, direct, unitOpts(id).map((o) => ({ key: o.key, label: `${o.key} ${o.label}` }))) : "") : "";
   return `<div class="np">
@@ -645,8 +650,8 @@ function planPanel(id) {
     ${u.about ? `<p>${esc(u.about)}</p>` : ""}
     ${edits}
     <div class="np-state ps-${u.status}">${esc(STATUS_LABEL[u.status])}${n.ready ? " · ready: everything it needs is taught" : ""}</div>
-    ${u.note ? `<p class="plan-note small">${esc(u.note)}</p>` : ""}
-    ${u.guide ? `<p class="muted small plan-guide">${esc(u.guide)}</p>` : ""}
+    ${u.note ? `<p class="scope-seq-note small">${esc(u.note)}</p>` : ""}
+    ${u.guide ? `<p class="muted small scope-seq-guide">${esc(u.guide)}</p>` : ""}
     ${u.missing.length ? `<p class="bad-text small">${u.missing.map(esc).join(", ")} not taught yet</p>` : ""}
     <h4>Needs</h4>${u.needs.length ? links(u.needs.filter((k) => known.has(k))) : '<p class="muted small">Nothing: it can start any time.</p>'}
     ${unknown.length ? `<p class="muted small">Also lists ${unknown.map(esc).join(", ")}, not in this version.</p>` : ""}
@@ -657,7 +662,7 @@ function planPanel(id) {
   </div>`;
 }
 
-function planLegendHtml() {
+function scopeSeqLegendHtml() {
   return `<div class="dag-legend">
     <span class="lg ps-TAUGHT"></span>taught <span class="lg ps-CURRENT"></span>current <span class="lg ps-NEXT"></span>next <span class="lg ps-FUTURE"></span>future <span class="lg ps-FUTURE ready"></span>ready (needs all taught)
     <span class="sep"></span><span class="lg-edge"></span>needed for <span class="lg-edge implied"></span>implied by a longer chain (shown for the selected unit)
@@ -671,41 +676,51 @@ function titleHtml() {
   const v = D.data?.version, cur = D.data?.curriculum?.title || S.curriculum || "";
   const ver = v ? `v${v.seq}${v.status === "draft" ? " · draft" : ""}${v.id === v.enrolled ? ` · ${S.student || "the student"}'s version` : ""}` : "";
   return `<div class="dag-title"><div class="eyebrow">Progress map › ${esc(MODE_LABEL[D.mode])}</div>
-    <h2>${esc(cur || "Progress map")}${ver ? ` <span class="dag-ver${v.status === "draft" ? " draft" : ""}">${esc(ver)}</span>` : ""}</h2></div>`;
+    <h2>${curPicker(cur)}${ver ? ` <span class="dag-ver${v.status === "draft" ? " draft" : ""}">${esc(ver)}</span>` : ""}</h2></div>`;
 }
-const planViewSeg = () => `<div class="seg plan-view">${["linear", "dag"].map((v) => `<button data-plan-view="${v}" class="${D.planView === v ? "on" : ""}">${{ linear: "Linear", dag: "DAG" }[v]}</button>`).join("")}</div>`;
-const fitBtn = () => (D.mode !== "plan" || planDag() ? '<button class="ghost" data-act="fit" title="Fit to screen">⤢</button>' : "");
+// The course to show: the student's, or any other in hw.db (the Wu library's drafts, say).
+function curPicker(cur) {
+  const cs = D.data?.curricula || [];
+  if (cs.length < 2) return esc(cur || "Progress map");
+  const mine = D.data.curriculum.browsing ? null : D.data.curriculum.id;
+  return `<select class="dag-cur" title="Course to show">${cs.map((c) => `<option value="${esc(c.id)}"${c.id === D.data.curriculum.id ? " selected" : ""}>${esc(c.title)}${c.id === mine ? ` · ${esc(S.student || "student")}'s` : c.version?.status === "draft" ? " (draft)" : ""}</option>`).join("")}</select>`;
+}
+const scopeSeqViewSeg = () => `<div class="seg scope-seq-view">${["linear", "dag"].map((v) => `<button data-scope-seq-view="${v}" class="${D.scopeSeqView === v ? "on" : ""}">${{ linear: "Linear", dag: "DAG" }[v]}</button>`).join("")}</div>`;
+const fitBtn = () => (D.mode !== "scopeSeq" || scopeSeqDag() ? '<button class="ghost" data-act="fit" title="Fit to screen">⤢</button>' : "");
 
 function headBodyHtml() {
   const job = D.data?.job, running = job?.running;
   if (D.editing) {
-    const n = D.mode === "plan" ? planUnits().length : curDag()?.nodes.length || 0, what = D.mode === "plan" ? "unit" : "block";
+    const n = D.mode === "scopeSeq" ? scopeSeqUnits().length : curDag()?.nodes.length || 0, what = D.mode === "scopeSeq" ? "unit" : "block";
     return `<span class="dag-count"><b>Editing draft v${D.data.version.seq}</b> · ${n} ${what}${n === 1 ? "" : "s"}</span>
-      ${D.mode === "plan" ? planViewSeg() : ""}
+      ${D.mode === "scopeSeq" ? scopeSeqViewSeg() : ""}
       <button class="secondary" data-act="add-node">+ Add ${what}</button>
       <span class="spacer"></span><span class="muted small">Publish the draft on <button class="link" data-page="courses">Courses</button> to use it</span>
       ${fitBtn()}<button class="primary" data-act="edit-done">Done</button>`;
   }
-  if (D.mode === "plan") {
-    const us = lessonPlan(D.data?.plan || S.ladder, S.status).flatMap((g) => g.units), n = (s) => us.filter((u) => u.status === s).length;
-    const ready = planDag() && D.graph ? D.graph.nodes.filter((x) => x.ready).length : 0;
+  if (D.mode === "scopeSeq") {
+    const us = scopeSequence(seqSource(), seqStatus()).flatMap((g) => g.units), n = (s) => us.filter((u) => u.status === s).length;
+    const ready = scopeSeqDag() && D.graph ? D.graph.nodes.filter((x) => x.ready).length : 0;
     return `<span class="dag-count"><b>${n("TAUGHT")} of ${us.length} taught</b> · ${n("CURRENT")} current${n("NEXT") ? ` · ${n("NEXT")} next` : ""}${ready ? ` · ${ready} ready` : ""}</span>
-      ${planViewSeg()}
+      ${scopeSeqViewSeg()}
       <span class="spacer"></span><span class="muted small" title="Statuses come from the app's status record; change them on Create Homework">Statuses are set on Create Homework</span>
       <button class="ghost" data-act="status-export" title="Download the whole status record (unit statuses, review priority, standing conventions, history) as Markdown">Export status.md</button>
       <button class="ghost" data-act="status-upload" title="Replace the status record with an edited status.md (the old one stays in the history)">Import status.md</button>${versionPicker()}${fitBtn()}
       <button class="secondary" data-act="edit" title="Add, change or remove units in the course's draft">Edit units</button>`;
   }
   if (D.mode === "inference") {
+    if (browsing()) return "";
     return `<span class="spacer"></span>
       ${running ? `<span class="muted small"><span class="spin"></span> Claude is reading the homework and notes… ${Math.round((job.elapsed || 0) / 1000)}s${job.tools?.length ? ` · read ${job.tools.length} file${job.tools.length > 1 ? "s" : ""}` : ""}</span><button class="secondary" data-act="stop-guess">Stop</button>`
         : `${job?.error ? `<span class="bad-text small" title="${esc(job.error)}">Last guess failed</span>` : ""}<button class="primary" data-act="guess" title="One ${esc(D.data.guessModel || "")} run over every homework file and these files, for both boards">${D.data.guess ? "Guess again" : "Guess progress"}</button>`}`;
   }
-  const c = counts(curDag(), statesNow()), count = `<span class="dag-count"><b>${c.done} of ${c.total} done</b>${c.partial ? ` · ${c.partial} partly` : ""} · ${c.ready} ready</span>`;
+  const c = counts(curDag(), statesNow());
+  const count = browsing() ? `<span class="dag-count"><b>${curDag().nodes.length} blocks</b> · ${curDag().edges.length} arrows</span>`
+    : `<span class="dag-count"><b>${c.done} of ${c.total} done</b>${c.partial ? ` · ${c.partial} partly` : ""} · ${c.ready} ready</span>`;
   const name = D.board === "methods" ? "methods.md" : "content.md";
   return `${count}
     <span class="spacer"></span>
-    ${viewingOther() ? `<span class="muted small">Viewing v${D.data.version.seq}, read through the course's lineage</span>` : `${running ? `<span class="muted small"><span class="spin"></span> Claude is guessing…</span>` : ""}
+    ${browsing() ? `<span class="muted small">Another course: no student, no progress</span>` : viewingOther() ? `<span class="muted small">Viewing v${D.data.version.seq}, read through the course's lineage</span>` : `${running ? `<span class="muted small"><span class="spin"></span> Claude is guessing…</span>` : ""}
       <button class="ghost" data-act="board-export" title="Download every block on this board with its state as Markdown">Export ${name}</button>
       <button class="ghost" data-act="board-import" title="Set states from an edited ${name}: each changed line becomes your setting, auto goes back to Claude's guess">Import ${name}</button>`}
     ${versionPicker()}${fitBtn()}
@@ -733,20 +748,20 @@ function drawAll() {
   const d = $("#p-dag");
   syncSidebar();
   if (D.editing && D.data?.version && D.data.version.status !== "draft") Object.assign(D, { editing: false, edit: null, remove: null, editErr: "" });
-  if (D.mode === "plan" && D.planView === "dag") {
-    const groups = lessonPlan(D.data?.plan || S.ladder, S.status);
-    D.graph = planGraph(groups);
-    if (!D.graph.nodes.length) { d.innerHTML = `${headHtml()}${D.editing && D.edit ? `<div class="plan">${planPanel(null)}</div>` : planHtml()}`; return; }
+  if (D.mode === "scopeSeq" && D.scopeSeqView === "dag") {
+    const groups = scopeSequence(seqSource(), seqStatus());
+    D.graph = scopeSeqGraph(groups);
+    if (!D.graph.nodes.length) { d.innerHTML = `${headHtml()}${D.editing && D.edit ? `<div class="scope-seq">${scopeSeqPanel(null)}</div>` : scopeSeqHtml()}`; return; }
     D.view ||= bbox(D.graph);
     d.innerHTML = `${headHtml()}
-      <div class="dag-main"><div class="dag-canvas">${planSvgHtml()}</div>
-        <aside class="dag-side"><div class="side-body">${planPanel(D.sel)}</div></aside></div>
-      ${planLegendHtml()}`;
+      <div class="dag-main"><div class="dag-canvas">${scopeSeqSvgHtml()}</div>
+        <aside class="dag-side"><div class="side-body">${scopeSeqPanel(D.sel)}</div></aside></div>
+      ${scopeSeqLegendHtml()}`;
     return;
   }
-  if (D.mode === "plan") { d.innerHTML = `${headHtml()}${planHtml()}`; return; }
+  if (D.mode === "scopeSeq") { d.innerHTML = `${headHtml()}${scopeSeqHtml()}`; return; }
   if (!D.data) { d.innerHTML = `<p class="muted">Loading…</p>`; return; }
-  if (D.mode === "inference") { if (D.editing) Object.assign(D, { editing: false, edit: null, remove: null, editErr: "", version: null }); d.innerHTML = `${headHtml()}${inferenceHtml()}`; return; }
+  if (D.mode === "inference") { if (D.editing) Object.assign(D, { editing: false, edit: null, remove: null, editErr: "", version: null }); d.innerHTML = `${headHtml()}${browsing() ? `<p class="muted">Inference guesses ${esc(S.student || "the student")}'s progress, so it works on their course only. Pick it in the header.</p>` : inferenceHtml()}`; return; }
   if (!curDag()) { d.innerHTML = `<div class="row dag-head">${titleHtml()}</div><p class="err">This course version has no ${D.board === "methods" ? "methods" : "content"} board.</p>`; return; }
   D.view ||= bbox(curDag());
   d.innerHTML = `${headHtml()}
@@ -754,11 +769,11 @@ function drawAll() {
       <aside class="dag-side"><div class="side-body">${nodePanel(D.sel)}</div></aside></div>
     ${legendHtml()}`;
 }
-function drawSvgOnly() { const c = $("#p-dag .dag-canvas"); if (c) c.innerHTML = planDag() ? planSvgHtml() : svgHtml(); }
+function drawSvgOnly() { const c = $("#p-dag .dag-canvas"); if (c) c.innerHTML = scopeSeqDag() ? scopeSeqSvgHtml() : svgHtml(); }
 // someone is typing in a form on the page: background refreshes leave it alone
 const typing = () => !!document.activeElement?.closest?.("#p-dag form");
 
-const dagUrl = () => (D.version ? `/api/dag?version=${D.version}` : "/api/dag");
+const dagUrl = () => withCur(D.version ? `/api/dag?version=${D.version}` : "/api/dag");
 async function load() {
   try { D.data = await api(dagUrl()); } catch (e) { if (e.status === 404 && D.version) { D.version = null; D.data = await api(dagUrl()); } else throw e; }
   drawAll();
@@ -776,13 +791,13 @@ function startPoll() {
 // Show one block ("eNN" or "m:eNN") on its board, selected: used by links here and from History › Inference.
 export function focusNode(k) {
   const mode = k.startsWith("m:") ? "methods" : "content";
-  if (mode !== D.board || D.mode === "plan") D.view = null;
+  if (mode !== D.board || D.mode === "scopeSeq") D.view = null;
   D.mode = mode; D.sel = k.replace(/^m:/, ""); D.side = "info";
   log("dag-mode", { mode });
 }
 
 export async function openDag(btn) {
-  if (btn?.dataset.dag && btn.dataset.dag !== D.mode) { const wasBoard = D.board, wasPlan = planDag(); D.mode = btn.dataset.dag; Object.assign(D, { edit: null, remove: null, editErr: "", cEdit: null }); if (D.board !== wasBoard || planDag() !== wasPlan) { D.sel = null; D.view = null; } }
+  if (btn?.dataset.dag && btn.dataset.dag !== D.mode) { const wasBoard = D.board, wasScopeSeq = scopeSeqDag(); D.mode = btn.dataset.dag; Object.assign(D, { edit: null, remove: null, editErr: "", cEdit: null }); if (D.board !== wasBoard || scopeSeqDag() !== wasScopeSeq) { D.sel = null; D.view = null; } }
   if (!D.data) drawAll();
   await load();
 }
@@ -795,8 +810,9 @@ async function setNode(key, state) {
 
 async function commentCall(path, method, body) {
   try {
-    const r = await api(path, { method, body });
+    const r = await api(withCur(path), { method, body });
     D.data.comments = r.comments; D.cEdit = null; D.cErr = "";
+    document.dispatchEvent(new CustomEvent("hw:comments", { detail: r.comments })); // the Work page's brief and units
     log("dag-comment", { method, path });
   } catch (e) { D.cErr = e.message; }
   drawAll();
@@ -804,8 +820,8 @@ async function commentCall(path, method, body) {
 
 // ---------- edit history (the dialog behind the header's top-right button) ----------
 const HIST_FILTERS = { all: ["All", () => true], content: ["Content", (r) => r.layer === "content"], methods: ["Methods", (r) => r.layer === "methods"],
-  unit: ["Lesson plan", (r) => r.layer === "unit"], comments: ["Comments", (r) => r.op.startsWith("comment")], versions: ["Versions", (r) => ["version", "publish", "discard", "import"].includes(r.op)] };
-const OP_ICON = { add: "+", edit: "✎", move: "↔", remove: "✕", lineage: "→", link: "⟶", unlink: "⤫", reorder: "⇅", covers: "⊂", "plan-text": "¶", gated: "⊘", ladder: "¶", note: "✎",
+  unit: ["Scope and Sequence", (r) => r.layer === "unit"], comments: ["Comments", (r) => r.op.startsWith("comment")], versions: ["Versions", (r) => ["version", "publish", "discard", "import"].includes(r.op)] };
+const OP_ICON = { add: "+", edit: "✎", move: "↔", remove: "✕", lineage: "→", link: "⟶", unlink: "⤫", reorder: "⇅", covers: "⊂", "scope-seq-text": "¶", gated: "⊘", ladder: "¶", note: "✎",
   comment: "💬", "comment-edit": "💬", "comment-delete": "💬", version: "◇", publish: "✓", discard: "🗑", import: "⇩" };
 function histDetailHtml(r) {
   const d = r.detail || {}, field = (f) => esc({ detail: "description", about: "what it covers", proves: "needed to prove", restsOn: "rests on" }[f] || f);
@@ -820,7 +836,7 @@ function histDetailHtml(r) {
 function histHtml() {
   const h = D.hist, title = D.data?.curriculum?.title || "this curriculum";
   const [, keep] = HIST_FILTERS[h.filter] || HIST_FILTERS.all, shown = (h.data || []).filter(keep);
-  const here = (r) => r.key && (r.layer === "unit" ? planUnits().some((u) => u.key === r.key) : r.layer === "methods" ? D.data?.methods?.nodes.some((n) => "m:" + n.id === r.key) : D.data?.content?.nodes.some((n) => n.id === r.key));
+  const here = (r) => r.key && (r.layer === "unit" ? scopeSeqUnits().some((u) => u.key === r.key) : r.layer === "methods" ? D.data?.methods?.nodes.some((n) => "m:" + n.id === r.key) : D.data?.content?.nodes.some((n) => n.id === r.key));
   const days = [];
   for (const r of shown) { const day = new Date(r.at).toLocaleDateString([], { weekday: "short", year: "numeric", month: "short", day: "numeric" }); if (days.at(-1)?.day !== day) days.push({ day, rows: [] }); days.at(-1).rows.push(r); }
   const list = h.err ? `<p class="err">${esc(h.err)}</p>` : !h.data ? '<p class="muted">Loading…</p>' : !shown.length ? '<p class="muted">Nothing here yet.</p>' : days.map((g) => `
@@ -833,7 +849,7 @@ function histHtml() {
         <div class="he-tags">${r.layer ? `<span class="he-tag l-${esc(r.layer)}">${esc(LAYER_LABEL[r.layer] || r.layer)}</span>` : ""}${r.seq ? `<span class="he-tag">v${r.seq}</span>` : ""}${r.source && r.source !== "app" ? `<span class="he-tag src">${esc({ file: "curriculum_ladder.md edited", import: "whiteboard" }[r.source] || r.source)}</span>` : ""}</div>
         ${histDetailHtml(r)}</div></li>`).join("")}</ol>`).join("");
   return `<div class="row he-head"><div><div class="eyebrow">Edit history</div><h2>${esc(title)}</h2></div><span class="spacer"></span><button class="ghost" data-hist-close title="Close">✕</button></div>
-    <p class="muted small">Every change to the course: edits on the content board, the methods board and the lesson plan, whiteboard imports, drafts started, published and discarded, and comments. Newest first.</p>
+    <p class="muted small">Every change to the course: edits on the content board, the methods board and the Scope and Sequence, whiteboard imports, drafts started, published and discarded, and comments. Newest first.</p>
     <div class="seg he-filters">${Object.entries(HIST_FILTERS).map(([k, [label, f]]) => `<button data-hist-filter="${k}" class="${h.filter === k ? "on" : ""}">${label}${h.data ? ` <span class="muted">${h.data.filter(f).length}</span>` : ""}</button>`).join("")}</div>
     <div class="he-scroll">${list}</div>`;
 }
@@ -842,7 +858,7 @@ async function openHistory() {
   D.hist.err = "";
   dlg.innerHTML = histHtml();
   if (!dlg.open) dlg.showModal();
-  try { D.hist.data = (await api("/api/dag/history")).edits; } catch (e) { D.hist.err = e.message; }
+  try { D.hist.data = (await api(withCur("/api/dag/history"))).edits; } catch (e) { D.hist.err = e.message; }
   log("dag-history", { entries: D.hist.data?.length ?? null });
   dlg.innerHTML = histHtml();
 }
@@ -856,7 +872,7 @@ function initHistory() {
     if (go) {
       dlg.close();
       const k = go.dataset.histGo;
-      if (go.dataset.layer === "unit") { Object.assign(D, { mode: "plan", planView: "dag", sel: k, view: null }); try { localStorage.setItem(PLAN_VIEW_KEY, "dag"); } catch {} }
+      if (go.dataset.layer === "unit") { Object.assign(D, { mode: "scopeSeq", scopeSeqView: "dag", sel: k, view: null }); try { localStorage.setItem(SCOPE_SEQ_VIEW_KEY, "dag"); } catch {} }
       else focusNode(k);
       log("dag-history-go", { key: k });
       drawAll();
@@ -923,12 +939,12 @@ export function initDag() {
   d.addEventListener("click", async (e) => {
     const t = e.target;
     const go = t.closest("[data-dag-go]"); if (go) { D.mode = go.dataset.dagGo; D.sel = null; D.view = null; log("dag-mode", { mode: D.mode }); return drawAll(); }
-    const pv = t.closest("[data-plan-view]");
+    const pv = t.closest("[data-scope-seq-view]");
     if (pv) {
-      if (pv.dataset.planView === D.planView) return;
-      Object.assign(D, { planView: pv.dataset.planView, sel: null, view: null, edit: null, remove: null, editErr: "" });
-      try { localStorage.setItem(PLAN_VIEW_KEY, D.planView); } catch {}
-      log("plan-view", { view: D.planView }); return drawAll();
+      if (pv.dataset.scopeSeqView === D.scopeSeqView) return;
+      Object.assign(D, { scopeSeqView: pv.dataset.scopeSeqView, sel: null, view: null, edit: null, remove: null, editErr: "" });
+      try { localStorage.setItem(SCOPE_SEQ_VIEW_KEY, D.scopeSeqView); } catch {}
+      log("scope-seq-view", { view: D.scopeSeqView }); return drawAll();
     }
     // key pickers
     const kd = t.closest("[data-kp-del]");
@@ -954,21 +970,21 @@ export function initDag() {
       else if (act === "remove") { D.remove = id; D.edit = null; }
       else if (act === "cancel") { D.edit = null; D.remove = null; }
       else if (act === "retire") { if (D.sel === id) D.sel = null; return draftEdit([{ op: "removeNode", key: nodeKey(id), relation: "retired" }], { op: "remove", key: nodeKey(id), relation: "retired" }); }
-      else if (act === "merge") { const into = pe.parentElement.querySelector(".pe-into")?.value; if (into) { if (D.sel === id) D.sel = D.mode === "plan" ? into : into.replace(/^m:/, ""); return draftEdit([{ op: "removeNode", key: nodeKey(id), relation: "merged", into: [into] }], { op: "remove", key: nodeKey(id), relation: "merged", into }); } }
+      else if (act === "merge") { const into = pe.parentElement.querySelector(".pe-into")?.value; if (into) { if (D.sel === id) D.sel = D.mode === "scopeSeq" ? into : into.replace(/^m:/, ""); return draftEdit([{ op: "removeNode", key: nodeKey(id), relation: "merged", into: [into] }], { op: "remove", key: nodeKey(id), relation: "merged", into }); } }
       drawAll();
       if (act === "edit" || act === "add") focusForm();
       return;
     }
-    const pu = t.closest(".plan-unit[data-unit]");
-    if (pu) { D.planView = "dag"; D.sel = pu.dataset.unit; D.view = null; try { localStorage.setItem(PLAN_VIEW_KEY, "dag"); } catch {} log("plan-view", { view: "dag", from: pu.dataset.unit }); return drawAll(); }
-    const gu = t.closest("[data-goto-unit]"); if (gu) { D.sel = gu.dataset.gotoUnit; Object.assign(D, { edit: null, remove: null, cEdit: null }); log("dag-select", { board: "plan", id: D.sel }); return drawAll(); }
+    const pu = t.closest(".scope-seq-unit[data-unit]");
+    if (pu) { D.scopeSeqView = "dag"; D.sel = pu.dataset.unit; D.view = null; try { localStorage.setItem(SCOPE_SEQ_VIEW_KEY, "dag"); } catch {} log("scope-seq-view", { view: "dag", from: pu.dataset.unit }); return drawAll(); }
+    const gu = t.closest("[data-goto-unit]"); if (gu) { D.sel = gu.dataset.gotoUnit; Object.assign(D, { edit: null, remove: null, cEdit: null }); log("dag-select", { board: "scopeSeq", id: D.sel }); return drawAll(); }
     const a = t.closest("[data-act]");
     if (a?.dataset.act === "history") return openHistory();
     if (a?.dataset.act === "edit") { try { await startEditing(); } catch (err) { alert(err.message); } return; }
     if (a?.dataset.act === "edit-done") { Object.assign(D, { editing: false, edit: null, remove: null, editErr: "", version: null }); log("dag-edit-mode", { on: false }); return load(); }
     if (a?.dataset.act === "add-node") {
-      Object.assign(D, { edit: D.mode === "plan" ? { section: unitSections()[0]?.i ?? 0 } : { board: D.board }, remove: null, editErr: "", side: "info" });
-      if (D.mode !== "plan") D.sel = null;
+      Object.assign(D, { edit: D.mode === "scopeSeq" ? { section: unitSections()[0]?.i ?? 0 } : { board: D.board }, remove: null, editErr: "", side: "info" });
+      if (D.mode !== "scopeSeq") D.sel = null;
       drawAll(); return focusForm();
     }
     if (a?.dataset.act === "fit") { D.view = bbox(curDag()); return drawSvgOnly(); }
@@ -998,7 +1014,7 @@ export function initDag() {
       const fields = { name: v("name").replace(/\.$/, ""), about: v("about").replace(/\s+/g, " "), needs: listKeys(f, "needs"), stance: v("stance").replace(/\.$/, ""), notes: v("notes") };
       if (f.elements.section) fields.section = Number(f.elements.section.value);
       const r = await draftEdit([{ op: "upsertNode", layer: "unit", key, check: true, fields }], { op: key ? "edit" : "add", key });
-      if (r && !key && planDag()) { D.sel = r.keys[0]; drawAll(); }
+      if (r && !key && scopeSeqDag()) { D.sel = r.keys[0]; drawAll(); }
       return;
     }
     const fields = { title: v("title"), detail: v("detail").replace(/\s+/g, " "), kind: v("kind"), uses: listKeys(f, "uses"), proves: listKeys(f, "proves") };
@@ -1008,7 +1024,7 @@ export function initDag() {
     if (r) { D.sel = (key || r.keys[0]).replace(/^m:/, ""); drawAll(); }
   });
   d.addEventListener("input", (e) => { if (e.target.matches(".kp-in")) kpAdd(e.target.closest(".kp"), true); });
-  // drag a unit to reorder it within its section (Lesson plan › Edit units)
+  // drag a unit to reorder it within its section (Scope and Sequence › Edit units)
   let dragging = null;
   const clearMarks = () => $$("#p-dag .drop-before, #p-dag .drop-after").forEach((x) => x.classList.remove("drop-before", "drop-after"));
   const dropSpot = (e) => {
@@ -1044,6 +1060,13 @@ export function initDag() {
   });
   d.addEventListener("change", (e) => {
     if (e.target.matches("#dag-drop input")) upload([...e.target.files]);
+    if (e.target.matches(".dag-cur")) {
+      const id = e.target.value, mine = D.data?.curriculum?.browsing ? null : D.data?.curriculum?.id;
+      S.browse = id === mine ? "" : id;
+      Object.assign(D, { version: null, sel: null, view: null, editing: false, edit: null, remove: null, editErr: "", cEdit: null });
+      if (S.browse && D.mode === "inference") D.mode = "content";
+      log("dag-curriculum", { curriculum: id }); load();
+    }
     if (e.target.matches(".dag-version")) {
       const id = Number(e.target.value);
       D.version = id === D.data?.version?.enrolled ? null : id; D.sel = null; D.view = null;
@@ -1067,7 +1090,7 @@ export function initDag() {
   }, { passive: false });
   d.addEventListener("pointerdown", (e) => {
     const svg = e.target.closest(".dag-svg"); if (!svg || e.button !== 0) return;
-    const node = e.target.closest(".node")?.dataset.id, n = node && D.editing && !planDag() && D.mode !== "plan" ? curDag().nodes.find((x) => x.id === node) : null;
+    const node = e.target.closest(".node")?.dataset.id, n = node && D.editing && !scopeSeqDag() && D.mode !== "scopeSeq" ? curDag().nodes.find((x) => x.id === node) : null;
     D.dragging = { sx: e.clientX, sy: e.clientY, v: { ...D.view }, k: toBoard(svg, 0, 0).k, moved: false, node, move: n ? { n, x0: n.x, y0: n.y } : null };
     svg.setPointerCapture(e.pointerId);
   });
@@ -1098,7 +1121,7 @@ export function initDag() {
     if (g && !g.moved) {
       const was = D.sel; D.sel = g.node && g.node !== D.sel ? g.node : g.node ? D.sel : null;
       if (g.node) D.side = "info";
-      if (D.sel !== was) { Object.assign(D, { edit: null, remove: null, editErr: "", cEdit: null, cErr: "" }); log("dag-select", { board: D.mode === "plan" ? "plan" : D.board, id: D.sel, from: was }); }
+      if (D.sel !== was) { Object.assign(D, { edit: null, remove: null, editErr: "", cEdit: null, cErr: "" }); log("dag-select", { board: D.mode === "scopeSeq" ? "scopeSeq" : D.board, id: D.sel, from: was }); }
       drawAll();
     }
   });

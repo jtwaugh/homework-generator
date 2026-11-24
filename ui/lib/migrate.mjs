@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { tx, now, J, setSetting } from "./db.mjs";
 import * as C from "./curriculum.mjs";
 import { addStudent, enroll, saveGuessRun, recordEvent } from "./progress.mjs";
-import { parseLadder, lineDiff } from "./lessonplan.mjs";
+import { parseLadder, lineDiff } from "./scopesequence.mjs";
 
 const UI_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const CURRICULUM = { id: "wu-algebra-1", title: "Wu Algebra 1" };
@@ -44,9 +44,9 @@ export function migrateV1(db, { data, root = repoRoot(), student = process.env.H
     const v = C.createDraft(db, CURRICULUM.id, { origin: "migration", note: "Imported from the v0 files" });
     C.writeGraph(db, v, "content", content);
     C.writeGraph(db, v, "methods", methods);
-    const plan = parseLadder(ladder);
-    C.writePlan(db, v, plan, { covers: st.guess?.ladderToWu || {} });
-    report.units = plan.units.length;
+    const scopeSeq = parseLadder(ladder);
+    C.writeScopeSeq(db, v, scopeSeq, { covers: st.guess?.ladderToWu || {} });
+    report.units = scopeSeq.units.length;
     report.ladderDiff = lineDiff(ladder, C.ladderFor(db, v));
     C.publish(db, v);
     const keys = C.keysOf(db, v);

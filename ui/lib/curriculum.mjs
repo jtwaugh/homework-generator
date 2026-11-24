@@ -1,22 +1,22 @@
-// Curricula and their versions: the content DAG, the methods DAG and the lesson plan, versioned together.
+// Curricula and their versions: the content DAG, the methods DAG and the Scope and Sequence, versioned together.
 //
 // Keys: content nodes keep their original ids (e26), methods nodes carry m: (m:e5), units are U05/M1/F1.
 // Nodes created later get c:<rand6> / m:<rand6> / u:<rand6>, so a key is never reused for another concept.
 // A draft is a full copy of its parent published version; edits touch only the draft; publish freezes it.
 //
 //   graphFor(db, v, "content"|"methods")  -> the old wu_dag.json shape {source, importedAt, nodes, edges, texts}
-//   planFor(db, v) / ladderFor(db, v)     -> parsed lesson plan / the exact curriculum_ladder.md text
+//   scopeSeqFor(db, v) / ladderFor(db, v)     -> parsed Scope and Sequence / the exact curriculum_ladder.md text
 //   resolve(db, cur, key, fromV, toV)     -> {status: current|migrated|ambiguous|retired, keys}
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { tx, now, J, P } from "./db.mjs";
-import { parseLadder, renderLadder, parseUnitLine, renderUnitLine } from "./lessonplan.mjs";
+import { parseLadder, renderLadder, parseUnitLine, renderUnitLine } from "./scopesequence.mjs";
 
 const STD = new Set(["id", "title", "detail", "kind", "x", "y", "w", "h"]);
 const keyFor = (layer, id) => (layer === "methods" ? `m:${id}` : String(id));
 const idFor = (layer, key) => (layer === "methods" ? key.replace(/^m:/, "") : key);
-const newKey = (layer) => ({ content: "c:", methods: "m:", unit: "u:" }[layer]) + randomBytes(3).toString("hex");
+export const newKey = (layer) => ({ content: "c:", methods: "m:", unit: "u:" }[layer]) + randomBytes(3).toString("hex");
 export const layerOfKey = (key) => (/^m:/.test(key) ? "methods" : /^(U\d\d|M\d|F\d|u:)/.test(key) ? "unit" : "content");
 
 // ---------- curricula and versions ----------
@@ -33,10 +33,10 @@ export const listVersions = (db, cur) => db.prepare("SELECT id, curriculum_id, s
 export const latestPublished = (db, cur) => vrow(db.prepare("SELECT * FROM curriculum_version WHERE curriculum_id = ? AND status = 'published' ORDER BY seq DESC LIMIT 1").get(cur));
 export const draftOf = (db, cur) => vrow(db.prepare("SELECT * FROM curriculum_version WHERE curriculum_id = ? AND status = 'draft'").get(cur));
 
-function newVersion(db, cur, { origin, note = "", parentId = null, planText = "", meta = {} }) {
+function newVersion(db, cur, { origin, note = "", parentId = null, scopeSeqText = "", meta = {} }) {
   const seq = (db.prepare("SELECT MAX(seq) s FROM curriculum_version WHERE curriculum_id = ?").get(cur).s || 0) + 1;
-  return Number(db.prepare("INSERT INTO curriculum_version(curriculum_id, seq, parent_id, status, origin, note, plan_text, meta_json, created_at) VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?)")
-    .run(cur, seq, parentId, origin, note, planText, J(meta), now()).lastInsertRowid);
+  return Number(db.prepare("INSERT INTO curriculum_version(curriculum_id, seq, parent_id, status, origin, note, scope_seq_text, meta_json, created_at) VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?)")
+    .run(cur, seq, parentId, origin, note, scopeSeqText, J(meta), now()).lastInsertRowid);
 }
 const setMeta = (db, v, fn) => { const m = getVersion(db, v).meta; fn(m); db.prepare("UPDATE curriculum_version SET meta_json = ? WHERE id = ?").run(J(m), v); };
 
@@ -75,20 +75,20 @@ export function writeGraph(db, v, layer, graph, { keyOf = (id) => keyFor(layer, 
   });
 }
 
-export function writePlan(db, v, plan, { covers = null } = {}) {
+export function writeScopeSeq(db, v, scopeSeq, { covers = null } = {}) {
   const cur = getVersion(db, v).curriculum_id;
   tx(db, () => {
     db.prepare("DELETE FROM node_revision WHERE version_id = ? AND layer = 'unit'").run(v);
     db.prepare("DELETE FROM edge WHERE version_id = ? AND kind = 'needs'").run(v);
     db.prepare("DELETE FROM gated_term WHERE version_id = ?").run(v);
-    for (const u of plan.units) {
+    for (const u of scopeSeq.units) {
       ensureNode(db, cur, u.key, "unit", v);
       insRev(db, v, { key: u.key, layer: "unit", ord: u.ord, title: u.name, detail: u.about, kind: "unit", extra: { stance: u.stance, notes: u.notes, section: u.section } });
       u.needs.forEach((n, i) => insEdge(db, v, { ord: i, from: u.key, to: n, kind: "needs" }));
     }
-    for (const g of plan.gated) g.terms.forEach((t, pos) => db.prepare("INSERT INTO gated_term(version_id, grp, pos, term, unit_key) VALUES (?,?,?,?,?)").run(v, g.grp, pos, t, g.unit));
-    db.prepare("UPDATE curriculum_version SET plan_text = ? WHERE id = ?").run(plan.planText, v);
-    setMeta(db, v, (m) => { m.plan = { layout: plan.layout, hasSections: plan.hasSections !== false }; });
+    for (const g of scopeSeq.gated) g.terms.forEach((t, pos) => db.prepare("INSERT INTO gated_term(version_id, grp, pos, term, unit_key) VALUES (?,?,?,?,?)").run(v, g.grp, pos, t, g.unit));
+    db.prepare("UPDATE curriculum_version SET scope_seq_text = ? WHERE id = ?").run(scopeSeq.scopeSeqText, v);
+    setMeta(db, v, (m) => { m.scopeSeq = { layout: scopeSeq.layout, hasSections: scopeSeq.hasSections !== false }; });
     if (covers) setCovers(db, v, covers);
   });
 }
@@ -130,7 +130,7 @@ export function graphFor(db, v, layer) {
   return { ...header, nodes, edges };
 }
 
-export function planFor(db, v) {
+export function scopeSeqFor(db, v) {
   const ver = getVersion(db, v);
   const needs = new Map();
   for (const e of edgesOf(db, v, ["needs"]).sort((a, b) => a.ord - b.ord)) { if (!needs.has(e.from_key)) needs.set(e.from_key, []); needs.get(e.from_key).push(e.to_key); }
@@ -140,10 +140,10 @@ export function planFor(db, v) {
     if (gated.at(-1)?.grp !== g.grp) gated.push({ grp: g.grp, terms: [], unit: g.unit_key });
     gated.at(-1).terms.push(g.term);
   }
-  const lay = ver.meta.plan || { layout: [], hasSections: false };
-  return { planText: ver.plan_text, layout: lay.layout, hasSections: lay.hasSections, units, gated, covers: coversFor(db, v) };
+  const lay = ver.meta.scopeSeq || { layout: [], hasSections: false };
+  return { scopeSeqText: ver.scope_seq_text, layout: lay.layout, hasSections: lay.hasSections, units, gated, covers: coversFor(db, v) };
 }
-export const ladderFor = (db, v) => renderLadder(planFor(db, v));
+export const ladderFor = (db, v) => renderLadder(scopeSeqFor(db, v));
 
 export function coversFor(db, v) {
   const out = {};
@@ -159,7 +159,7 @@ export function createDraft(db, cur, { origin = "edit", note = "" } = {}) {
   if (have) return have.id;
   const parent = latestPublished(db, cur);
   return tx(db, () => {
-    const v = newVersion(db, cur, { origin, note, parentId: parent?.id ?? null, planText: parent?.plan_text || "", meta: parent?.meta || {} });
+    const v = newVersion(db, cur, { origin, note, parentId: parent?.id ?? null, scopeSeqText: parent?.scope_seq_text || "", meta: parent?.meta || {} });
     if (parent) {
       db.prepare("INSERT INTO node_revision SELECT ?, node_key, layer, ord, title, detail, kind, x, y, w, h, extra_json, external_ref FROM node_revision WHERE version_id = ?").run(v, parent.id);
       db.prepare("INSERT INTO edge SELECT ?, ord, from_key, to_key, kind, extra_json FROM edge WHERE version_id = ?").run(v, parent.id);
@@ -197,8 +197,8 @@ function writeLineage(db, ver, oldKey, relation, into = [], note = "") {
 //   removeNode {key, relation: retired|merged|replaced|split, into: [keys], note}
 //   lineage    {key, relation, into, note}       for a key an import dropped
 //   addEdge / removeEdge {from, to, kind, extra?}
-//   orderUnits {section, keys}                    the units of one lesson plan section, in their new order
-//   setCovers {covers: {U05: [...]}} · setPlanText {text} · setGated {gated: [{terms, unit}]} · setLadder {md}
+//   orderUnits {section, keys}                    the units of one Scope and Sequence section, in their new order
+//   setCovers {covers: {U05: [...]}} · setScopeSeqText {text} · setGated {gated: [{terms, unit}]} · setLadder {md}
 export function editDraft(db, v, ops, { source = "app" } = {}) {
   const ver = requireDraft(db, v);
   const keys = [];
@@ -280,20 +280,20 @@ export function editDraft(db, v, ops, { source = "app" } = {}) {
         else db.prepare("DELETE FROM edge WHERE version_id = ? AND from_key = ? AND to_key = ? AND kind = ?").run(v, o.from, o.to, o.kind);
         logIt({ layer: layerOfKey(o.from), key: o.to, op: o.op === "addEdge" ? "link" : "unlink", summary: `${o.op === "addEdge" ? "Linked" : "Unlinked"} “${titleIn(db, v, o.from) || o.from}” → “${titleIn(db, v, o.to) || o.to}” (${o.kind})` });
       } else if (o.op === "orderUnits") {
-        const sec = getVersion(db, v).meta.plan?.layout?.[o.section];
+        const sec = getVersion(db, v).meta.scopeSeq?.layout?.[o.section];
         const was = (sec?.items || []).filter((it) => it.unit).map((it) => it.unit);
         orderUnits(db, v, o.section, o.keys || []);
-        if (was.join() !== (o.keys || []).join()) logIt({ layer: "unit", key: null, op: "reorder", summary: `Reordered the units in “${sec?.heading || "the lesson plan"}”`, detail: { changes: [{ field: "order", before: was.join(", "), after: (o.keys || []).join(", ") }] } });
+        if (was.join() !== (o.keys || []).join()) logIt({ layer: "unit", key: null, op: "reorder", summary: `Reordered the units in “${sec?.heading || "the Scope and Sequence"}”`, detail: { changes: [{ field: "order", before: was.join(", "), after: (o.keys || []).join(", ") }] } });
       } else if (o.op === "setCovers") { setCovers(db, v, o.covers); logIt({ layer: "unit", op: "covers", summary: "Changed which blocks the units cover" }); }
-      else if (o.op === "setPlanText") { db.prepare("UPDATE curriculum_version SET plan_text = ? WHERE id = ?").run(o.text, v); logIt({ layer: "unit", op: "plan-text", summary: "Changed the lesson plan text" }); }
+      else if (o.op === "setScopeSeqText") { db.prepare("UPDATE curriculum_version SET scope_seq_text = ? WHERE id = ?").run(o.text, v); logIt({ layer: "unit", op: "scope-seq-text", summary: "Changed the Scope and Sequence text" }); }
       else if (o.op === "setGated") {
         db.prepare("DELETE FROM gated_term WHERE version_id = ?").run(v);
         o.gated.forEach((g, grp) => g.terms.forEach((t, pos) => db.prepare("INSERT INTO gated_term VALUES (?,?,?,?,?)").run(v, grp, pos, t, g.unit)));
         logIt({ layer: "unit", op: "gated", summary: "Changed the gated terms" });
       } else if (o.op === "setLadder") {
         const covers = coversFor(db, v);
-        writePlan(db, v, parseLadder(o.md), { covers });
-        logIt({ layer: "unit", op: "ladder", summary: "Replaced the lesson plan from curriculum_ladder.md" });
+        writeScopeSeq(db, v, parseLadder(o.md), { covers });
+        logIt({ layer: "unit", op: "ladder", summary: "Replaced the Scope and Sequence from curriculum_ladder.md" });
       } else if (o.op === "setNote") { db.prepare("UPDATE curriculum_version SET note = ? WHERE id = ?").run(o.note, v); if (o.note) logIt({ op: "note", summary: `Draft note: ${o.note}` }); }
       else throw new Error(`unknown op ${o.op}`);
     }
@@ -325,7 +325,7 @@ function snapshot(db, v, key) {
   const into = (kind) => db.prepare("SELECT from_key k FROM edge WHERE version_id = ? AND to_key = ? AND kind = ? ORDER BY ord").all(v, key, kind).map((e) => e.k);
   const out = (kind) => db.prepare("SELECT to_key k FROM edge WHERE version_id = ? AND from_key = ? AND kind = ? ORDER BY ord").all(v, key, kind).map((e) => e.k);
   if (r.layer === "unit") {
-    const sec = getVersion(db, v).meta.plan?.layout?.[ex.section ?? 0]?.heading ?? "";
+    const sec = getVersion(db, v).meta.scopeSeq?.layout?.[ex.section ?? 0]?.heading ?? "";
     return { title: r.title, name: r.title, about: r.detail, needs: out("needs"), stance: ex.stance || "", notes: ex.notes || "", section: sec };
   }
   const s = { title: r.title, detail: r.detail, kind: r.kind, uses: into("uses"), proves: into("uses_to_prove"), x: r.x, y: r.y };
@@ -366,13 +366,24 @@ export function editHistory(db, cur, { limit = 500 } = {}) {
 
 // ---------- comments ----------
 // Teacher comments on any node (content block, methods block or unit). They belong to the key, not to a version,
-// so they can be added or edited on a published version and follow the node into later versions. Claude never
-// sees them.
+// so they can be added or edited on a published version and follow the node into later versions. The week's brief
+// hands Claude the ones on units in play (and on the blocks those units cover): see nodeComments.
 export function commentsFor(db, cur) {
   const out = {};
   for (const r of db.prepare("SELECT * FROM node_comment WHERE curriculum_id = ? AND deleted_at IS NULL ORDER BY created_at, id").all(cur))
     (out[r.node_key] ||= []).push({ id: r.id, text: r.text, at: r.created_at, updated: r.updated_at });
   return out;
+}
+// The comments as the brief takes them, in version v: [{key, layer, title, texts, via}]. via: for a content or
+// methods block, the units in v that cover it (the brief keeps a block's comments when one of those is in play).
+export function nodeComments(db, cur, v) {
+  const by = commentsFor(db, cur);
+  const via = {};
+  for (const [u, keys] of Object.entries(coversFor(db, v))) for (const k of keys) (via[k] ||= []).push(u);
+  return Object.entries(by).map(([key, cs]) => ({
+    key, layer: layerOfKey(key), title: titleIn(db, v, key) || lastTitle(db, cur, key)?.title || key,
+    texts: cs.map((c) => c.text), via: via[key] || [],
+  }));
 }
 const commentVer = (db, cur) => ({ curriculum_id: cur, seq: null });
 const cleanComment = (text) => { const t = String(text ?? "").replace(/\r\n/g, "\n").trim(); if (!t) throw new Error("A comment can't be empty"); if (t.length > 4000) throw new Error("Keep a comment under 4000 characters"); return t; };
@@ -436,7 +447,7 @@ function nextUnitKey(db, cur) {
   return n < 100 ? `U${String(n).padStart(2, "0")}` : newKey("unit");
 }
 
-// Edits from the lesson plan editor ({check: true}) must survive curriculum_ladder.md: one line per unit, read back
+// Edits from the Scope and Sequence editor ({check: true}) must survive curriculum_ladder.md: one line per unit, read back
 // into the same fields. Needs must name other units of the draft, and the section must hold units (not gated terms).
 function checkUnit(db, v, key, u, needs) {
   if (!String(u.name).trim()) throw new Error("A unit needs a name");
@@ -448,14 +459,14 @@ function checkUnit(db, v, key, u, needs) {
       if (!units.has(n)) throw new Error(`Needs ${n}: no such unit in this version`);
     }
   }
-  const layout = getVersion(db, v).meta.plan?.layout || [];
+  const layout = getVersion(db, v).meta.scopeSeq?.layout || [];
   const sec = layout[u.section];
   if (layout.length && (!sec || /^gated/i.test(sec.heading))) throw new Error("Pick a section for the unit");
   const want = { key: "U00", name: u.name, about: u.about, needs: needs || [], stance: u.stance, notes: u.notes };
   const back = parseUnitLine(renderUnitLine(want));
   const bad = !back ? "name" : ["name", "about", "stance", "notes"].find((f) => back[f] !== want[f]) || (back.needs.join() !== want.needs.join() && "needs");
   if (bad) throw new Error({
-    name: "The name can't contain a full stop followed by a space (the lesson plan splits the name off there)",
+    name: "The name can't contain a full stop followed by a space (the Scope and Sequence splits the name off there)",
     about: "The description can't contain “Needs U..”, “Formal.” or “Informal….”: put those in their own fields",
     stance: "Stance must be empty, “Formal”, or start with “Informal”",
     notes: "The notes can't start with “Formal.” or “Informal”",
@@ -464,16 +475,16 @@ function checkUnit(db, v, key, u, needs) {
 }
 
 // Reorder one section's units. Its other lines (blank lines, notes) keep their places; the units fill the unit
-// slots in the new order, and every unit's ord follows the plan's order from top to bottom.
+// slots in the new order, and every unit's ord follows the Scope and Sequence's order from top to bottom.
 function orderUnits(db, v, section, keys) {
   setMeta(db, v, (m) => {
-    const sec = m.plan?.layout?.[section];
-    if (!sec) throw new Error(`No section ${section} in the lesson plan`);
+    const sec = m.scopeSeq?.layout?.[section];
+    if (!sec) throw new Error(`No section ${section} in the Scope and Sequence`);
     const have = sec.items.filter((it) => it.unit).map((it) => it.unit);
     if (keys.length !== have.length || [...keys].sort().join() !== [...have].sort().join()) throw new Error("Those aren't that section's units; reload and try again");
     let j = 0;
     sec.items = sec.items.map((it) => (it.unit ? { unit: keys[j++] } : it));
-    const order = m.plan.layout.flatMap((s) => s.items.filter((it) => it.unit).map((it) => it.unit));
+    const order = m.scopeSeq.layout.flatMap((s) => s.items.filter((it) => it.unit).map((it) => it.unit));
     const rest = revisionsOf(db, v, "unit").map((r) => r.node_key).filter((k) => !order.includes(k));
     [...order, ...rest].forEach((k, i) => db.prepare("UPDATE node_revision SET ord = ? WHERE version_id = ? AND node_key = ?").run(i, v, k));
   });
@@ -484,9 +495,9 @@ function orderUnits(db, v, section, keys) {
 function syncLayout(db, v) {
   const units = revisionsOf(db, v, "unit").map((r) => ({ key: r.node_key, section: r.extra.section ?? 0, ord: r.ord }));
   setMeta(db, v, (m) => {
-    m.plan ||= { layout: [], hasSections: true };
-    const layout = m.plan.layout ||= [];
-    if (!layout.length && units.length) { layout.push({ heading: "Units", items: [] }); m.plan.hasSections = true; }
+    m.scopeSeq ||= { layout: [], hasSections: true };
+    const layout = m.scopeSeq.layout ||= [];
+    if (!layout.length && units.length) { layout.push({ heading: "Units", items: [] }); m.scopeSeq.hasSections = true; }
     const sec = new Map(units.map((u) => [u.key, Math.min(u.section, layout.length - 1)]));
     layout.forEach((s, si) => { s.items = s.items.filter((it) => !it.unit || sec.get(it.unit) === si); });
     for (const u of [...units].sort((a, b) => a.ord - b.ord)) {
@@ -600,7 +611,7 @@ export function baseTags(db, cur, problemId, idx, atV) {
 // ---------- diff, import matching, export ----------
 
 export function diffVersions(db, a, b) {
-  const out = { added: [], removed: [], changed: [], edgesAdded: [], edgesRemoved: [], lineage: [], planTextChanged: false, gatedChanged: false, unitOrderChanged: false };
+  const out = { added: [], removed: [], changed: [], edgesAdded: [], edgesRemoved: [], lineage: [], scopeSeqTextChanged: false, gatedChanged: false, unitOrderChanged: false };
   const ra = new Map(db.prepare("SELECT * FROM node_revision WHERE version_id = ?").all(a).map((r) => [r.node_key, r]));
   const rb = new Map(db.prepare("SELECT * FROM node_revision WHERE version_id = ?").all(b).map((r) => [r.node_key, r]));
   const strip = (r) => ({ title: r.title, detail: r.detail, kind: r.kind, extra: r.extra_json });
@@ -619,11 +630,11 @@ export function diffVersions(db, a, b) {
   for (const e of eb) if (!ea.has(e)) out.edgesAdded.push(unk(e));
   for (const e of ea) if (!eb.has(e)) out.edgesRemoved.push(unk(e));
   out.lineage = db.prepare("SELECT old_key, new_key, relation, note FROM lineage WHERE to_version = ?").all(b);
-  out.planTextChanged = getVersion(db, a).plan_text !== getVersion(db, b).plan_text;
+  out.scopeSeqTextChanged = getVersion(db, a).scope_seq_text !== getVersion(db, b).scope_seq_text;
   const g = (v) => J(db.prepare("SELECT grp, pos, term, unit_key FROM gated_term WHERE version_id = ? ORDER BY grp, pos").all(v));
   out.gatedChanged = g(a) !== g(b);
-  // the units both versions have, in plan order (section by section): a move shows even with no other change
-  const seq = (v) => (getVersion(db, v).meta.plan?.layout || []).map((s) => s.items.filter((it) => it.unit).map((it) => it.unit));
+  // the units both versions have, in Scope and Sequence order (section by section): a move shows even with no other change
+  const seq = (v) => (getVersion(db, v).meta.scopeSeq?.layout || []).map((s) => s.items.filter((it) => it.unit).map((it) => it.unit));
   const both = (s, other) => s.map((xs) => xs.filter((k) => other.has(k)).join(",")).join("|");
   const sa = seq(a), sb = seq(b), ka = new Set(sa.flat()), kb = new Set(sb.flat());
   out.unitOrderChanged = both(sa, kb) !== both(sb, ka);
@@ -673,9 +684,9 @@ export function exportVersion(db, v, dir) {
   const w = (f, x) => fs.writeFileSync(path.join(out, f), typeof x === "string" ? x : JSON.stringify(x, null, 1) + "\n");
   w("content.json", graphFor(db, v, "content"));
   w("methods.json", graphFor(db, v, "methods"));
-  const plan = planFor(db, v);
-  w("lesson_plan.json", { planText: plan.planText, units: plan.units, gated: plan.gated, covers: plan.covers });
-  w("curriculum_ladder.md", renderLadder(plan));
+  const scopeSeq = scopeSeqFor(db, v);
+  w("scope_sequence.json", { scopeSeqText: scopeSeq.scopeSeqText, units: scopeSeq.units, gated: scopeSeq.gated, covers: scopeSeq.covers });
+  w("curriculum_ladder.md", renderLadder(scopeSeq));
   w("version.json", { curriculum: ver.curriculum_id, seq: ver.seq, parent: ver.parent_id && getVersion(db, ver.parent_id)?.seq, origin: ver.origin, note: ver.note, publishedAt: ver.published_at,
     lineage: db.prepare("SELECT old_key, new_key, relation, note FROM lineage WHERE to_version = ?").all(v) });
   return out;

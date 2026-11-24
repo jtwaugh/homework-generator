@@ -123,8 +123,8 @@ try {
   await step("Progress Map tab", "ui_click", sel(".nav-item[data-page=dag]"), /ui: page from=\w+ to=dag/, /GET \/api\/dag status=200/);
   await step("Methods sub-item", "ui_click", sel("[data-dag=methods]"), /GET \/api\/dag status=200/);
   await step("shows the methods board", "ui_eval", { js: "__hw.summary().dag.board" }, /methods/);
-  await step("Lesson plan sub-item", "ui_click", sel("[data-dag=plan]"), /GET \/api\/dag status=200/);
-  await step("lists the U units", "ui_eval", { js: "[...document.querySelectorAll('#p-dag .plan-unit')].map((x) => x.dataset.unit).join(' ')" }, /U01 .*U24/);
+  await step("Scope and Sequence sub-item", "ui_click", sel("[data-dag=scopeSeq]"), /GET \/api\/dag status=200/);
+  await step("lists the U units", "ui_eval", { js: "[...document.querySelectorAll('#p-dag .scope-seq-unit')].map((x) => x.dataset.unit).join(' ')" }, /U01 .*U24/);
   await step("has status.md export and upload", "ui_eval", { js: "[...document.querySelectorAll('#p-dag [data-act^=status-]')].map((x) => x.dataset.act).join(' ')" }, /status-export status-upload/);
   await step("export is the app's status record", "ui_eval", { js: "return fetch('/api/status/export').then(async (r) => r.status + ' ' + r.headers.get('content-disposition') + ' ' + /^TAUGHT:/m.test(await r.text()))" }, /^200 attachment; filename="status_.*\.md" true/);
   await step("upload refuses a file that isn't a status", "ui_eval", { js: "return fetch('/api/status', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: '# notes', source: 'upload' }) }).then((r) => r.status)" }, /400/);

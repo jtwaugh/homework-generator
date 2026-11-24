@@ -237,6 +237,14 @@ button.not-ready { cursor: help; }
 .st.s-TAUGHT { background: var(--accent); color: #fff; } .st.s-CURRENT { color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent); }
 .st.s-NEXT { box-shadow: inset 0 0 0 1.5px var(--faint); } .st.s-FUTURE { background: var(--surface-3); color: var(--faint); }
 .status-view .diff { margin-top: 8px; }
+.map-view { margin-bottom: 12px; }
+.map-items { list-style: none; padding: 0; margin: 4px 0 0; font-size: 14px; display: flex; flex-direction: column; gap: 8px; }
+.map-items label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.map-items input { margin-top: 3px; }
+.map-items li.err label { cursor: default; opacity: .75; }
+.st.mu-done { background: var(--accent); color: #fff; } .st.mu-partial { color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent-2); }
+.st.mu-not-yet { background: var(--surface-3); color: var(--muted); }
+.map-foot:empty { display: none; }
 
 .mathy { font-family: "Times New Roman", serif; font-style: italic; font-size: 1.05em; white-space: nowrap; }
 .ask-hint { font-size: 13.5px; color: var(--warn); font-weight: 600; }
@@ -258,7 +266,7 @@ button.not-ready { cursor: help; }
 .nav-divider { border: none; border-top: 1px solid var(--line); margin: 6px 10px; }
 .stub { max-width: 620px; padding: 28px 32px; }
 .dag-version { font-size: 12.5px; padding: 3px 6px; margin-left: 8px; }
-.plan-guide { margin-top: 2px; font-style: italic; }
+.scope-seq-guide { margin-top: 2px; font-style: italic; }
 .people { max-width: 860px; padding: 28px 32px; overflow: auto; }
 .people p { line-height: 1.5; }
 .ptable { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
@@ -429,7 +437,7 @@ button.not-ready { cursor: help; }
 .cas-run.bad pre:last-child { background: var(--bad-soft); }
 
 /* history */
-.h-wrap { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
+.h-wrap { display: grid; grid-template-columns: 280px minmax(0, 1fr); height: 100%; } /* minmax(0, …): a long unwrapped line (a <pre>) scrolls in place instead of widening the column */
 .h-list { border-right: 1px solid var(--line); overflow: auto; padding: 16px 12px; background: var(--surface-1); }
 .h-list h3 { margin: 14px 6px 6px; } .h-list h3:first-child { margin-top: 0; }
 .h-list ul { list-style: none; padding: 0; margin: 0; }
@@ -437,7 +445,7 @@ button.not-ready { cursor: help; }
 .h-weeks li { font-family: inherit; flex-direction: column; gap: 0; } .h-list li small { color: var(--muted); font-size: 11.5px; }
 .h-list li:hover { background: var(--surface-3); }
 .h-list li.on, .h-list li.cur { background: var(--accent-soft); color: var(--accent); }
-.h-main { display: flex; flex-direction: column; min-height: 0; padding: 14px 18px; gap: 10px; }
+.h-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 14px 18px; gap: 10px; }
 .h-view { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
 .h-body { flex: 1; min-height: 0; overflow: auto; }
 .h-body iframe { width: 100%; height: 100%; border: 1px solid var(--line); border-radius: 8px; }
@@ -612,6 +620,20 @@ a.pid { font: 12px var(--mono); color: var(--accent); }
 .brief .cov-thin { border-color: var(--warn); }
 .brief .cov-empty { border-color: var(--bad); }
 .brief ul { margin: 4px 0 0 18px; padding: 0; }
+.brief-cmts { border: 1px solid var(--line-strong); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--surface-1); padding: 10px 12px; display: grid; gap: 6px; }
+.brief-cmts.empty { border-left-color: var(--line-strong); }
+.bc-head { display: flex; align-items: baseline; gap: 8px; }
+.brief .brief-cmts ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.brief-cmts li { padding-left: 8px; border-left: 2px solid var(--line); }
+.brief-cmts li.focus { border-left-color: var(--accent); }
+.bc-where { font-size: 12px; }
+.bc-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.bc-tag { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--accent-tint); color: var(--accent); }
+.u-cmts { display: grid; gap: 5px; margin: 8px 0; padding-top: 8px; border-top: 1px dashed var(--line); }
+.u-cmt { white-space: pre-wrap; overflow-wrap: anywhere; padding-left: 8px; border-left: 2px solid var(--accent); }
+.u-cmt-form { display: grid; gap: 5px; }
+.u-cmt-form textarea { width: 100%; resize: vertical; font: inherit; font-size: 13px; }
+.u-cmt-row { display: flex; gap: 8px; align-items: baseline; }
 .u-now > .muted.small, .u-now > button.link { white-space: nowrap; }
 
 /* progress map: node panel note */
@@ -700,35 +722,35 @@ a.pid { font: 12px var(--mono); color: var(--accent); }
 .cot .md pre { max-height: 320px; overflow: auto; font-size: 11.5px; }
 .cot-json { margin-top: 6px; } .cot-json pre { max-height: 320px; overflow: auto; font-size: 11.5px; background: var(--surface-2); padding: 8px; border-radius: 6px; }
 
-/* progress map: lesson plan (every U unit with its status) */
-.plan { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px 28px; }
-.plan-group h3 { margin: 14px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
-.plan-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-width: 900px; }
-.plan-unit { display: flex; gap: 12px; align-items: flex-start; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
-.plan-unit.s-CURRENT { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
-.plan-unit.s-FUTURE { background: var(--surface-1); }
-.plan-unit .chip { flex: none; margin-top: 1px; }
-.plan-body { display: grid; gap: 3px; min-width: 0; }
-.plan-title .st { margin-left: 4px; }
-.plan-about { font-size: 13px; color: var(--ink-2); }
-.plan-note { color: var(--accent); }
-.plan-empty { padding: 18px; }
+/* progress map: Scope and Sequence (every U unit with its status) */
+.scope-seq { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px 28px; }
+.scope-seq-group h3 { margin: 14px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.scope-seq-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-width: 900px; }
+.scope-seq-unit { display: flex; gap: 12px; align-items: flex-start; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.scope-seq-unit.s-CURRENT { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.scope-seq-unit.s-FUTURE { background: var(--surface-1); }
+.scope-seq-unit .chip { flex: none; margin-top: 1px; }
+.scope-seq-body { display: grid; gap: 3px; min-width: 0; }
+.scope-seq-title .st { margin-left: 4px; }
+.scope-seq-about { font-size: 13px; color: var(--ink-2); }
+.scope-seq-note { color: var(--accent); }
+.scope-seq-empty { padding: 18px; }
 
-/* lesson plan editing (Progress map › Lesson plan › Edit units): edits go to the course's draft */
-.plan.editing .plan-body { flex: 1; }
-.plan-acts { flex: none; display: flex; gap: 2px; opacity: .55; }
-.plan-unit:hover .plan-acts, .plan-acts:focus-within { opacity: 1; }
-.plan-acts .ghost { padding: 2px 7px; font-size: 13px; }
-.plan-remove { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; padding: 7px 9px; border-radius: 6px; background: var(--bad-soft); }
-.plan-remove select { max-width: 260px; font-size: 12.5px; }
-.plan-add { padding: 2px 4px; }
-.plan-unit[draggable] { cursor: grab; position: relative; }
-.plan-unit .grip { flex: none; margin: 2px -4px 0 -4px; color: var(--fainter); font-size: 12px; letter-spacing: -2px; user-select: none; }
-.plan-unit[draggable]:hover .grip { color: var(--muted); }
-.plan-unit.dragging { opacity: .45; }
-.plan-unit.drop-before::before, .plan-unit.drop-after::after { content: ""; position: absolute; left: 0; right: 0; height: 3px; border-radius: 2px; background: var(--accent); }
-.plan-unit.drop-before::before { top: -5px; } .plan-unit.drop-after::after { bottom: -5px; }
-.plan-form { border-style: dashed; border-color: var(--accent); }
+/* Scope and Sequence editing (Progress map › Scope and Sequence › Edit units): edits go to the course's draft */
+.scope-seq.editing .scope-seq-body { flex: 1; }
+.scope-seq-acts { flex: none; display: flex; gap: 2px; opacity: .55; }
+.scope-seq-unit:hover .scope-seq-acts, .scope-seq-acts:focus-within { opacity: 1; }
+.scope-seq-acts .ghost { padding: 2px 7px; font-size: 13px; }
+.scope-seq-remove { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; padding: 7px 9px; border-radius: 6px; background: var(--bad-soft); }
+.scope-seq-remove select { max-width: 260px; font-size: 12.5px; }
+.scope-seq-add { padding: 2px 4px; }
+.scope-seq-unit[draggable] { cursor: grab; position: relative; }
+.scope-seq-unit .grip { flex: none; margin: 2px -4px 0 -4px; color: var(--fainter); font-size: 12px; letter-spacing: -2px; user-select: none; }
+.scope-seq-unit[draggable]:hover .grip { color: var(--muted); }
+.scope-seq-unit.dragging { opacity: .45; }
+.scope-seq-unit.drop-before::before, .scope-seq-unit.drop-after::after { content: ""; position: absolute; left: 0; right: 0; height: 3px; border-radius: 2px; background: var(--accent); }
+.scope-seq-unit.drop-before::before { top: -5px; } .scope-seq-unit.drop-after::after { bottom: -5px; }
+.scope-seq-form { border-style: dashed; border-color: var(--accent); }
 .pe-form { display: flex; gap: 12px; width: 100%; align-items: flex-start; }
 .pe-fields { flex: 1; display: grid; gap: 8px; min-width: 0; }
 .pe-fields label { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
@@ -736,11 +758,11 @@ a.pid { font: 12px var(--mono); color: var(--accent); }
 .pe-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .pe-row > label { flex: 1; min-width: 160px; }
 
-/* lesson plan as a DAG (Progress map › Lesson plan › DAG) */
-.plan-view { margin-left: 10px; }
-.plan-view button { padding: 4px 12px; font-size: 13px; }
-.plan-unit[data-unit] { cursor: pointer; }
-.plan-unit[data-unit]:hover { border-color: var(--fainter); }
+/* Scope and Sequence as a DAG (Progress map › Scope and Sequence › DAG) */
+.scope-seq-view { margin-left: 10px; }
+.scope-seq-view button { padding: 4px 12px; font-size: 13px; }
+.scope-seq-unit[data-unit] { cursor: pointer; }
+.scope-seq-unit[data-unit]:hover { border-color: var(--fainter); }
 .pnode .nt b { font-size: 13.5px; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .pnode .pid { font: 600 11.5px var(--mono); }
 .pnode.ps-TAUGHT .body { fill: var(--accent-mid); stroke: var(--accent); }
@@ -753,10 +775,10 @@ a.pid { font: 12px var(--mono); color: var(--accent); }
 .pnode.anc .body { stroke: var(--accent); stroke-width: 3; }
 .pnode.desc .body { stroke: var(--info); stroke-width: 3; }
 .pnode.dim { opacity: .35; }
-.plan-dag .edge.implied { stroke-dasharray: 3 5; }
-.plan-dag .edge.anc { stroke: var(--accent); stroke-width: 3; } .plan-dag .ah.anc { fill: var(--accent); }
-.plan-dag .edge.desc { stroke: var(--info); stroke-width: 3; } .plan-dag .ah.desc { fill: var(--info); }
-.plan-dag .edge.dim { opacity: .25; } .plan-dag .ah.dim { opacity: .25; }
+.scope-seq-dag .edge.implied { stroke-dasharray: 3 5; }
+.scope-seq-dag .edge.anc { stroke: var(--accent); stroke-width: 3; } .scope-seq-dag .ah.anc { fill: var(--accent); }
+.scope-seq-dag .edge.desc { stroke: var(--info); stroke-width: 3; } .scope-seq-dag .ah.desc { fill: var(--info); }
+.scope-seq-dag .edge.dim { opacity: .25; } .scope-seq-dag .ah.dim { opacity: .25; }
 .lg.ps-TAUGHT { background: var(--accent-mid); border-color: var(--accent); } .lg.ps-CURRENT { background: #fff; border: 2.5px solid var(--accent); }
 .lg.ps-NEXT { background: #fff; border-style: dashed; border-color: var(--faint); } .lg.ps-FUTURE { background: var(--surface-3); border-color: var(--line-strong); }
 .lg.ps-FUTURE.ready { background: #fff; border-style: dashed; border-color: var(--accent); }
@@ -773,6 +795,8 @@ a.pid { font: 12px var(--mono); color: var(--accent); }
 .dag-title { flex: 1 0 100%; min-width: 0; }
 .dag-title .eyebrow, .he-head .eyebrow { font-size: 11.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
 .dag-title h2 { margin: 1px 0 0; font-size: 19px; line-height: 1.25; }
+.dag-title h2 select.dag-cur { font: inherit; font-weight: 600; color: inherit; background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 0 4px; margin-left: -5px; max-width: 32ch; cursor: pointer; }
+.dag-title h2 select.dag-cur:hover, .dag-title h2 select.dag-cur:focus { border-color: var(--line, #ccc); }
 .dag-ver { font-size: 12.5px; font-weight: 500; color: var(--muted); margin-left: 6px; white-space: nowrap; }
 .dag-ver.draft { color: var(--warn); }
 .dag-hist { position: absolute; top: 12px; right: 18px; }
@@ -792,9 +816,9 @@ a.pid { font: 12px var(--mono); color: var(--accent); }
 .cmt-acts { margin-left: auto; display: inline-flex; gap: 8px; }
 .cmt-form { display: grid; gap: 5px; }
 .cmt-form textarea { width: 100%; resize: vertical; font: inherit; font-size: 13px; }
-.plan-unit .cmts { cursor: auto; }
+.scope-seq-unit .cmts { cursor: auto; }
 .cmt-tog { font-size: 12px; padding: 2px 6px; opacity: .55; }
-.cmt-tog:hover, .cmt-tog.on, .plan-unit:hover .cmt-tog { opacity: 1; }
+.cmt-tog:hover, .cmt-tog.on, .scope-seq-unit:hover .cmt-tog { opacity: 1; }
 
 .kp { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 4px; background: #fff; }
 .kp-chips { display: contents; }
@@ -827,7 +851,7 @@ a.pid { font: 12px var(--mono); color: var(--accent); }
 .np .k code { text-transform: none; font-size: 11px; }
 .he-more summary { font-weight: normal; font-size: 12px; }
 .he-filters button.on .muted { color: rgba(255,255,255,.8); }
-.plan-unit > .plan-body { flex: 1; min-width: 0; }
+.scope-seq-unit > .scope-seq-body { flex: 1; min-width: 0; }
 
 /* ================= shared components =================
    One definition each; the older per-page class names are listed in the selectors so the

@@ -5,7 +5,7 @@
 //   Courses: the course's versions, the open draft (what changed against its parent, removed nodes that
 //   still need merge/split/retire, Publish/Discard), and how many problems wait for retagging.
 // Data: GET /api/students, /api/versions (lib/curriculum.mjs, lib/progress.mjs on the server).
-import { $, esc, api, log } from "./lib.js";
+import { $, esc, api, log, withCur } from "./lib.js";
 import { onShow } from "./pages.js";
 
 const fmt = (iso) => (iso ? new Date(iso).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" }) : "");
@@ -75,7 +75,7 @@ function diffHtml(df, unresolved) {
     df.removed.length && `<h4>Removed (${df.removed.length})</h4><ul>${removed.map((x) => `<li>${x}</li>`).join("")}</ul>`,
     df.changed.length && `<h4>Changed (${df.changed.length})</h4>${li(df.changed, (c) => `${node(c)} <span class="muted small">${esc(c.fields.join(", "))}</span>`)}`,
     (df.edgesAdded.length || df.edgesRemoved.length) && `<h4>Links</h4>${li([...edges(df.edgesAdded).map((x) => `+ ${x}`), ...edges(df.edgesRemoved).map((x) => `− ${x}`)], (x) => x)}`,
-    (df.planTextChanged || df.gatedChanged || df.unitOrderChanged) && `<h4>Lesson plan</h4><p class="small">${[df.unitOrderChanged && "units reordered", df.planTextChanged && "preamble text changed", df.gatedChanged && "gated terms changed"].filter(Boolean).join("; ")}</p>`,
+    (df.scopeSeqTextChanged || df.gatedChanged || df.unitOrderChanged) && `<h4>Scope and Sequence</h4><p class="small">${[df.unitOrderChanged && "units reordered", df.scopeSeqTextChanged && "preamble text changed", df.gatedChanged && "gated terms changed"].filter(Boolean).join("; ")}</p>`,
   ].filter(Boolean);
   return parts.length ? parts.join("") : `<p class="muted small">No changes against the version it was made from yet.</p>`;
 }
@@ -84,7 +84,7 @@ async function openCourses() {
   const el = $("#p-courses");
   el.innerHTML = `<div class="view people"><h2 class="v-title">Courses</h2><p class="muted">Loading…</p></div>`;
   let v;
-  try { v = await api("/api/versions"); } catch (e) { el.querySelector("p").textContent = e.message; return; }
+  try { v = await api(withCur("/api/versions")); } catch (e) { el.querySelector("p").textContent = e.message; return; }
   const enrolledAt = (id) => v.enrollments.filter((e) => e.version_id === id).map((e) => esc(e.student_name)).join(", ");
   const rows = [...v.versions].reverse().map((x) => `<tr class="${x.id === v.enrolled ? "on" : ""}">
     <td>v${x.seq}</td><td>${x.status === "draft" ? `<span class="pill-draft">draft</span>` : "published"}</td><td>${esc(x.origin)}</td>
@@ -92,7 +92,7 @@ async function openCourses() {
   const dr = v.draft;
   el.innerHTML = `<div class="view people">
     <h2 class="v-title">${esc(v.curriculum.title)}</h2>
-    <p class="muted">A course's content DAG, methods DAG and lesson plan are versioned together. Published versions never change; edits, whiteboard re-imports (<code>node ui/scripts/import-dag.mjs</code>) and hand edits of <code>curriculum_ladder.md</code> collect in one draft until you publish it. Each student stays on their version until you upgrade them on the Students tab.</p>
+    <p class="muted">A course's content DAG, methods DAG and Scope and Sequence are versioned together. Published versions never change; edits, whiteboard re-imports (<code>node ui/scripts/import-dag.mjs</code>) and hand edits of <code>curriculum_ladder.md</code> collect in one draft until you publish it. Each student stays on their version until you upgrade them on the Students tab.</p>
     <table class="ptable"><thead><tr><th>Version</th><th>Status</th><th>From</th><th>Note</th><th>Date</th><th>Students</th></tr></thead><tbody>${rows}</tbody></table>
     ${dr ? `<section class="draft"><h3>Draft v${dr.seq}${dr.note ? ` <span class="muted small">${esc(dr.note)}</span>` : ""}</h3>
       ${diffHtml(dr.diff, dr.unresolved)}
@@ -107,18 +107,18 @@ async function openCourses() {
     const b = ev.target.closest("button"); if (!b) return;
     try {
       if (b.id === "v-publish") {
-        const r = await api(`/api/versions/${dr.id}/publish`, { method: "POST", body: {} });
+        const r = await api(withCur(`/api/versions/${dr.id}/publish`), { method: "POST", body: {} });
         log("version-publish", { seq: r.version.seq, lineageTags: r.lineageTags, queued: r.queued });
         note(msg, `Published v${r.version.seq}: ${r.lineageTags} tag${r.lineageTags === 1 ? "" : "s"} carried forward, ${r.queued} queued for retagging.`);
         setTimeout(openCourses, 900);
       } else if (b.id === "v-discard") {
-        await api(`/api/versions/${dr.id}`, { method: "DELETE" }); log("version-discard", { seq: dr.seq }); openCourses();
+        await api(withCur(`/api/versions/${dr.id}`), { method: "DELETE" }); log("version-discard", { seq: dr.seq }); openCourses();
       } else if (b.dataset.lin) {
         const span = b.closest(".lin"), key = span.dataset.key;
         const into = b.dataset.lin === "retired" ? [] : span.querySelector("input").value.split(/[\s,]+/).filter(Boolean);
         if (b.dataset.lin === "into" && !into.length) return note(msg, "Type the key(s) it became, e.g. e33 or e26, c:ab12cd.", true);
         const relation = !into.length ? "retired" : into.length > 1 ? "split" : "merged";
-        await api("/api/versions/draft", { method: "POST", body: { ops: [{ op: "lineage", key, relation, into }] } });
+        await api(withCur("/api/versions/draft"), { method: "POST", body: { ops: [{ op: "lineage", key, relation, into }] } });
         log("version-lineage", { key, relation });
         openCourses();
       }

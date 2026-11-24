@@ -175,12 +175,12 @@ Logins on Vercel are always treated as behind a proxy (`HW_TRUST_PROXY` is impli
    (that folder then holds the `.tex` files and the two `.md` files).
 2. **Edit `curriculum_ladder.md` before the first start** to match your course: one
    `- Uxx Name. Description. Needs Uyy. Formal.` line per unit. The app reads the unit ids, names and dependencies
-   from these lines when it creates the course. Later changes go through the app (Progress map › Lesson plan ›
+   from these lines when it creates the course. Later changes go through the app (Progress map › Scope and Sequence ›
    **Edit units**); a hand edit of the file still works, but becomes a draft you review and publish on **Courses**.
 3. **Set the unit statuses** in the app (Create Homework): each unit is TAUGHT, CURRENT, NEXT or FUTURE. Claude only
    uses TAUGHT and CURRENT material. The status (statuses, review priority, standing conventions, history) lives in
    `ui/data/hw.db`, starts from `examples/weekly_status.md`, and the app keeps it up to date as you finish sets. Export or
-   upload it as `status.md` on Progress map › Lesson plan. (A `weekly_status.md` already in the root is imported once,
+   upload it as `status.md` on Progress map › Scope and Sequence. (A `weekly_status.md` already in the root is imported once,
    when `hw.db` is first created, and not read after that.)
 4. **Edit `project_instructions.md`** for your own conventions (title format, number of sections, what to avoid).
 5. Restart the server if it was running, then click **Make a set** or **Generate outline**.
@@ -205,10 +205,10 @@ problems you've starred.
 ## The course is versioned
 
 The course is three linked views: the **content DAG** (definitions, theorems, skills), the **methods DAG** (solution
-methods) and the **lesson plan** (the units of `curriculum_ladder.md`). The Wu DAGs are a first pass at mapping Wu's
+methods) and the **Scope and Sequence** (the units of `curriculum_ladder.md`). The Wu DAGs are a first pass at mapping Wu's
 algebra and will keep changing: nodes split, merge, get re-wired. So the course is versioned in `hw.db`:
 
-- **Edit in the app.** Progress map › Content / Methods › **Edit board**, or Lesson plan › **Edit units**, opens a
+- **Edit in the app.** Progress map › Content / Methods › **Edit board**, or Scope and Sequence › **Edit units**, opens a
   draft of the next version. Add, change, move or remove blocks there; a removed block must be marked retired,
   merged into another, or split before the draft can be published.
 - **Publish on Courses.** Published versions never change. Publishing carries every problem tag and progress mark
@@ -223,6 +223,45 @@ algebra and will keep changing: nodes split, merge, get re-wired. So the course 
 and `ui/scripts/import-dag.mjs` (re)imports a whiteboard snapshot into them and into a new draft. Editing them by
 hand after that changes nothing. `node ui/scripts/tag-corpus.mjs --all` re-tags every problem from scratch against
 the active version (old tag sets stay in `hw.db`, per version).
+
+## The Wu library
+
+The rest of Wu's K–12 arc, as more courses beside Wu Algebra 1, each with a content DAG and a methods DAG, read out
+of the drafts he posts free at math.berkeley.edu/~wu (none of his published books are free):
+
+| Course | Grades | From |
+|---|---|---|
+| `wu-whole-numbers` | K–5 | *Understanding Numbers in Elementary School Mathematics*, Part 1 |
+| `wu-fractions` | 3–7 | its Part 2, the 1998 fractions notes, the CCSS fractions notes, *Pre-Algebra* ch. 1–4 |
+| `wu-rational-numbers` | 6–7 | *Pre-Algebra*, rational numbers and linear equations |
+| `wu-ms-geometry` | 4–8 | the Progressions geometry notes, the CCSS grade 8 geometry notes, *Pre-Algebra* geometry |
+| `wu-algebra-1` | 8–9 | *Introduction to School Algebra* (a new draft beside the hand-drawn v1) |
+| `wu-hs-geometry` | 9–10 | the CCSS high-school geometry notes, the Progressions HS notes, two RNLE supplements |
+| `wu-precalculus` | 11–12 | only the 22-page supplement to *Pre-Calculus, Calculus, and Beyond*: a partial course |
+
+They load as **drafts**. Pick one in the Progress map header to look at it, edit it like any board, and publish it on
+Courses when it's right (a course nobody is enrolled in shows no progress). Every block keeps where it came from
+(`sources`: draft and page). A block assumed from another course carries `xref: "<course>:<key>"`.
+
+The pipeline is in `ui/scripts/wu/`. Every stage writes to `ui/data/sources/wu/` (gitignored) and can be re-run:
+
+1. `fetch.mjs`: downloads the drafts, splits them into one text file per page, and writes `manifest.json`.
+2. `survey.mjs`: reads the tables of contents and splits the drafts into courses and chapters (`split.json`), using Opus with the API key.
+3. Extraction: one chapter file per chapter under `chapters/<course>/`, following `EXTRACT.md`. This run used Claude
+   Code subagents. Each chapter is a few minutes of reading.
+4. `merge.mjs`: joins the chapters by ref, title and alias. It turns cross-course refs into `assumed` blocks, drops any
+   arrow still closing a cycle, lays out the boards (`ui/lib/layout.mjs`), and writes `content.json`, `methods.json`,
+   `nodes.txt` and `report.json` (counts and warnings) per course. Three review files steer it:
+   - `<course>/merges.json` (`[[ref, ref…]]`): refs that are the same block. The first one names it.
+   - `<course>/drops.json` (`[[fromRef, toRef]…]`): arrows to cut, e.g. where two drafts teach things in opposite orders.
+   - `xrefs.json` (`{"<course>:<slug>": "<ref or title>" | "<other course>:<ref>"}`): where a cross-course ref really points.
+5. `load.mjs [--dry] [course…]`: imports both boards into each course's draft. A re-run updates the same blocks, and
+   Wu Algebra 1's blocks keep their keys where the titles match. For a course with a published version, a reviewed
+   arrow between two blocks the draft kept goes back in unless the draft already has a path between them or it would
+   close a cycle. Try it on a sandbox first:
+   `HW_WU_DIR=$PWD/ui/data/sources/wu HW_DATA=<sandbox>/data node ui/scripts/wu/load.mjs`.
+
+The arrows are Claude's reading of Wu, so check them before you publish.
 
 ## Tests
 
