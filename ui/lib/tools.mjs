@@ -86,7 +86,6 @@ export const casRemote = (env = process.env) => {
   const host = (env.VERCEL_ENV === "production" && env.VERCEL_PROJECT_PRODUCTION_URL) || env.VERCEL_URL;
   return host ? `https://${host}/api/cas` : "";
 };
-export const casAvailableLocally = () => fs.existsSync(PY);
 
 async function runCasRemote(code, signal) {
   try {

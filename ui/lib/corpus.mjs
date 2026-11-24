@@ -11,7 +11,6 @@ import { fileURLToPath } from "node:url";
 import { loadCorpusDb, saveCorpusDb } from "./store.mjs";
 
 export const DATA = process.env.HW_DATA || path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data");
-export const CORPUS_FILE = () => path.join(DATA, "corpus", "problems.jsonl");
 
 // ---------- storage ----------
 // The corpus lives in hw.db (lib/store.mjs); items keep the jsonl shape above, with units/wuNodes resolved to

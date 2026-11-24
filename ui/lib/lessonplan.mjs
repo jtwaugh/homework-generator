@@ -9,7 +9,6 @@
 //
 // A unit line:  "- U05 Name. About sentences. Needs U03, U04. Formal. Notes."  (every part after the name optional)
 // A gated line: "- term, term: U10"
-export const UNIT_KEY = /^(U\d\d|M\d|F\d)$/;
 const UNIT_LINE = /^- (U\d\d|M\d|F\d) (.*)$/;
 const GATED_LINE = /^- (.+): (U\d\d|M\d|F\d)$/;
 const NEEDS = /(^|\s)Needs ((?:U\d\d|M\d|F\d)(?:, (?:U\d\d|M\d|F\d))*)\.(?=\s|$)/;

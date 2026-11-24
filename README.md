@@ -46,7 +46,14 @@ out for a generic "the student"). On first run the server copies two files from 
 | `project_instructions.md` | the workflow and house style Claude follows: gates, checkpoint, audit passes, LaTeX conventions |
 | `curriculum_ladder.md` | the ordered units, what each needs first, and which are formal or informal |
 
-Those copies are yours and are not tracked by git, so edit them freely.
+Those copies are yours and are not tracked by git. `project_instructions.md` is read on every turn, so edit it
+freely. `curriculum_ladder.md` is only read once: on first start the app imports it, with the two DAGs, into its
+database (`ui/data/hw.db`) as version 1 of the course. After that the course lives in the database and the file is
+an export of it (see [The course is versioned](#the-course-is-versioned)).
+
+Everything the app keeps (students, the course and its versions, progress, the problem corpus, the weekly status
+and its history, past sessions) is under `ui/data/`, mostly in `hw.db`. Back that folder up; nothing in it is
+tracked by git except the two seed DAGs and the published course versions.
 
 The walkthrough of the screens, every option (`PORT`, `HW_MODEL`, `HW_BUDGET_USD`, …), the event log, the tests and
 the debugging harness are in [ui/README.md](ui/README.md).
@@ -129,8 +136,9 @@ tool as a Python function (`api/cas.py`, with no network and a clean environment
 static Linux Tectonic. A function's disk is temporary, so the homework files and `ui/data` live in a private
 [Cloudflare R2](https://developers.cloudflare.com/r2/) bucket (or, if no `R2_*` variables are set, a
 [Vercel Blob](https://vercel.com/docs/vercel-blob) store), mirrored to `/tmp` on each instance (`ui/lib/mirror.mjs`):
-changes are pulled before each request and pushed after each write. Running jobs, their live progress and Stop
-requests go through the same store, so they work across instances. Preview deployments use their own copy of the
+changes are pulled before each request and pushed after each write (`hw.db` is mirrored as one file and uses a
+rollback journal rather than WAL there). Running jobs, their live progress and Stop requests go through the same
+store, so they work across instances. Preview deployments use their own copy of the
 data (`hw-preview/`), so testing never touches production.
 
 ```
@@ -149,9 +157,15 @@ Moving from Vercel Blob to R2: `deploy/vercel/copy-blob-to-r2.mjs` copies every 
 (see its header). The free tiers differ a lot for this app, which lists the store on every request: Blob's Hobby plan
 allows about 2,000 list/put operations a month, R2's about a million.
 
-Hobby plans cap a request at 300 s (`maxDuration` in `vercel.json`; Pro allows 800). A turn still running at that
-point is cut off and can be retried. Logins on Vercel are always treated as behind a proxy (`HW_TRUST_PROXY` is
-implied).
+A chat turn can take longer than a function may run (300 s on Hobby, `maxDuration` in `vercel.json`), so hosted
+turns run on [Vercel Workflow](https://vercel.com/docs/workflow): `workflows/turn.mjs` loops over slices of the turn,
+each its own function invocation (`api/wf-flow.mjs`) that stops well inside the limit and saves its state to the
+store; the next slice picks up on whichever instance the queue chooses. The build step (`scripts/vercel-build.mjs`)
+compiles the workflow; `HW_WORKFLOW=0` turns it off (turns then run inside the request and are cut off at the
+limit). Locally the slices just run back to back; `HW_SLICE_LOCAL=1` slices a local turn the same way, to test
+pause and resume without deploying.
+
+Logins on Vercel are always treated as behind a proxy (`HW_TRUST_PROXY` is implied).
 
 ## Add your own homework data
 
@@ -159,8 +173,10 @@ implied).
    them. The three most recent go into every prompt as style examples ("gold files", `HW_GOLD_FILES` to change), so a
    few good sets in your own format matter more than anything else. To keep them elsewhere, set `HW_ROOT=/path/to/dir`
    (that folder then holds the `.tex` files and the two `.md` files).
-2. **Edit `curriculum_ladder.md`** to match your course: one `- Uxx Name. Description. Needs Uyy. Formal.` line per
-   unit. The app reads the unit ids, names and dependencies from these lines.
+2. **Edit `curriculum_ladder.md` before the first start** to match your course: one
+   `- Uxx Name. Description. Needs Uyy. Formal.` line per unit. The app reads the unit ids, names and dependencies
+   from these lines when it creates the course. Later changes go through the app (Progress map › Lesson plan ›
+   **Edit units**); a hand edit of the file still works, but becomes a draft you review and publish on **Courses**.
 3. **Set the unit statuses** in the app (Create Homework): each unit is TAUGHT, CURRENT, NEXT or FUTURE. Claude only
    uses TAUGHT and CURRENT material. The status (statuses, review priority, standing conventions, history) lives in
    `ui/data/hw.db`, starts from `examples/weekly_status.md`, and the app keeps it up to date as you finish sets. Export or
@@ -173,8 +189,9 @@ Sets you save land in the root as new `hw_*.tex` files, so the gold files keep t
 
 ## Start a problem-set corpus
 
-The corpus is `ui/data/corpus/problems.jsonl`, one problem per line, with its units, answer, source, Wu DAG tags and
-a status (favorite, used, rejected). It starts empty. Claude searches it before writing a set and prefers adapting
+The corpus is in `ui/data/hw.db`: every problem with its units, answer, source, Wu DAG tags and a status
+(favorite, used, rejected). It starts empty, and is shared by all students. (Older installs kept it in
+`ui/data/corpus/problems.jsonl`; the first start imports that and moves it to `ui/data/legacy-v0/`.) Claude searches it before writing a set and prefers adapting
 problems you've starred.
 
 - **Seed it from your past sets**: `node ui/scripts/seed-corpus.mjs` splits every `hw_*.tex` into problems and tags
@@ -182,31 +199,39 @@ problems you've starred.
   It's safe to re-run: problems are keyed by a hash of their text.
 - **It grows on its own**: every set you **Save & finish** adds its problems (tagged in the background), and problems
   Claude finds on the web during research are added as candidates.
-- **Curate it** in the **Corpus** dialog: ★ to favor a problem, ✕ to keep it out for good.
+- **Curate it** on the **Corpus** tab: ★ to favor a problem, ✕ to keep it out for good.
 - `node ui/scripts/tag-corpus.mjs` tags any problem that is missing tags.
 
-## The DAGs are provisional
+## The course is versioned
 
-`ui/data/wu_dag.json` (content: definitions, theorems, skills) and `ui/data/wu_methods_dag.json` (solution methods)
-are a first pass at mapping Wu's algebra into dependency graphs. Expect them to change: nodes split, merge, get
-renumbered or re-wired. They drive the **Progress map** and every corpus problem's `wuNodes` tags.
+The course is three linked views: the **content DAG** (definitions, theorems, skills), the **methods DAG** (solution
+methods) and the **lesson plan** (the units of `curriculum_ladder.md`). The Wu DAGs are a first pass at mapping Wu's
+algebra and will keep changing: nodes split, merge, get re-wired. So the course is versioned in `hw.db`:
 
-**If you change either DAG, re-tag the corpus.** Existing tags point at node ids, so after an edit they can point at
-nodes that moved, merged or no longer exist, and corpus search and the progress map will quietly use stale tags. Run
+- **Edit in the app.** Progress map › Content / Methods › **Edit board**, or Lesson plan › **Edit units**, opens a
+  draft of the next version. Add, change, move or remove blocks there; a removed block must be marked retired,
+  merged into another, or split before the draft can be published.
+- **Publish on Courses.** Published versions never change. Publishing carries every problem tag and progress mark
+  forward: a merged or renamed node's tags follow it automatically; a split or retired node's problems go on a
+  retag queue (Courses shows how many). Run `node ui/scripts/tag-corpus.mjs` to retag them (Haiku, a few cents).
+- **Students move up when you say.** Each student is enrolled at one version; **Students** upgrades an enrollment to
+  a newer published version.
+- Each published version is also written to `ui/data/curricula/<course>/v<n>/` (`content.json`, `methods.json`,
+  `version.json`). Those are tracked in git, so the course's history is visible in diffs.
 
-```
-node ui/scripts/tag-corpus.mjs --all
-```
-
-to re-tag every problem from scratch (it backs up `problems.jsonl` first; a few hundred problems cost a few cents
-of Haiku usage). `node ui/scripts/test.mjs` checks that both DAGs are acyclic and that every edge joins real nodes;
-run it after editing them.
+`ui/data/wu_dag.json` and `ui/data/wu_methods_dag.json` are the seed: version 1 is built from them on first start,
+and `ui/scripts/import-dag.mjs` (re)imports a whiteboard snapshot into them and into a new draft. Editing them by
+hand after that changes nothing. `node ui/scripts/tag-corpus.mjs --all` re-tags every problem from scratch against
+the active version (old tag sets stay in `hw.db`, per version).
 
 ## Tests
 
 ```
-node ui/scripts/test.mjs          # unit checks, under a second
-node ui/scripts/test-mcp.mjs      # Claude's local tools (cas, corpus_search, corpus_add)
+npm test                          # all the fast suites below except the UI test, a few seconds
+node ui/scripts/test.mjs          # unit checks: corpus, .tex split, preflight, status, DAG integrity, versioning
+node ui/scripts/test-agent.mjs    # the agent loop against a scripted fake API (tools, budget, deadlines, resume)
+node ui/scripts/test-mirror.mjs   # the hosted file mirror against an in-memory store
+node ui/scripts/test-mcp.mjs      # Claude's local tools (cas, check_answers, corpus_search, corpus_add)
 node ui/scripts/test-ui-mcp.mjs   # the main workflows in headless Chrome on anonymous fixtures (~10 s; needs Chrome)
 ```
 

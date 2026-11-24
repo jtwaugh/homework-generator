@@ -1,5 +1,5 @@
 # Allowlist: deploy only the app. Homework files and ui/data never leave this machine this way
-# (hosted data lives in Vercel Blob; see deploy/vercel/migrate-data.mjs).
+# (hosted data lives in Cloudflare R2 or Vercel Blob; see deploy/vercel/migrate-data.mjs).
 /*
 !/api
 !/ui

@@ -108,7 +108,6 @@ export function r2Store(env = process.env) {
 
 export const r2Configured = (env = process.env) => R2_VARS.every((k) => env[k]);
 export const vercelBlobConfigured = (env = process.env) => !!(env.BLOB_READ_WRITE_TOKEN || env.BLOB_STORE_ID);
-export const blobConfigured = (env = process.env) => r2Configured(env) || vercelBlobConfigured(env);
 // The durable store to mirror to: R2 when its variables are set, else Vercel Blob, else none.
 export const storeFromEnv = (env = process.env) => (r2Configured(env) ? r2Store(env) : vercelBlobConfigured(env) ? blobStore() : null);
 

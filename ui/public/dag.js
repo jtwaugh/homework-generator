@@ -747,7 +747,7 @@ function drawAll() {
   if (D.mode === "plan") { d.innerHTML = `${headHtml()}${planHtml()}`; return; }
   if (!D.data) { d.innerHTML = `<p class="muted">Loading…</p>`; return; }
   if (D.mode === "inference") { if (D.editing) Object.assign(D, { editing: false, edit: null, remove: null, editErr: "", version: null }); d.innerHTML = `${headHtml()}${inferenceHtml()}`; return; }
-  if (!curDag()) { d.innerHTML = `<div class="row dag-head">${titleHtml()}</div><p class="err">ui/data/wu_dag.json is missing.</p>`; return; }
+  if (!curDag()) { d.innerHTML = `<div class="row dag-head">${titleHtml()}</div><p class="err">This course version has no ${D.board === "methods" ? "methods" : "content"} board.</p>`; return; }
   D.view ||= bbox(curDag());
   d.innerHTML = `${headHtml()}
     <div class="dag-main"><div class="dag-canvas">${svgHtml()}</div>

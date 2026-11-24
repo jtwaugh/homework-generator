@@ -14,10 +14,6 @@ export function ladderUnits(ladder) {
     id: m[1], name: m[2].trim(), needs: (m[3].match(/Needs ([^.]*)\./)?.[1].match(UNIT_ID)) || [],
   }));
 }
-export function gatedTerms(ladder) {
-  const sec = statusSection(ladder, "## Gated terms");
-  return sec.split("\n").flatMap((l) => { const m = l.match(/^-\s+(.+):\s*(U\d\d|M\d|F\d)\s*$/); return m ? m[1].split(/,\s*/).map((t) => ({ term: t.replace(/\s*\(.*\)$/, "").trim(), unit: m[2] })) : []; });
-}
 export function statusSection(md, heading) {
   const i = md.toLowerCase().indexOf(heading.toLowerCase());
   if (i < 0) return "";

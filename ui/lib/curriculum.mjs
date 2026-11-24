@@ -13,7 +13,6 @@ import { randomBytes } from "node:crypto";
 import { tx, now, J, P } from "./db.mjs";
 import { parseLadder, renderLadder, parseUnitLine, renderUnitLine } from "./lessonplan.mjs";
 
-export const LAYERS = ["content", "methods", "unit"];
 const STD = new Set(["id", "title", "detail", "kind", "x", "y", "w", "h"]);
 const keyFor = (layer, id) => (layer === "methods" ? `m:${id}` : String(id));
 const idFor = (layer, key) => (layer === "methods" ? key.replace(/^m:/, "") : key);
@@ -544,14 +543,6 @@ export function lineageIndex(db, cur) {
   return { resolve: resolveKey, keys, seq, versions };
 }
 export const resolve = (db, cur, key, fromV, toV) => lineageIndex(db, cur).resolve(key, fromV, toV);
-
-// Resolve a {key: value} map made against fromV into toV. Ambiguous and retired keys are dropped.
-export function remap(index, obj, fromV, toV) {
-  if (fromV === toV) return { ...obj };
-  const out = {};
-  for (const [k, val] of Object.entries(obj || {})) { const r = index.resolve(k, fromV, toV); if (r.keys.length === 1 && !(k in out && r.status !== "current")) out[r.keys[0]] = val; }
-  return out;
-}
 
 // ---------- publish ----------
 
