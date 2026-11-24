@@ -16,7 +16,7 @@ import { applyWeekUpdate, statusUpdateFrom, weekUpdateInputs, checkStatusUpload,
 import { parseTopics, serializeTopics, historyTopics } from "../public/topics.js";
 import { exportBoardMd, parseBoardMd } from "../public/progressmd.js";
 import { computeStates, statusText, scopeSequence, scopeSeqGraph, curvePath } from "../public/dag.js";
-import { S, lintTex, nextSetDate } from "../public/lib.js";
+import { S, lintTex, nextSetDate, parseWeekInput, writeWeekInput } from "../public/lib.js";
 import { parseTags } from "../lib/tagger.mjs";
 import { corpusListing, corpusChatSystem, citedIds } from "../lib/corpuschat.mjs";
 import { openDb } from "../lib/db.mjs";
@@ -294,6 +294,20 @@ test("preflight: answer key, worked examples and unit circle sheet reach the bri
   const auto = brief(["Worked examples: yes"]);
   assert.equal(auto.workedExamples, "auto");
   assert.match(briefText(auto), /Worked examples: yes \(you choose how many\)/);
+});
+test("week input: one notes field for Claude; old ideas/emphasize statuses fold into it", () => {
+  const ladder = fs.readFileSync(path.join(HERE, "..", "..", "curriculum_ladder.md"), "utf8");
+  const head = ["## This week's input", "Date (for title): 11/23/2026", "Topics: Linear equations"];
+  const notes = buildBrief({ status: [...head, "Notes for Claude: more word problems", "  no graphing", ""].join("\n"), ladder, corpus: fz });
+  assert.equal(notes.notes, "more word problems\nno graphing");
+  assert.match(briefText(notes), /teacher's notes for this set \(instructions, follow every one\):\n {2}more word problems\n {2}no graphing/);
+  const old = [...head, "Example problem ideas (optional): a train puzzle", "Emphasize or avoid: avoid fractions", ""].join("\n");
+  assert.equal(buildBrief({ status: old, ladder, corpus: fz }).notes, "a train puzzle\navoid fractions");
+  const vals = parseWeekInput(old);
+  assert.equal(vals["Notes for Claude"], "a train puzzle\navoid fractions");
+  const rewritten = writeWeekInput(old, vals);
+  assert.doesNotMatch(rewritten, /Emphasize or avoid|Example problem ideas/);
+  assert.equal(parseWeekInput(rewritten)["Notes for Claude"], "a train puzzle\navoid fractions");
 });
 test("routing: checkpoint and final on the week's model, fixes on Haiku then up a tier", () => {
   const w = { model: "claude-opus-5-5", messages: [] };

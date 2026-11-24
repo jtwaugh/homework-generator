@@ -114,6 +114,6 @@ hw_10_21_2026.tex
 ## Files in this Project
 - curriculum_ladder.md: units, dependencies, stances, gated terms.
 - The gold .tex files.
-- The weekly status arrives in each chat as the app's brief, rendered from the app's own record: unit statuses, review priority, defaults and extra bans for the week, standing conventions, recent history, and this week's input with the fields "Date", "Disclaimer: yes/no", "Topics", "Number of sections", "Example problem ideas", "Emphasize or avoid", "Graph paper", "Fact sheet or other auxiliary file", "Answer key", "Worked examples", and "Unit circle sheet".
+- The weekly status arrives in each chat as the app's brief, rendered from the app's own record: unit statuses, review priority, defaults and extra bans for the week, standing conventions, recent history, and this week's input with the fields "Date", "Disclaimer: yes/no", "Topics", "Number of sections", "Notes for Claude" (the teacher's instructions for this set), "Graph paper", "Fact sheet or other auxiliary file", "Answer key", "Worked examples", and "Unit circle sheet".
 
 At the start of every chat, consult these. If you cannot see one, say so before continuing. Never proceed as if a list were empty.

@@ -61,7 +61,10 @@
       <!-- SETUP -->
       <div id="v-setup" class="view" hidden>
         <h2 class="v-title">Set up the week</h2>
-        <div id="units" class="widget"></div>
+        <div class="field big">
+          <label for="f-notes">Notes for Claude <span class="lbl-note">anything about this set: problem ideas, what to stress or avoid</span></label>
+          <textarea id="f-notes" rows="3" placeholder="e.g. More word problems this week. Still drops the sign when distributing a negative, so work that in. No graphing."></textarea>
+        </div>
         <div class="field big">
           <label>Topics <span class="lbl-note">what this week's set is about</span></label>
           <div id="f-topics"></div>
@@ -90,23 +93,22 @@
                 </div>
                 <label class="dd-item"><input type="checkbox" data-key="Unit circle sheet" /><span class="dd-label">Unit circle sheet</span><span class="dd-hint">reference page</span></label>
                 <label class="dd-item"><input type="checkbox" data-key="Graph paper" /><span class="dd-label">Graph paper</span><span class="dd-hint">off: only if graphing</span></label>
+                <div class="dd-item has-panel" data-key="Fact sheet or other auxiliary file" tabindex="0">
+                  <span class="dd-box"></span><span class="dd-label">Fact sheet</span><span class="dd-val"></span><span class="dd-more">▾</span>
+                  <div class="dd-panel"><textarea id="f-fact" rows="5" placeholder="Paste a fact sheet or other file to include, or leave blank"></textarea></div>
+                </div>
                 <label class="dd-item"><input type="checkbox" data-key="Disclaimer" /><span class="dd-label">Disclaimer</span><span class="dd-hint">AI-generated note</span></label>
               </div>
             </div>
           </div>
         </div>
-        <details id="more-opts">
-          <summary>More options <span class="muted">(problem ideas, emphasize/avoid, fact sheet)</span></summary>
-          <div class="field"><label for="f-ideas">Example problem ideas</label><textarea id="f-ideas" rows="2"></textarea></div>
-          <div class="field"><label for="f-emph">Emphasize or avoid</label><textarea id="f-emph" rows="2"></textarea></div>
-          <div class="field"><label for="f-fact">Fact sheet or other file</label><textarea id="f-fact" rows="2" placeholder='paste it, or "none"'></textarea></div>
-        </details>
         <div class="context">
+          <div id="units"></div>
+          <div id="ctx-cmts"></div>
           <div class="ctx-head">
-            <div><div class="ctx-title">Carried over from last week</div>
-              <div class="muted small">These go into the brief Claude gets. Nothing to do here unless something is wrong.</div></div>
+            <div class="ctx-title">Carried over from last week</div>
             <span class="spacer"></span>
-            <button id="view-md" class="secondary small-btn">Edit status (Markdown)</button>
+            <button id="view-md" class="link small">Edit status (Markdown)</button>
           </div>
           <div id="ctx"></div>
           <div id="raw-wrap" hidden>

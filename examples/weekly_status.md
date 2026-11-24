@@ -25,8 +25,7 @@ Date (for title):
 Disclaimer: 
 Topics: 
 Number of sections (default 3-4): 
-Example problem ideas (optional): 
-Emphasize or avoid: 
+Notes for Claude: 
 Graph paper: no
 Fact sheet or other auxiliary file: 
 Answer key: 

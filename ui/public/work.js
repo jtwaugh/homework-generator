@@ -207,12 +207,12 @@ export function statusChanges(oldMd, newMd) {
 
 // ======================= setup =======================
 
-const FIELD_IDS = { "f-date": "Date (for title)", "f-sections": "Number of sections (default 3-4)", "f-ideas": "Example problem ideas (optional)", "f-emph": "Emphasize or avoid", "f-fact": "Fact sheet or other auxiliary file" };
+const FIELD_IDS = { "f-date": "Date (for title)", "f-sections": "Number of sections (default 3-4)", "f-notes": "Notes for Claude", "f-fact": "Fact sheet or other auxiliary file" };
 const setField = (key, v) => { const vals = parseWeekInput(S.status); vals[key] = v; updateStatus(writeWeekInput(S.status, vals)); };
 
 for (const [id, key] of Object.entries(FIELD_IDS)) $("#" + id).addEventListener("input", (e) => setField(key, e.target.value));
 // Options dropdown: checkboxes, with small sub-menus for the numbers.
-const SECTIONS_KEY = "Number of sections (default 3-4)";
+const SECTIONS_KEY = "Number of sections (default 3-4)", FACT_KEY = "Fact sheet or other auxiliary file";
 const optsMenu = $("#opts-menu"), optsBtn = $("#opts-btn");
 const openOpts = (on) => { optsMenu.hidden = !on; optsBtn.setAttribute("aria-expanded", String(on)); if (!on) $$(".dd-item.open", optsMenu).forEach((x) => x.classList.remove("open")); };
 optsBtn.addEventListener("click", () => openOpts(optsMenu.hidden));
@@ -224,6 +224,8 @@ optsMenu.addEventListener("change", (e) => {
   setField(cb.dataset.key, cb.checked ? "yes" : "");
 });
 optsMenu.addEventListener("click", (e) => {
+  const panel = e.target.closest(".dd-item.has-panel");
+  if (panel) { if (!e.target.closest(".dd-panel")) { panel.classList.toggle("open"); if (panel.classList.contains("open")) $("textarea", panel).focus(); } return; }
   const item = e.target.closest(".dd-item.has-sub"); if (!item) return;
   const b = e.target.closest(".dd-sub button");
   if (b) return setField(item.dataset.key, b.dataset.v);
@@ -247,12 +249,14 @@ function optsSummary(vals) {
   if (yes(we)) bits.push(/^\d+$/.test(we) ? `${we} worked example${we === "1" ? "" : "s"}` : "worked examples");
   if (yes(vals["Unit circle sheet"])) bits.push("unit circle");
   if (/^y/i.test(vals["Graph paper"] || "")) bits.push("graph paper");
+  if (yes(vals[FACT_KEY])) bits.push("fact sheet");
   if (yes(vals["Disclaimer"])) bits.push("disclaimer");
   return bits.join(" · ");
 }
 function renderOpts(vals) {
   $("#opts-sum").textContent = optsSummary(vals);
   for (const cb of $$("input[type=checkbox]", optsMenu)) cb.checked = cb.dataset.key === "Graph paper" ? /^y/i.test(vals["Graph paper"] || "") : yes(vals[cb.dataset.key]);
+  $(`.dd-item.has-panel[data-key="${FACT_KEY}"] .dd-val`, optsMenu).textContent = yes(vals[FACT_KEY]) ? "added" : "";
   for (const item of $$(".dd-item.has-sub", optsMenu)) {
     const v = (vals[item.dataset.key] || "").trim();
     const btns = $$(".dd-sub button", item);
@@ -269,7 +273,6 @@ document.addEventListener("hw:comments", (e) => { extra.comments = e.detail || {
 $("#units").addEventListener("submit", (e) => { const f = e.target.closest(".u-cmt-form"); if (f) { e.preventDefault(); addUnitComment(f); } });
 $("#status-raw").addEventListener("input", (e) => updateStatus(e.target.value));
 $("#view-md").onclick = () => { const r = $("#raw-wrap"); r.hidden = !r.hidden; $("#view-md").textContent = r.hidden ? "Edit status (Markdown)" : "Close editor"; };
-$("#more-opts").addEventListener("toggle", (e) => (e.target.dataset.touched = "1"));
 
 // Extra suggestion sources for topic chips, loaded once in the background.
 const extra = { dagNodes: [], tags: [], comments: {} };
@@ -312,7 +315,6 @@ function renderSetup() {
   const chosen = new Set(parseTopics(vals["Topics"] || "").map((c) => c.id).filter(Boolean));
   const sugg = (S.units?.length ? unitsModel(S.status).current : []).filter((u) => !chosen.has(u.id));
   $("#topic-suggest").innerHTML = sugg.length ? `<span class="muted small">${esc(S.student || "The student")} is on:</span>${sugg.map((u) => `<button class="sugg" data-unit="${u.id}">+ <b>${u.id}</b> ${esc(u.name)}</button>`).join("")}` : "";
-  if (["f-ideas", "f-emph", "f-fact"].some((id) => vals[FIELD_IDS[id]]) && !$("#more-opts").dataset.touched) $("#more-opts").open = true;
   // Re-rendering the units widget must not eat a comment being typed in it.
   const ta = $("#units .u-cmt-form textarea"), draft = ta && { key: ta.form.dataset.key, v: ta.value, focus: document.activeElement === ta, sel: ta.selectionStart };
   $("#units").innerHTML = unitsWidgetHtml(S.status);
@@ -400,21 +402,21 @@ function renderBrief() {
   const el = $("#brief");
   if (!el) return;
   const b = briefData;
-  if (!b) { el.innerHTML = ""; return; }
-  const cmts = briefCommentsHtml(b);
-  if (!b.sections?.length) { el.innerHTML = cmts; return; }
+  if (!b) { el.innerHTML = $("#ctx-cmts").innerHTML = ""; return; }
+  $("#ctx-cmts").innerHTML = briefCommentsHtml(b);
+  if (!b.sections?.length) { el.innerHTML = ""; return; }
   const promos = b.promotions.map((p) => `<button class="chip ${p.accepted ? "on" : "off"}" data-key="promote:${esc(p.id)}" title="${esc(p.from)} unit. Click to ${p.accepted ? "keep it out of" : "allow it in"} this week's set">${p.accepted ? "✓" : "✕"} ${esc(p.id)} as CURRENT</button>`).join(" ");
   const secs = b.sections.map((x) => `<span class="chip cov-${esc(x.coverage)}" title="${x.usable} usable corpus problems for about ${x.target}">${esc(x.title)} · ${COVER[x.coverage] || esc(x.coverage)}</span>`).join(" ");
   const plan = (b.stagesPlan || []).map((x) => `${esc(x.stage)}: ${x.skip ? "skipped" : esc((x.model || "").replace(/^claude-/, ""))}`).join(" → ");
   const other = b.decisions.filter((d) => !d.key.startsWith("promote:")).map((d) => `<li>${esc(d.text)}</li>`).join("");
-  el.innerHTML = `${cmts}<div class="small"><b>Decided without asking</b> ${promos || '<span class="muted">nothing to decide</span>'}${other ? `<ul class="muted">${other}</ul>` : ""}</div>
+  el.innerHTML = `<div class="small"><b>Decided without asking</b> ${promos || '<span class="muted">nothing to decide</span>'}${other ? `<ul class="muted">${other}</ul>` : ""}</div>
     <div class="small">${secs}</div><div class="small muted">Stages: ${plan}</div>`;
   $$("button[data-key]", el).forEach((btn) => (btn.onclick = () => toggleBrief(btn.dataset.key)));
 }
 // The comments Claude gets with this brief, this week's topics first. With none, say where to add them.
 function briefCommentsHtml(b) {
   const cs = b.comments || [];
-  const focus = [...new Set(b.sections.flatMap((x) => x.units))];
+  const focus = [...new Set((b.sections || []).flatMap((x) => x.units))];
   if (!cs.length && !focus.length) return "";
   const where = (c) => c.layer === "unit" ? `<b>${esc(c.key)}</b> ${esc(c.title)}` : `${esc(c.title)} <span class="muted">(${c.layer === "methods" ? "methods" : "content"} block, in ${esc(c.units.join(", "))})</span>`;
   const items = cs.flatMap((c) => c.texts.map((t) => `<li class="${c.focus ? "focus" : ""}"><div class="bc-where">${where(c)}${c.focus ? ' <span class="bc-tag">this week</span>' : ""}</div><div class="bc-text">${esc(t)}</div></li>`)).join("");
@@ -422,7 +424,7 @@ function briefCommentsHtml(b) {
   return `<div class="brief-cmts${cs.length ? "" : " empty"}">
     <div class="bc-head"><b>💬 ${n ? `Your ${n === 1 ? "comment" : `${n} comments`} Claude will follow` : "Your comments"}</b><span class="spacer"></span><button class="link small" data-page="dag" data-dag="scopeSeq">${n ? "edit" : "add"} on Progress map →</button></div>
     ${n ? `<ul>${items}</ul><div class="muted small">Claude treats these as instructions for the units they're on, and the outline says how it used each one.</div>`
-      : `<div class="muted small">No comments on ${esc(focus.join(", ") || "this week's units")}. Notes like “still shaky on negatives” or “more word problems” change which problems Claude picks. Add one by clicking a unit under <i>all units</i>, or on the Progress map.</div>`}
+      : `<div class="muted small">None on ${esc(focus.join(", ") || "this week's units")}. A comment stays on its unit and steers every set that uses it (“still shaky on negatives”); for this set only, use Notes above. Add one by clicking a unit under <i>all units</i>, or on the Progress map.</div>`}
   </div>`;
 }
 $("#quick-set").onclick = () => { if (guardSetup()) { log("quick-set", { from: "setup" }); startWeek(QUICK_PROMPT); } };

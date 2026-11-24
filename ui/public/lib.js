@@ -130,14 +130,15 @@ export const WEEK_FIELDS = [
   { key: "Disclaimer", label: "Disclaimer", kind: "select", opts: ["", "yes", "no"] },
   { key: "Topics", label: "Topics", kind: "textarea" },
   { key: "Number of sections (default 3-4)", label: "Sections", kind: "input", ph: "default 3-4" },
-  { key: "Example problem ideas (optional)", label: "Problem ideas", kind: "textarea" },
-  { key: "Emphasize or avoid", label: "Emphasize / avoid", kind: "textarea" },
+  { key: "Notes for Claude", label: "Notes", kind: "textarea" },
   { key: "Graph paper", label: "Graph paper", kind: "select", opts: ["", "yes", "no", "auto"] },
   { key: "Fact sheet or other auxiliary file", label: "Fact sheet / aux", kind: "textarea", ph: 'paste it, or "none"' },
   { key: "Answer key", label: "Answer key", kind: "select", opts: ["", "yes", "no"] },
   { key: "Worked examples", label: "Worked examples", kind: "input", ph: "yes or a number" },
   { key: "Unit circle sheet", label: "Unit circle sheet", kind: "select", opts: ["", "yes", "no"] },
 ];
+// Older statuses split the notes in two; they read into Notes for Claude (and are written back that way).
+const LEGACY_NOTES = ["Example problem ideas (optional)", "Example problem ideas", "Emphasize or avoid"];
 // Template placeholder values that mean "not filled in".
 export const PLACEHOLDER = /^(yes \/ no( \/ auto)?|upload, paste, or "none")$/;
 
@@ -157,7 +158,9 @@ export function parseWeekInput(md) {
   let cur = null;
   for (const line of b.lines.slice(b.start + 1, b.end)) {
     const f = WEEK_FIELDS.find((f) => line.startsWith(f.key + ":"));
-    if (f) { cur = f.key; vals[cur] = line.slice(f.key.length + 1).trim(); }
+    const old = !f && LEGACY_NOTES.find((k) => line.startsWith(k + ":"));
+    if (f) { cur = f.key; vals[cur] = [vals[cur], line.slice(f.key.length + 1).trim()].filter(Boolean).join("\n"); }
+    else if (old) { cur = "Notes for Claude"; vals[cur] = [vals[cur], line.slice(old.length + 1).trim()].filter(Boolean).join("\n"); }
     else if (cur && line.startsWith("  ")) vals[cur] += "\n" + line.slice(2);
   }
   for (const k in vals) if (PLACEHOLDER.test(vals[k])) vals[k] = "";
