@@ -261,7 +261,10 @@ button.not-ready { cursor: help; }
 /* ======================= layout ======================= */
 /* sidebar */
 .sidebar { display: flex; flex-direction: column; gap: 2px; padding: 14px 10px 12px; background: var(--surface-3); border-right: 1px solid var(--line); min-height: 0; overflow: auto; }
-.sidebar h1 { font-size: 16px; margin: 0 10px 14px; }
+.sidebar .who { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: calc(100% - 4px); margin: 0 2px 12px; padding: 6px 8px; border: none; background: none; border-radius: 8px; text-align: left; cursor: pointer; }
+.sidebar .who:hover { background: var(--surface-4); }
+.sidebar .who-name { font-size: 16px; font-weight: 700; color: var(--ink); }
+.sidebar .who-course { font-size: 12.5px; color: var(--muted); }
 .nav-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: none; background: none; padding: 8px 10px; font-size: 14px; color: var(--ink); border-radius: 8px; }
 .nav-item:hover { background: var(--surface-4); }
 .nav-item.on { background: var(--panel); color: var(--accent); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
@@ -279,6 +282,9 @@ button.not-ready { cursor: help; }
 .ptable th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); padding: 6px 8px; }
 .ptable td { border-bottom: 1px solid var(--line); padding: 7px 8px; vertical-align: middle; }
 .ptable tr.on td { background: var(--surface-2); }
+.ptable tr.not-taking td:first-child { color: var(--muted); }
+.ptable label.taking { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; }
+.people section.student h3 { margin: 18px 0 0; }
 .pill-on, .pill-draft { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--good-soft); color: var(--good); }
 .pill-draft { background: var(--warn-soft); color: var(--warn); }
 .add-student { display: flex; gap: 8px; align-items: center; margin: 10px 0 4px; }
@@ -299,7 +305,7 @@ button.not-ready { cursor: help; }
 @media (max-width: 900px) {
   body { grid-template-columns: 56px 1fr; }
   .sidebar { padding: 12px 6px; }
-  .sidebar h1, .nav-item .nl-text, .nav-sub { display: none; }
+  .sidebar .who, .nav-item .nl-text, .nav-sub { display: none; }
   .nav-item { justify-content: center; padding: 10px 0; }
   .nav-item .ni { font-size: 18px; }
   .sidebar .badge-btn { margin: 0; font-size: 10.5px; padding: 3px 5px; }

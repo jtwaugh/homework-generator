@@ -639,6 +639,18 @@ test("hw.db: upgrading an enrollment carries progress (merge = least advanced, s
   Prog.setOverride(db, e1, "e2", null); assert.ok(!("e2" in Prog.dagState(db, e1).overrides));
   assert.equal(Prog.dagState(db, e1, v1).guess.nodes.e1.state, "done"); // the old version still reads as it was
 });
+test("hw.db: every student is in every course; taking is a per-course flag, drafts included", () => {
+  const { db, e1 } = freshCurriculum();
+  Cur.ensureCurriculum(db, "d", "Draft only"); Cur.createDraft(db, "d");
+  const sid = Prog.getEnrollment(db, e1).student_id;
+  let cs = Prog.studentCourses(db, sid);
+  assert.deepEqual(cs.map((c) => [c.id, c.taking, !!c.enrollment, c.published, c.draft]), [["t", false, true, 1, false], ["d", false, false, null, true]]);
+  Prog.setTaking(db, sid, "d", true);
+  cs = Prog.studentCourses(db, sid);
+  assert.deepEqual(cs.map((c) => [c.id, c.taking]), [["d", true], ["t", false]]); // taken first
+  Prog.setTaking(db, sid, "d", false);
+  assert.equal(Prog.studentCourses(db, sid).find((c) => c.id === "d").taking, false);
+});
 test("hw.db: a split into a node that already exists leaves that node's own state alone", () => {
   const { db, e1 } = freshCurriculum();
   Prog.saveGuessRun(db, e1, { id: "r1", at: "2026-01-01T00:00:00.000Z", ok: true, nodes: { e2: { state: "done" }, e3: { state: "not-yet" } } });

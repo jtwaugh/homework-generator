@@ -187,6 +187,7 @@ export async function refresh(pickWeek = true) {
   Object.assign(S, { savedStatus: st.status, ladder: st.ladder, texFiles: st.texFiles, student: st.student, curriculum: st.curriculum, enrollment: st.enrollment, weeks: st.weeks, tectonic: st.tectonic, model: st.model, cas: st.cas, auth: st.auth, budget: st.budget, corpusSize: st.corpusSize }, parseLadder(st.ladder));
   document.getElementById("logout").hidden = !st.login;
   if (st.curriculum) document.getElementById("curriculum").textContent = st.curriculum;
+  document.getElementById("student-name").textContent = st.student || "";
   if (!dirty) S.status = st.status;
   if (pickWeek && !app.week) {
     const open = location.hash === "#new" ? null : st.weeks.find((w) => !w.done);

@@ -176,6 +176,18 @@ const MIGRATIONS = [
     WHERE json_type(meta_json, '$.plan') IS NOT NULL;
   UPDATE curriculum_edit SET op = 'scope-seq-text' WHERE op = 'plan-text';
   `,
+  // 4: every student is in every course (courses are just skills); what the teacher sets is whether the student
+  // is taking it now. Keyed by course, not enrollment, so a course with only a draft can be marked too.
+  // Replaces enrollment.status, which nothing read: an 'active' enrollment seeds taking = 1.
+  `
+  CREATE TABLE student_course (
+    student_id INTEGER NOT NULL REFERENCES student(id), curriculum_id TEXT NOT NULL REFERENCES curriculum(id),
+    taking INTEGER NOT NULL DEFAULT 0, at TEXT NOT NULL,
+    PRIMARY KEY (student_id, curriculum_id)
+  );
+  INSERT INTO student_course(student_id, curriculum_id, taking, at)
+    SELECT student_id, curriculum_id, status = 'active', started_at FROM enrollment;
+  `,
 ];
 
 const open = new Map();

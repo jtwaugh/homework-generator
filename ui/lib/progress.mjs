@@ -20,6 +20,29 @@ export function enroll(db, studentId, curriculumId, versionId) {
   return db.prepare("SELECT id FROM enrollment WHERE student_id = ? AND curriculum_id = ?").get(studentId, curriculumId).id;
 }
 
+// ---------- a student's courses ----------
+// Every student is in every course; the enrollment row (their progress, status record and homework in it) is
+// made the first time the app works on that pair. "taking" is the teacher's flag: is the student doing it now.
+
+export function setTaking(db, studentId, curriculumId, taking) {
+  db.prepare("INSERT INTO student_course(student_id, curriculum_id, taking, at) VALUES (?,?,?,?) ON CONFLICT(student_id, curriculum_id) DO UPDATE SET taking = excluded.taking, at = excluded.at")
+    .run(studentId, curriculumId, taking ? 1 : 0, now());
+}
+
+// [{id, title, taking, enrollment: {id, version_seq} | null, published: latest published seq | null, draft: bool}]
+// for every course, the ones being taken first.
+export function studentCourses(db, studentId) {
+  const rows = db.prepare(`SELECT c.id, c.title, COALESCE(sc.taking, 0) taking, e.id enrollment_id, ev.seq enrolled_seq,
+      (SELECT MAX(seq) FROM curriculum_version WHERE curriculum_id = c.id AND status = 'published') published,
+      EXISTS (SELECT 1 FROM curriculum_version WHERE curriculum_id = c.id AND status = 'draft') draft
+    FROM curriculum c
+    LEFT JOIN student_course sc ON sc.curriculum_id = c.id AND sc.student_id = ?
+    LEFT JOIN enrollment e ON e.curriculum_id = c.id AND e.student_id = ?
+    LEFT JOIN curriculum_version ev ON ev.id = e.version_id
+    ORDER BY COALESCE(sc.taking, 0) DESC, c.created_at`).all(studentId, studentId);
+  return rows.map((r) => ({ id: r.id, title: r.title, taking: !!r.taking, enrollment: r.enrollment_id ? { id: r.enrollment_id, version_seq: r.enrolled_seq } : null, published: r.published ?? null, draft: !!r.draft }));
+}
+
 export function recordEvent(db, enrollmentId, ev) {
   const e = getEnrollment(db, enrollmentId);
   if (!e) throw new Error(`no enrollment ${enrollmentId}`);

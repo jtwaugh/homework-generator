@@ -1,39 +1,56 @@
 // Students and Courses (the two tabs above the per-course ones).
-//   Students: every student × course enrollment, which one the app is working on (Switch reloads the app on
-//   it: the root weekly_status.md and curriculum_ladder.md follow), adding a student, upgrading an
-//   enrollment to a newer published version of its course.
+//   Students: each student with every course, whether they're taking it now, which one the app is working on
+//   (Work on this reloads the app on it; the root curriculum_ladder.md follows), adding a student, upgrading
+//   an enrollment to a newer published version of its course.
 //   Courses: the course's versions, the open draft (what changed against its parent, removed nodes that
 //   still need merge/split/retire, Publish/Discard), and how many problems wait for retagging.
 // Data: GET /api/students, /api/versions (lib/curriculum.mjs, lib/progress.mjs on the server).
-import { $, esc, api, log, withCur } from "./lib.js";
-import { onShow } from "./pages.js";
+import { $, S, esc, api, log, withCur } from "./lib.js";
+import { onShow, showPage } from "./pages.js";
 
 const fmt = (iso) => (iso ? new Date(iso).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" }) : "");
 const note = (el, msg, bad = false) => { el.textContent = msg; el.className = `small ${bad ? "err" : "muted"}`; };
 
 // ---------- Students ----------
+// Every student is in every course (courses are just skills). Per course the teacher sets whether the student
+// is taking it now, and opens it: "Work on this" makes it the app's (enrolling the student at the latest
+// published version the first time); a course with only a draft can be looked at on the Progress map.
+
+function courseRow(st, c, d, latestId) {
+  const on = c.enrollment?.id === d.active;
+  const behind = on && c.enrollment && c.published != null && c.enrollment.version_seq < c.published;
+  const version = c.enrollment ? `v${c.enrollment.version_seq}${behind ? ` <button class="small-btn" data-upgrade="${latestId}" title="Carry this student's progress forward to v${c.published} (merged nodes take the least advanced state; split nodes become partial and are flagged)">Upgrade to v${c.published}</button>` : c.published > c.enrollment.version_seq ? ` <span class="muted small">v${c.published} available</span>` : ""}`
+    : c.published != null ? `<span class="muted small">not started</span>` : `<span class="pill-draft">draft only</span>`;
+  const action = on ? `<span class="pill-on">Working on</span>`
+    : c.published != null ? `<button class="small-btn" data-work="${st.id}" data-cur="${esc(c.id)}">Work on this</button>`
+    : `<button class="small-btn" data-look="${esc(c.id)}" title="Open its draft on the Progress map. Publish it on Courses to work on it">Look at it</button>`;
+  return `<tr class="${on ? "on" : ""}${c.taking ? "" : " not-taking"}">
+    <td>${esc(c.title)}</td>
+    <td><label class="taking"><input type="checkbox" data-taking="${st.id}" data-cur="${esc(c.id)}" ${c.taking ? "checked" : ""} /> ${c.taking ? "Taking now" : "Not now"}</label></td>
+    <td>${version}</td><td>${action}</td></tr>`;
+}
 
 async function openStudents() {
   const el = $("#p-students");
   el.innerHTML = `<div class="view people"><h2 class="v-title">Students</h2><p class="muted">Loading…</p></div>`;
   let d, v;
   try { [d, v] = await Promise.all([api("/api/students"), api("/api/versions")]); } catch (e) { el.querySelector("p").textContent = e.message; return; }
-  const latest = Math.max(...v.versions.filter((x) => x.status === "published").map((x) => x.seq));
-  const latestId = v.versions.find((x) => x.seq === latest)?.id;
-  const rows = d.enrollments.map((e) => {
-    const on = e.id === d.active;
-    const behind = e.curriculum_id === v.curriculum.id && e.version_seq < latest;
-    return `<tr class="${on ? "on" : ""}">
-      <td>${esc(e.student_name)}</td><td>${esc(e.curriculum_title)}</td>
-      <td>v${e.version_seq}${behind && on ? ` <button class="small-btn" data-upgrade="${e.id}" title="Carry this student's progress forward to v${latest} (merged nodes take the least advanced state; split nodes become partial and are flagged)">Upgrade to v${latest}</button>` : behind ? ` <span class="muted small">v${latest} available</span>` : ""}</td>
-      <td>${on ? `<span class="pill-on">Working on</span>` : `<button class="small-btn" data-switch="${e.id}">Switch</button>`}</td></tr>`;
-  }).join("");
+  const latestId = v.versions.filter((x) => x.status === "published").sort((a, b) => b.seq - a.seq)[0]?.id;
+  const one = d.students.length === 1;
+  const block = (st) => {
+    const taking = st.courses.filter((c) => c.taking).length;
+    return `<section class="student">
+      ${one ? "" : `<h3>${esc(st.name)}</h3>`}
+      <p class="small muted">${taking ? `Taking ${taking} of ${st.courses.length} courses.` : `Not taking any of the ${st.courses.length} courses right now.`}</p>
+      <table class="ptable"><thead><tr><th>Course</th><th>Taking</th><th>Version</th><th></th></tr></thead>
+      <tbody>${st.courses.map((c) => courseRow(st, c, d, latestId)).join("")}</tbody></table></section>`;
+  };
   el.innerHTML = `<div class="view people">
-    <h2 class="v-title">Students</h2>
-    <p class="muted">Each student has their own progress map, weekly status and homework history in each course. The tabs below this one work on the student marked <em>Working on</em>.</p>
-    <table class="ptable"><thead><tr><th>Student</th><th>Course</th><th>Version</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+    <h2 class="v-title">${one ? esc(d.students[0].name) : "Students"}</h2>
+    <p class="muted">Every student is in every course. Tick the ones they're taking now. Each course keeps its own progress map, weekly status and homework history for the student; the other tabs work on the one marked <em>Working on</em>.</p>
+    ${d.students.map(block).join("")}
     <form class="add-student"><input name="name" placeholder="New student's name" autocomplete="off" /> <button class="small-btn" type="submit">Add student</button> <span class="small muted" id="st-msg"></span></form>
-    <p class="small muted">A new student starts in ${esc(v.curriculum.title)} at its latest published version, with a blank weekly status.</p>
+    <p class="small muted">A new student starts out taking ${esc(v.curriculum.title)}, at its latest published version, with a blank weekly status.</p>
   </div>`;
   const msg = $("#st-msg", el);
   el.querySelector("form").onsubmit = async (ev) => {
@@ -41,14 +58,26 @@ async function openStudents() {
     const name = ev.target.name.value.trim(); if (!name) return;
     try { await api("/api/students", { method: "POST", body: { name } }); log("student-add", {}); openStudents(); } catch (e) { note(msg, e.message, true); }
   };
-  el.onclick = async (ev) => {
-    const sw = ev.target.closest("[data-switch]"), up = ev.target.closest("[data-upgrade]");
+  el.onchange = async (ev) => {
+    const t = ev.target.closest("[data-taking]"); if (!t) return;
     try {
-      if (sw) { await api("/api/enrollment", { method: "PUT", body: { id: Number(sw.dataset.switch) } }); log("enrollment-switch", { id: sw.dataset.switch }); location.reload(); }
+      await api(`/api/students/${t.dataset.taking}/courses/${encodeURIComponent(t.dataset.cur)}`, { method: "PUT", body: { taking: t.checked } });
+      log("course-taking", { curriculum: t.dataset.cur, taking: t.checked });
+      openStudents();
+    } catch (e) { t.checked = !t.checked; note(msg, e.message, true); }
+  };
+  el.onclick = async (ev) => {
+    const work = ev.target.closest("[data-work]"), look = ev.target.closest("[data-look]"), up = ev.target.closest("[data-upgrade]");
+    try {
+      if (work) {
+        await api("/api/enrollment", { method: "PUT", body: { student: Number(work.dataset.work), curriculum: work.dataset.cur } });
+        log("enrollment-switch", { curriculum: work.dataset.cur }); location.reload();
+      }
+      if (look) { S.browse = look.dataset.look; log("course-look", { curriculum: S.browse }); showPage("dag"); }
       if (up) {
-        const r = await api("/api/enrollment/upgrade", { method: "POST", body: { to: latestId } });
-        log("enrollment-upgrade", { to: latest, written: r.written });
-        note(msg, `Upgraded to v${latest}: ${r.written} node${r.written === 1 ? "" : "s"} took progress from merged or split ones.`);
+        const r = await api("/api/enrollment/upgrade", { method: "POST", body: { to: Number(up.dataset.upgrade) } });
+        log("enrollment-upgrade", { to: up.dataset.upgrade, written: r.written });
+        note(msg, `Upgraded: ${r.written} node${r.written === 1 ? "" : "s"} took progress from merged or split ones.`);
         setTimeout(() => location.reload(), 900);
       }
     } catch (e) { note(msg, e.message, true); }

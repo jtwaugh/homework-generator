@@ -1249,7 +1249,19 @@ async function handle(req, res) {
   // ---- students and enrollments ----
   if (m === "GET" && p === "/api/students") {
     const c = C();
-    return send(res, 200, { students: Prog.listStudents(c.db), enrollments: Prog.listEnrollments(c.db), active: c.enrollmentId, curricula: Cur.listCurricula(c.db) });
+    const students = Prog.listStudents(c.db).map((s) => ({ ...s, courses: Prog.studentCourses(c.db, s.id) }));
+    return send(res, 200, { students, enrollments: Prog.listEnrollments(c.db), active: c.enrollmentId, curricula: Cur.listCurricula(c.db) });
+  }
+  // is the student taking this course now: {taking}
+  const tk = p.match(/^\/api\/students\/(\d+)\/courses\/([A-Za-z0-9_-]+)$/);
+  if (m === "PUT" && tk) {
+    const { taking } = await body(req);
+    const c = C(), sid = Number(tk[1]);
+    if (!c.db.prepare("SELECT 1 FROM student WHERE id = ?").get(sid)) return send(res, 404, { error: "no such student" });
+    if (!c.db.prepare("SELECT 1 FROM curriculum WHERE id = ?").get(tk[2])) return noCourse(res);
+    Prog.setTaking(c.db, sid, tk[2], !!taking);
+    logEvent("server", "course-taking", { student: sid, curriculum: tk[2], taking: !!taking });
+    return send(res, 200, { courses: Prog.studentCourses(c.db, sid) });
   }
   if (m === "POST" && p === "/api/students") {
     const { name, curriculum } = await body(req);
@@ -1259,14 +1271,23 @@ async function handle(req, res) {
     const v = Cur.latestPublished(c.db, cur);
     if (!v) return send(res, 400, { error: "that curriculum has no published version" });
     const sid = Prog.addStudent(c.db, name);
+    Prog.setTaking(c.db, sid, cur, true);
     return send(res, 200, { student: sid, enrollment: Prog.enroll(c.db, sid, cur, v.id) });
   }
   if (m === "PUT" && p === "/api/enrollment") {
-    // Switch the active student/course. The root curriculum_ladder.md follows it.
-    const { id } = await body(req);
+    // Switch the active student/course: {id} an enrollment, or {student, curriculum}, which enrolls the student
+    // at the course's latest published version the first time. The root curriculum_ladder.md follows it.
+    const { id: eid, student, curriculum } = await body(req);
     const c = C();
-    if (!Prog.getEnrollment(c.db, Number(id))) return send(res, 404, { error: "no such enrollment" });
-    setActiveEnrollment(c.db, Number(id));
+    let id = Number(eid);
+    if (!eid && student && curriculum) {
+      if (!c.db.prepare("SELECT 1 FROM student WHERE id = ?").get(Number(student))) return send(res, 404, { error: "no such student" });
+      const v = Cur.latestPublished(c.db, String(curriculum));
+      if (!v) return send(res, 400, { error: "that course has no published version yet: publish it on Courses first" });
+      id = Prog.enroll(c.db, Number(student), String(curriculum), v.id);
+    }
+    if (!Prog.getEnrollment(c.db, id)) return send(res, 404, { error: "no such enrollment" });
+    setActiveEnrollment(c.db, id);
     setSetting(c.db, "ladder_export_hash", "");
     const n = C();
     // A student with no status yet starts from a blank one, never from the previous student's file.
