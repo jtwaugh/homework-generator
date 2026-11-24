@@ -72,7 +72,7 @@ function homeworkHtml() {
   if (H.tab === "pdf") body = r?.ok ? `<iframe src="${r.pdf}#view=FitH"></iframe>` : `<div class="err">Did not compile. See the Compile log tab.</div>`;
   else if (H.tab === "source") body = `<pre class="h-src">${esc(H.tex)}</pre>`;
   else body = `<pre class="h-src">${esc(r?.log || "(no log)")}</pre>${r?.warnings?.length ? `<h3>Warnings</h3><pre class="h-src">${esc(r.warnings.join("\n"))}</pre>` : ""}`;
-  return `<div class="row h-bar"><span class="muted small">${esc(H.texFrom)}</span>${r?.cached ? '<span class="muted small">· cached</span>' : ""}<span class="spacer"></span><div class="tabs">${tabs}</div>
+  return `<div class="row h-bar"><span class="muted small">${esc(H.texFrom)}</span>${r?.cached ? '<span class="muted small">· cached</span>' : ""}<span class="spacer"></span><div class="seg">${tabs}</div>
     ${r?.ok ? `<a class="link-btn" href="${r.pdf}" target="_blank" rel="noopener">Open in new tab ↗</a>` : ""}</div><div class="h-body">${body}</div>`;
 }
 
@@ -92,7 +92,7 @@ function viewHtml() {
       w.running ? "Claude is working" : w.done ? `saved as ${w.savedAs || "?"}` : "in progress"].filter(Boolean).map(esc).join(" · ");
   }
   const resume = !isFile && w && !w.done ? `<button class="primary" data-act="continue" title="Pick this week up where it left off">Continue in Create Homework →</button>` : "";
-  const views = isFile ? "" : `<div class="tabs">${[["chat", "Conversation"], ["hw", "Homework"]].map(([k, l]) => `<button class="tab${H.view === k ? " on" : ""}" data-view="${k}">${l}</button>`).join("")}</div>`;
+  const views = isFile ? "" : `<div class="seg">${[["chat", "Conversation"], ["hw", "Homework"]].map(([k, l]) => `<button class="tab${H.view === k ? " on" : ""}" data-view="${k}">${l}</button>`).join("")}</div>`;
   const body = isFile || H.view === "hw" ? `<div class="h-hw">${homeworkHtml()}</div>` : `<div class="h-thread thread">${transcriptHtml(w)}</div>`;
   return `<div class="h-head"><div class="h-titles"><h2>${esc(title)}</h2>${meta ? `<div class="muted small">${meta}</div>` : isFile ? `<div class="muted small">Homework file from before this app kept sessions</div>` : ""}</div><span class="spacer"></span>${views}${resume}</div>${body}`;
 }

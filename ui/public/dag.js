@@ -691,7 +691,7 @@ function headBodyHtml() {
     const ready = planDag() && D.graph ? D.graph.nodes.filter((x) => x.ready).length : 0;
     return `<span class="dag-count"><b>${n("TAUGHT")} of ${us.length} taught</b> · ${n("CURRENT")} current${n("NEXT") ? ` · ${n("NEXT")} next` : ""}${ready ? ` · ${ready} ready` : ""}</span>
       ${planViewSeg()}
-      <span class="spacer"></span><span class="muted small">Statuses from the app's status record · change them on Create Homework</span>
+      <span class="spacer"></span><span class="muted small" title="Statuses come from the app's status record; change them on Create Homework">Statuses are set on Create Homework</span>
       <button class="ghost" data-act="status-export" title="Download the whole status record (unit statuses, review priority, standing conventions, history) as Markdown">Export status.md</button>
       <button class="ghost" data-act="status-upload" title="Replace the status record with an edited status.md (the old one stays in the history)">Import status.md</button>${versionPicker()}${fitBtn()}
       <button class="secondary" data-act="edit" title="Add, change or remove units in the course's draft">Edit units</button>`;

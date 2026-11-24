@@ -121,7 +121,7 @@ function draw() {
   const focused = document.activeElement?.id === "corpus-q";
   const scroll = d.scrollTop;
   const chatOpen = !$("#p-corpus .cp-chat").hidden;
-  d.innerHTML = `<div class="row"><h2>Problem corpus</h2><span class="muted">${C.items.length} problems · ${counts.favorite || 0} favorite · ${counts.used || 0} used · ${counts.rejected || 0} rejected</span>
+  d.innerHTML = `<div class="row page-head"><h2>Problem corpus</h2><span class="muted">${C.items.length} problems · ${counts.favorite || 0} favorite · ${counts.used || 0} used · ${counts.rejected || 0} rejected</span>
       <span class="spacer"></span><span class="seg"><button class="${C.view === "table" ? "on" : ""}" data-view="table">Table</button><button class="${C.view === "cards" ? "on" : ""}" data-view="cards">Cards</button></span>
       ${chatOpen ? "" : '<button class="secondary" data-cc="open">💬 Ask Claude</button>'}</div>
     <p class="hint">Claude starts each week from the best matches here and saves the problems it writes back at the end. ★ moves a problem up the list; ✕ keeps it out. Click a row to see the whole problem; click a column to sort.</p>
